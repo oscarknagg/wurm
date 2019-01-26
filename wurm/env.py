@@ -123,13 +123,16 @@ class SingleSnakeEnvironments(object):
         reward.sub_(food_removal.view(self.num_envs, -1).sum(dim=-1).long())
         self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
 
-        # Add new food if necessary. First find all environments with no food
-        no_food_mask = (head(self.envs) * food(self.envs) * -1).view(self.num_envs, -1) .sum(dim=-1).long()
-        no_food_mask = no_food_mask[:, None, None, None].expand((self.num_envs, 1, self.size, self.size)) * -1
-        # TODO: Improve self._get_food_locations() as its the only part of the code
-        # TODO: that involves a for loop
-        random_food_locations = self._get_food_addition()
-        self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += no_food_mask.float() * random_food_locations
+        # Add new food if necessary.
+        if food_removal.sum() < 0:
+            # Find all environments with no food
+            no_food_mask = food_removal.view(self.num_envs, -1) .sum(dim=-1).long()
+            no_food_mask = no_food_mask[:, None, None, None].expand((self.num_envs, 1, self.size, self.size)) * -1
+            # Get a random food location for each environment
+            # TODO: Improve self._get_food_locations() as its the only part of the code
+            # TODO: that involves a for loop
+            random_food_locations = self._get_food_addition()
+            self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += no_food_mask.float() * random_food_locations
 
         # Check for boundary, Done by performing a convolution with no padding
         # If the head is at the edge then it will be cut off and the sum of the head
@@ -165,8 +168,16 @@ class SingleSnakeEnvironments(object):
         food_addition = food_addition.to_dense()
         return food_addition
 
-    def reset(self):
-        raise NotImplementedError
+    def reset(self, done: torch.Tensor):
+        """Resets environments in which the snake has died
+
+        Args:
+            done: A 1D Tensor of length self.num_envs. A value of 1 means the corresponding environment needs to be
+                reset
+        """
+        for i, d in enumerate(done):
+            if d:
+                self.envs[i:i + 1] = self._create_env()
 
     def _create_env(self):
         if self.size <= 10:

@@ -17,6 +17,12 @@ class TestSingleSnakeEnv(unittest.TestCase):
         env = SingleSnakeEnvironments(num_envs=100, size=size)
         env_consistency(env.envs)
 
+    def test_reset(self):
+        env = SingleSnakeEnvironments(num_envs=1, size=size)
+        env_consistency(env.envs)
+        env.reset(torch.Tensor([1]))
+        env_consistency(env.envs)
+
     def test_basic_movement(self):
         env = SingleSnakeEnvironments(num_envs=1, size=size, manual_setup=True)
         env.envs = get_test_env(size, 'up').to(DEFAULT_DEVICE)

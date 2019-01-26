@@ -113,3 +113,6 @@ def env_consistency(envs: torch.Tensor):
     # Head is at end of body
 
     # Body is in decreasing order
+
+    # Only one food
+    torch.all(food(envs).view(n, -1).sum(dim=-1) == 1)
