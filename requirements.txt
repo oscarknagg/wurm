@@ -1,3 +1,5 @@
+atomicwrites==1.2.1
+attrs==18.2.0
 backcall==0.1.0
 bleach==3.1.0
 cycler==0.10.0
@@ -19,6 +21,7 @@ kiwisolver==1.0.1
 MarkupSafe==1.1.0
 matplotlib==3.0.2
 mistune==0.8.4
+more-itertools==5.0.0
 nbconvert==5.4.0
 nbformat==4.4.0
 notebook==5.7.4
@@ -28,14 +31,18 @@ parso==0.3.2
 pexpect==4.6.0
 pickleshare==0.7.5
 Pillow==5.4.1
+pluggy==0.8.1
 prometheus-client==0.5.0
 prompt-toolkit==2.0.7
 ptyprocess==0.6.0
+py==1.7.0
 Pygments==2.3.1
 pyparsing==2.3.1
+pytest==4.1.1
 python-dateutil==2.7.5
 pyzmq==17.1.2
 qtconsole==4.4.3
+scipy==1.2.0
 Send2Trash==1.5.0
 six==1.12.0
 terminado==0.8.1
