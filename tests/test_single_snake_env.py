@@ -108,6 +108,10 @@ class TestSingleSnakeEnv(unittest.TestCase):
 
         self.assertTrue(hit_self)
 
+        # Food is created agin after being eaten
+        num_food = food(env.envs).sum()
+        self.assertEqual(num_food, 1)
+
         if visualise:
             plot_envs(env.envs)
             plt.show()

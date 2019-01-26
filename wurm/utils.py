@@ -99,3 +99,16 @@ def get_test_env(size: int, orientation: str = 'up') -> torch.Tensor:
         raise Exception
 
     return env
+
+
+def env_consistency(envs: torch.Tensor):
+    """Runs multiple checks for environment consistency and throws an exception if any fail"""
+    n = envs.shape[0]
+
+    one_head_per_snake = torch.all(head(envs).view(n, -1).sum(dim=-1) == 1)
+    if not one_head_per_snake:
+        raise RuntimeError('An environment has multiple heads for a single snake.')
+
+    # Head is at end of body
+
+    # Body is in decreasing order

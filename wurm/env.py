@@ -61,19 +61,17 @@ class SingleSnakeEnvironments(object):
         self.t = 0
 
     def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, List[dict]):
-        n = self.envs.shape[0]
-
         if actions.dtype not in (torch.short, torch.int, torch.long):
             raise TypeError('actions Tensor must be an integer type i.e. '
                             '{torch.ShortTensor, torch.IntTensor, torch.LongTensor}')
 
         # assert n == actions.shape[0]
 
-        reward = torch.zeros((n,)).long().to(self.device)
-        done = torch.zeros((n,)).byte().to(self.device)
-        info = [dict(), ] * n
+        reward = torch.zeros((self.num_envs,)).long().to(self.device)
+        done = torch.zeros((self.num_envs,)).byte().to(self.device)
+        info = [dict(), ] * self.num_envs
 
-        snake_sizes = self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(n, -1).max(dim=1)[0]
+        snake_sizes = self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(self.num_envs, -1).max(dim=1)[0]
 
         orientations = determine_orientations(self.envs)
 
@@ -94,7 +92,7 @@ class SingleSnakeEnvironments(object):
         self.envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :].add_(head_deltas)
 
         # Check for hitting self
-        hit_self = (head(self.envs) * body(self.envs)).view(n, -1).sum(dim=-1) > 0
+        hit_self = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > 0
         done = torch.clamp(done + hit_self, 0, 1)
 
         ################
@@ -107,19 +105,24 @@ class SingleSnakeEnvironments(object):
         self.envs = F.relu(self.envs + body_movement)
         # Create a new head position in the body channel
         self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :, :] += \
-            head(self.envs) * snake_sizes[:, None, None, None].expand((n, 1, self.size, self.size))
+            head(self.envs) * snake_sizes[:, None, None, None].expand((self.num_envs, 1, self.size, self.size))
         # Apply food growth i.e. +1 to all snake locations
         self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :, :] += \
             ((head(self.envs) * food(self.envs)).sum() > 0) * body(self.envs).clamp(0, 1)
 
         # Remove food and give reward
-        # This Tensor is 0 except where a snake head is at the same location as food
+        # `food_removal` is 0 except where a snake head is at the same location as food where it is -1
         food_removal = head(self.envs) * food(self.envs) * -1
-        reward.sub_(food_removal.view(n, -1).sum(dim=-1).long())
+        reward.sub_(food_removal.view(self.num_envs, -1).sum(dim=-1).long())
         self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
 
-        # TODO: Add new food if necessary
-        pass  # Add a random food location multiplied by ((head * food).sum() > 0)
+        # Add new food if necessary. First find all environments with no food
+        no_food_mask = food_removal.view(self.num_envs, -1) .sum(dim=-1).long()
+        no_food_mask = no_food_mask[:, None, None, None].expand((self.num_envs, 1, self.size, self.size)) * -1
+        # TODO: Improve self._get_food_locations() as its the only part of the code
+        # TODO: that involves a for loop
+        random_food_locations = self._get_food_locations()
+        self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += no_food_mask.float() * random_food_locations
 
         # Check for boundary, Done by performing a convolution with no padding
         # If the head is at the edge then it will be cut off and the sum of the head
@@ -127,10 +130,32 @@ class SingleSnakeEnvironments(object):
         head_at_edge = F.conv2d(
             head(self.envs),
             NO_CHANGE_FILTER,
-        ).view(n, -1).sum(dim=-1) == 0
+        ).view(self.num_envs, -1).sum(dim=-1) == 0
         done = torch.clamp(done + head_at_edge, 0, 1)
 
         return self.envs, reward, done, info
+
+    def _get_food_locations(self):
+        # Get empty locations
+        available_locations = self.envs.sum(dim=1, keepdim=True) == 0
+        # Remove boundaries
+        available_locations[:, :, :1, :] = 0
+        available_locations[:, :, :, :1] = 0
+        available_locations[:, :, -1:, :] = 0
+        available_locations[:, :, :, -1:] = 0
+
+        def get_random_available_location(locs):
+            locations = torch.nonzero(locs)
+            random_loc = locations[torch.randperm(locations.shape[0])[:1]]
+            return random_loc
+
+        food_indices = torch.cat([get_random_available_location(locs) for locs in available_locations.unbind()])
+        food_indices = torch.cat([torch.arange(self.num_envs, device=self.device).unsqueeze(1), food_indices], dim=1)
+
+        food_addition = torch.sparse_coo_tensor(
+            food_indices.t(),  torch.ones(len(food_indices)), available_locations.shape, device=self.device)
+        food_addition = food_addition.to_dense()
+        return food_addition
 
     def reset(self):
         raise NotImplementedError
