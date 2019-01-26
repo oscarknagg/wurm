@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL
 from wurm._filters import ORIENTATION_FILTERS
 
+
 """
 Each of the following functions takes a batch of envs and returns the channel corresponding to either the food, heads or
 bodies of each env.
