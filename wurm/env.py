@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from typing import List
 
-from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL
+from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL, DEFAULT_DEVICE
 from wurm.utils import food, head, body, determine_orientations
 from wurm._filters import *
 
@@ -39,7 +39,10 @@ class SingleSnakeEnvironments(object):
     def __init__(self,
                  num_envs: int,
                  size: int,
-                 max_timesteps: int = None):
+                 max_timesteps: int = None,
+                 initial_snake_length: int = 4,
+                 on_death: str = 'restart',
+                 device: str = DEFAULT_DEVICE):
         """Initialise the environments
 
         Args:
@@ -50,8 +53,11 @@ class SingleSnakeEnvironments(object):
         self.num_envs = num_envs
         self.size = size
         self.max_timesteps = max_timesteps
+        self.initial_snake_length = initial_snake_length
+        self.on_death = on_death
+        self.device = device
 
-        self.envs = torch.zeros((num_envs, 3, size, size))
+        self.envs = torch.zeros((num_envs, 3, size, size)).to(self.device)
         self.t = 0
 
     def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, List[dict]):
@@ -63,8 +69,8 @@ class SingleSnakeEnvironments(object):
 
         # assert n == actions.shape[0]
 
-        reward = torch.zeros((n,)).long()
-        done = torch.zeros((n,)).byte()
+        reward = torch.zeros((n,)).long().to(self.device)
+        done = torch.zeros((n,)).byte().to(self.device)
         info = [dict(), ] * n
 
         snake_sizes = self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(n, -1).max(dim=1)[0]
@@ -109,7 +115,7 @@ class SingleSnakeEnvironments(object):
         # Remove food and give reward
         # This Tensor is 0 except where a snake head is at the same location as food
         food_removal = head(self.envs) * food(self.envs) * -1
-        reward.add_(food_removal.view(n, -1).sum(dim=-1).long())
+        reward.sub_(food_removal.view(n, -1).sum(dim=-1).long())
         self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
 
         # TODO: Add new food if necessary
@@ -124,9 +130,10 @@ class SingleSnakeEnvironments(object):
         ).view(n, -1).sum(dim=-1) == 0
         done = torch.clamp(done + head_at_edge, 0, 1)
 
-        # # Some asserts:
-        # # Only one head per snake channel
-        # assert torch.all(head(worlds).view(n, -1).sum(dim=-1) == 1)
-
         return self.envs, reward, done, info
+
+    def reset(self):
+        raise NotImplementedError
+
+
 
