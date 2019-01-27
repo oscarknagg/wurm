@@ -1,10 +1,14 @@
+from typing import Union, List
 import matplotlib.pyplot as plt
 import torch
 
 from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL
 
 
-def plot_envs(envs: torch.Tensor, env_idx: int = 0, mode: str = 'single'):
+def plot_envs(
+        envs: torch.Tensor,
+        env_idx: Union[int, List[int]] = 0,
+        mode: str = 'single'):
     """Plots a single environment from a batch of environments"""
     size = envs.shape[-1]
 
@@ -25,5 +29,17 @@ def plot_envs(envs: torch.Tensor, env_idx: int = 0, mode: str = 'single'):
             axes[i].grid()
             axes[i].set_xlim((0, size-1))
             axes[i].set_ylim((0, size-1))
+    if mode == 'multi':
+        n = len(env_idx)
+        fig, axes = plt.subplots(1, n, figsize=(n*5, 5))
+
+        for i, env_i in enumerate(env_idx):
+            img = (envs[env_i, BODY_CHANNEL, :, :].cpu().numpy() > 0) * 0.5
+            img += envs[env_i, HEAD_CHANNEL, :, :].cpu().numpy() * 0.5
+            img += envs[env_i, FOOD_CHANNEL, :, :].cpu().numpy() * 1.5
+            axes[i].imshow(img, vmin=0, vmax=1.5)
+            axes[i].set_xlim((0, size - 1))
+            axes[i].set_ylim((0, size - 1))
+            axes[i].grid()
     else:
         raise Exception

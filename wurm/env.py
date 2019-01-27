@@ -91,12 +91,14 @@ class SingleSnakeEnvironments(object):
 
         # Create head position deltas
         head_deltas = F.conv2d(head(self.envs), ORIENTATION_FILTERS, padding=1)
-
-        # Mask the head-movement deltas with direction action
-        head_deltas = torch.index_select(head_deltas, 1, actions.long())
+        # Select the head position delta corresponding to the correct action
+        actions_onehot = torch.FloatTensor(self.num_envs, 4).to(self.device)
+        actions_onehot.zero_()
+        actions_onehot.scatter_(1, actions.unsqueeze(-1), 1)
+        head_deltas = torch.einsum('bchw,bc->bhw', [head_deltas, actions_onehot]).unsqueeze(1)
 
         # Move head position by applying delta
-        self.envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :].add_(head_deltas)
+        self.envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :].add_(head_deltas[:, 0:1, :, :])
 
         # Check for hitting self
         hit_self = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > 0

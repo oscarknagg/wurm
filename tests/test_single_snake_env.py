@@ -13,6 +13,18 @@ size = 12
 
 
 class TestSingleSnakeEnv(unittest.TestCase):
+    def test_multiple_envs(self):
+        num_envs = 128
+        num_steps = 100
+        env = SingleSnakeEnvironments(num_envs=num_envs, size=size)
+        actions = torch.randint(4, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE)
+
+        for i, a in enumerate(actions):
+            print(i, a.shape)
+            observations, reward, done, info = env.step(a)
+            env.reset(done)
+            env_consistency(env.envs)
+
     def test_setup(self):
         env = SingleSnakeEnvironments(num_envs=100, size=size)
         env_consistency(env.envs)
