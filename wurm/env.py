@@ -1,9 +1,10 @@
 import torch
 import torch.nn.functional as F
 from typing import List
+from time import time
 
 from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL, DEFAULT_DEVICE
-from wurm.utils import food, head, body, determine_orientations
+from wurm.utils import food, head, body, determine_orientations, drop_duplicates
 from wurm._filters import *
 
 
@@ -78,10 +79,13 @@ class SingleSnakeEnvironments(object):
         done = torch.zeros((self.num_envs,)).byte().to(self.device)
         info = [dict(), ] * self.num_envs
 
+        t0 = time()
         snake_sizes = self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(self.num_envs, -1).max(dim=1)[0]
 
         orientations = determine_orientations(self.envs)
+        print(f'Orientations: {time()-t0}s')
 
+        t0 = time()
         # Check if any snakes are trying to move backwards and change
         # their direction/action to just continue forward
         # The test for this is if their orientation number {0, 1, 2, 3}
@@ -98,16 +102,20 @@ class SingleSnakeEnvironments(object):
         head_deltas = torch.einsum('bchw,bc->bhw', [head_deltas, actions_onehot]).unsqueeze(1)
 
         # Move head position by applying delta
-        self.envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :].add_(head_deltas[:, 0:1, :, :])
+        self.envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :].add_(head_deltas[:, 0:1, :, :]).round_()
+        print(f'Head movement: {time() - t0}s')
 
+        t0 = time()
         # Check for hitting self
         hit_self = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > 0
         done = torch.clamp(done + hit_self, 0, 1)
+        print(f'Self collision: {time() - t0}s')
 
         ################
         # Apply update #
         ################
 
+        t0 = time()
         # Decay the body sizes by 1, hence moving the body
         body_movement = torch.zeros_like(self.envs)
         body_movement[:, BODY_CHANNEL, :, :] = -1
@@ -124,18 +132,21 @@ class SingleSnakeEnvironments(object):
         food_removal = head(self.envs) * food(self.envs) * -1
         reward.sub_(food_removal.view(self.num_envs, -1).sum(dim=-1).long())
         self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
+        print(f'Body movement and food removal: {time() - t0}s')
 
+        t0 = time()
         # Add new food if necessary.
         if food_removal.sum() < 0:
             # Find all environments with no food
             no_food_mask = food_removal.view(self.num_envs, -1) .sum(dim=-1).long()
             no_food_mask = no_food_mask[:, None, None, None].expand((self.num_envs, 1, self.size, self.size)) * -1
             # Get a random food location for each environment
-            # TODO: Improve self._get_food_locations() as its the only part of the code
-            # TODO: that involves a for loop
             random_food_locations = self._get_food_addition()
             self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += no_food_mask.float() * random_food_locations
 
+        print(f'Food addition: {time() - t0}s')
+
+        t0 = time()
         # Check for boundary, Done by performing a convolution with no padding
         # If the head is at the edge then it will be cut off and the sum of the head
         # channel will be 0
@@ -144,6 +155,7 @@ class SingleSnakeEnvironments(object):
             NO_CHANGE_FILTER,
         ).view(self.num_envs, -1).sum(dim=-1) == 0
         done = torch.clamp(done + head_at_edge, 0, 1)
+        print(f'Edge collision: {time() - t0}s')
 
         return self.envs, reward, done, info
 
@@ -161,13 +173,11 @@ class SingleSnakeEnvironments(object):
         available_locations[:, :, -1:, :] = 0
         available_locations[:, :, :, -1:] = 0
 
-        # TODO: Find a way to remove this for loop
-        food_indices = torch.cat([self._select_from_available_locations(locs) for locs in available_locations.unbind()])
-        food_indices = torch.cat([torch.arange(self.num_envs, device=self.device).unsqueeze(1), food_indices], dim=1)
-
+        food_indices = drop_duplicates(torch.nonzero(available_locations), 0)
         food_addition = torch.sparse_coo_tensor(
             food_indices.t(),  torch.ones(len(food_indices)), available_locations.shape, device=self.device)
         food_addition = food_addition.to_dense()
+
         return food_addition
 
     def reset(self, done: torch.Tensor):
@@ -177,9 +187,12 @@ class SingleSnakeEnvironments(object):
             done: A 1D Tensor of length self.num_envs. A value of 1 means the corresponding environment needs to be
                 reset
         """
+        t0 = time()
         for i, d in enumerate(done):
             if d:
                 self.envs[i:i + 1] = self._create_env()
+
+        print(f'Resetting {done.sum().item()} envs: {time() - t0}s')
 
     def _create_env(self):
         if self.size <= 10:
