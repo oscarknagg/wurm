@@ -9,13 +9,13 @@ from wurm.vis import plot_envs
 from config import DEFAULT_DEVICE
 
 
-visualise = False
+visualise = True
 size = 12
 
 
 class TestSingleSnakeEnv(unittest.TestCase):
     def test_multiple_envs(self):
-        num_envs = 2 ** 12
+        num_envs = 2 ** 14
         num_steps = 50
         env = SingleSnakeEnvironments(num_envs=num_envs, size=size)
         actions = torch.randint(4, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE)
@@ -31,7 +31,7 @@ class TestSingleSnakeEnv(unittest.TestCase):
         print(f'Ran {num_envs*num_steps} actions in {t}s = {num_envs*num_steps/t} actions/s')
 
     def test_setup(self):
-        env = SingleSnakeEnvironments(num_envs=100, size=size)
+        env = SingleSnakeEnvironments(num_envs=4096, size=size)
         env_consistency(env.envs)
 
     def test_reset(self):

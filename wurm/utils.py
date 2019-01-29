@@ -110,11 +110,21 @@ def env_consistency(envs: torch.Tensor):
     if not one_head_per_snake:
         raise RuntimeError('An environment has multiple heads for a single snake.')
 
+    # Environment contains a snake
+    envs_contain_snake = torch.all(body(envs).view(n, -1).sum(dim=-1) > 0)
+    if not envs_contain_snake:
+        raise RuntimeError('An environment doesn\'t contain a snake.')
+
     # Head is at end of body
+    body_value_at_head_locations = (head(envs) * body(envs))
+    body_sizes = body(envs).view(n, -1).max(dim=1)[0]
+    head_is_at_end_of_body = torch.equal(body_sizes, body_value_at_head_locations.view(n, -1).sum(dim=-1))
+    if not head_is_at_end_of_body:
+        raise RuntimeError('An environment has a snake with it\'s head not at the end of the body.')
 
     # Body is in decreasing order
 
-    # Only one food
+    # Environment contains one food instance
     torch.all(food(envs).view(n, -1).sum(dim=-1) == 1)
 
 

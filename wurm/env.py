@@ -41,7 +41,7 @@ class SingleSnakeEnvironments(object):
                  num_envs: int,
                  size: int,
                  max_timesteps: int = None,
-                 initial_snake_length: int = 4,
+                 initial_snake_length: int = 3,
                  on_death: str = 'restart',
                  device: str = DEFAULT_DEVICE,
                  manual_setup = False):
@@ -196,22 +196,21 @@ class SingleSnakeEnvironments(object):
         if self.size <= 10:
             raise NotImplementedError('Cannot make an env this small without making this code more clever')
 
-        if self.initial_snake_length != 4:
-            raise NotImplementedError('Only initial snake length = 4 has been implemented.')
+        if self.initial_snake_length != 3:
+            raise NotImplementedError('Only initial snake length = 3 has been implemented.')
 
         envs = torch.zeros((num_envs, 3, self.size, self.size)).to(self.device)
 
-        # Create head locations at random points
-        head_indices = torch.stack([
+        # Create random locations to seed bodies
+        body_seed_indices = torch.stack([
             torch.arange(num_envs),
             torch.zeros((num_envs,)).long(),
             torch.randint(1 + self.initial_snake_length, self.size - (1 + self.initial_snake_length), size=(num_envs,)),
             torch.randint(1 + self.initial_snake_length, self.size - (1 + self.initial_snake_length), size=(num_envs,))
         ]).to(self.device)
-        heads = torch.sparse_coo_tensor(
-            head_indices, torch.ones(num_envs), (num_envs, 1, self.size, self.size), device=self.device
+        body_seeds = torch.sparse_coo_tensor(
+            body_seed_indices, torch.ones(num_envs), (num_envs, 1, self.size, self.size), device=self.device
         )
-        envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :] += heads.to_dense()
 
         # Choose random starting directions
         random_directions = torch.randint(4, (num_envs,)).to(self.device)
@@ -221,11 +220,15 @@ class SingleSnakeEnvironments(object):
 
         # Create bodies
         bodies = torch.einsum('bchw,bc->bhw', [
-            F.conv2d(envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :], LENGTH_4_SNAKES.to(self.device), padding=2),
+            F.conv2d(body_seeds.to_dense(), LENGTH_3_SNAKES.to(self.device), padding=1),
             random_directions_onehot
         ]).unsqueeze(1)
-
         envs[:, BODY_CHANNEL:BODY_CHANNEL+1, :, :] = bodies
+
+        # Create heads at end of bodies
+        snake_sizes = envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(num_envs, -1).max(dim=1)[0]
+        snake_size_mask = snake_sizes[:, None, None, None].expand((num_envs, 1, self.size, self.size))
+        envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :] = (bodies == snake_size_mask).float()
 
         # Add food
         available_food_locations = envs.sum(dim=1, keepdim=True) == 0
