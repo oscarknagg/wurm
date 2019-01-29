@@ -133,17 +133,14 @@ class SingleSnakeEnvironments(object):
         self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
         print(f'Body movement and food removal: {time() - t0}s')
 
-        t0 = time()
         # Add new food if necessary.
         if food_removal.sum() < 0:
-            # Find all environments with no food
-            no_food_mask = food_removal.view(self.num_envs, -1) .sum(dim=-1).long()
-            no_food_mask = no_food_mask[:, None, None, None].expand((self.num_envs, 1, self.size, self.size)) * -1
-            # Get a random food location for each environment
-            random_food_locations = self._get_food_addition()
-            self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += no_food_mask.float() * random_food_locations
+            t0 = time()
+            food_addition_env_indices = (food_removal * -1).view(self.num_envs, -1).sum(dim=-1).byte()
+            add_food_envs = self.envs[food_addition_env_indices, :, :, :]
+            self.envs[food_addition_env_indices, :, :, :].add_(self._get_food_addition(add_food_envs))
 
-        print(f'Food addition: {time() - t0}s')
+            print(f'Food addition to {food_addition_env_indices.sum().item()} envs: {time() - t0}s')
 
         t0 = time()
         # Check for boundary, Done by performing a convolution with no padding
@@ -163,9 +160,9 @@ class SingleSnakeEnvironments(object):
         random_loc = locations[torch.randperm(locations.shape[0])[:1]]
         return random_loc
 
-    def _get_food_addition(self):
+    def _get_food_addition(self, envs: torch.Tensor):
         # Get empty locations
-        available_locations = self.envs.sum(dim=1, keepdim=True) == 0
+        available_locations = envs.sum(dim=1, keepdim=True) == 0
         # Remove boundaries
         available_locations[:, :, :1, :] = 0
         available_locations[:, :, :, :1] = 0
