@@ -15,7 +15,7 @@ size = 12
 
 class TestSingleSnakeEnv(unittest.TestCase):
     def test_multiple_envs(self):
-        num_envs = 1024
+        num_envs = 2 ** 12
         num_steps = 50
         env = SingleSnakeEnvironments(num_envs=num_envs, size=size)
         actions = torch.randint(4, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE)
@@ -37,7 +37,7 @@ class TestSingleSnakeEnv(unittest.TestCase):
     def test_reset(self):
         env = SingleSnakeEnvironments(num_envs=1, size=size)
         env_consistency(env.envs)
-        env.reset(torch.Tensor([1]))
+        env.reset(torch.Tensor([1]).to(DEFAULT_DEVICE))
         env_consistency(env.envs)
 
     def test_basic_movement(self):

@@ -64,8 +64,7 @@ class SingleSnakeEnvironments(object):
 
         if not manual_setup:
             # Create environments
-            for i in range(num_envs):
-                self.envs[i:i+1] = self._create_env()
+            self.envs = self._create_envs()
 
     def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, List[dict]):
         if actions.dtype not in (torch.short, torch.int, torch.long):
@@ -94,7 +93,7 @@ class SingleSnakeEnvironments(object):
         actions.add_((mask * 2).long()).fmod_(4)
 
         # Create head position deltas
-        head_deltas = F.conv2d(head(self.envs), ORIENTATION_FILTERS, padding=1)
+        head_deltas = F.conv2d(head(self.envs), ORIENTATION_FILTERS.to(self.device), padding=1)
         # Select the head position delta corresponding to the correct action
         actions_onehot = torch.FloatTensor(self.num_envs, 4).to(self.device)
         actions_onehot.zero_()
@@ -152,7 +151,7 @@ class SingleSnakeEnvironments(object):
         # channel will be 0
         head_at_edge = F.conv2d(
             head(self.envs),
-            NO_CHANGE_FILTER,
+            NO_CHANGE_FILTER.to(self.device),
         ).view(self.num_envs, -1).sum(dim=-1) == 0
         done = torch.clamp(done + head_at_edge, 0, 1)
         print(f'Edge collision: {time() - t0}s')
@@ -188,55 +187,68 @@ class SingleSnakeEnvironments(object):
                 reset
         """
         t0 = time()
-        for i, d in enumerate(done):
-            if d:
-                self.envs[i:i + 1] = self._create_env()
+
+        new_envs = self._create_envs()
+
+        # Clear old envs by multiplying by 0
+        reset_mask = (1 - done)[:, None, None, None].expand((self.num_envs, 3, self.size, self.size)).float()
+        self.envs.mul_(reset_mask)
+
+        # Add new envs
+        new_env_mask = done[:, None, None, None].expand((self.num_envs, 3, self.size, self.size)).float()
+        self.envs.add_(new_envs * new_env_mask)
+
+        self.envs.round_()
 
         print(f'Resetting {done.sum().item()} envs: {time() - t0}s')
 
-    def _create_env(self):
+    def _create_envs(self):
+        """Vectorised environment creation. Creates self.num_envs environments simultaneously."""
         if self.size <= 10:
-            raise Exception('Cannot make an env this small without making this code more clever')
+            raise NotImplementedError('Cannot make an env this small without making this code more clever')
 
-        env = torch.zeros((1, 3, self.size, self.size)).to(self.device)
+        if self.initial_snake_length != 4:
+            raise NotImplementedError('Only initial snake length = 4 has been implemented.')
 
-        # Pick head location
-        head_location = torch.randint(
-            1 + self.initial_snake_length, self.size - (1 + self.initial_snake_length), size=(2,))
-        env[0, HEAD_CHANNEL, head_location[0], head_location[1]] = 1
+        envs = torch.zeros((self.num_envs, 3, self.size, self.size)).to(self.device)
 
-        # Create body
-        directions = [
-            (0, 1),
-            (0, -1),
-            (1, 0),
-            (-1, 0)
-        ]
-        direction = directions[torch.randint(4, size=())]
+        # Create head locations at random points
+        head_indices = torch.stack([
+            torch.arange(self.num_envs),
+            torch.zeros((self.num_envs,)).long(),
+            torch.randint(1 + self.initial_snake_length, self.size - (1 + self.initial_snake_length), size=(self.num_envs,)),
+            torch.randint(1 + self.initial_snake_length, self.size - (1 + self.initial_snake_length), size=(self.num_envs,))
+        ]).to(self.device)
+        heads = torch.sparse_coo_tensor(
+            head_indices, torch.ones(self.num_envs), (self.num_envs, 1, self.size, self.size), device=self.device
+        )
+        envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :] += heads.to_dense()
 
-        for i in range(self.initial_snake_length):
-            env[
-                0,
-                BODY_CHANNEL,
-                head_location[0] + i * direction[0],
-                head_location[1] + i * direction[1]
-            ] = self.initial_snake_length - i
+        # Choose random starting directions
+        random_directions = torch.randint(4, (self.num_envs,)).to(self.device)
+        random_directions_onehot = torch.Tensor(self.num_envs, 4).float().to(self.device)
+        random_directions_onehot.zero_()
+        random_directions_onehot.scatter_(1, random_directions.unsqueeze(-1), 1)
+
+        # Create bodies
+        bodies = torch.einsum('bchw,bc->bhw', [
+            F.conv2d(envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :], LENGTH_4_SNAKES.to(self.device), padding=2),
+            random_directions_onehot
+        ]).unsqueeze(1)
+
+        envs[:, BODY_CHANNEL:BODY_CHANNEL+1, :, :] = bodies
 
         # Add food
-        available_locations = env.sum(dim=1, keepdim=True) == 0
+        available_food_locations = envs.sum(dim=1, keepdim=True) == 0
         # Remove boundaries
-        available_locations[:, :, :1, :] = 0
-        available_locations[:, :, :, :1] = 0
-        available_locations[:, :, -1:, :] = 0
-        available_locations[:, :, :, -1:] = 0
+        available_food_locations[:, :, :1, :] = 0
+        available_food_locations[:, :, :, :1] = 0
+        available_food_locations[:, :, -1:, :] = 0
+        available_food_locations[:, :, :, -1:] = 0
 
-        food_indices = self._select_from_available_locations(available_locations[0])
-        food_indices = torch.cat([torch.arange(1, device=self.device).unsqueeze(1), food_indices], dim=1)
-
+        food_indices = drop_duplicates(torch.nonzero(available_food_locations), 0)
         food_addition = torch.sparse_coo_tensor(
-            food_indices.t(), torch.ones(len(food_indices)), available_locations.shape, device=self.device)
-        env[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] = food_addition.to_dense()
+            food_indices.t(), torch.ones(len(food_indices)), available_food_locations.shape, device=self.device)
+        envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] = food_addition.to_dense()
 
-        return env
-
-
+        return envs
