@@ -116,3 +116,57 @@ def env_consistency(envs: torch.Tensor):
 
     # Only one food
     torch.all(food(envs).view(n, -1).sum(dim=-1) == 1)
+
+
+def unique1d(tensor: torch.Tensor, return_index: bool = False):
+    """Port of np.unique to PyTorch with `return_index` functionality"""
+    assert len(tensor.shape) == 1
+
+    optional_indices = return_index
+
+    if optional_indices:
+        perm = tensor.argsort()
+        aux = tensor[perm]
+    else:
+        tensor.sort_()
+        aux = tensor
+
+    mask = torch.zeros(aux.shape)
+    mask[:1] = 1
+    mask[1:] = aux[1:] != aux[:-1]
+
+    ret = (aux[mask.byte()],)
+    if return_index:
+        ret += (perm[mask.byte()],)
+
+    return ret
+
+
+def drop_duplicates(tensor: torch.Tensor, column: int, random: bool = True):
+    """Equivalent of pandas.drop_duplicates
+
+    Takes a 2D tensor and returns the same tensor without any rows that contain a duplicate value in a
+    particular column.
+
+    Args:
+        tensor: A 2D tensor
+        column: The column (i.e. 2nd index) of the tensor to place a unique constraint on
+        random: If `False` returns the first occurrence of rows with duplicate values. If `True`
+            returns a random row from those that contain a duplicated value.
+
+    Returns:
+        unique: Tensor with no duplicate values in a particular column
+    """
+    if not len(tensor.shape) == 2:
+        raise RuntimeError('Input must be a 2D tensor.')
+
+    if random:
+        tensor = tensor[torch.randperm(len(tensor))]
+
+    uniq = tensor[:, column]
+
+    indices = unique1d(uniq, return_index=True)[1]
+
+    unique = tensor[indices.long()]
+
+    return unique
