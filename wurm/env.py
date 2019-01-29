@@ -64,7 +64,7 @@ class SingleSnakeEnvironments(object):
 
         if not manual_setup:
             # Create environments
-            self.envs = self._create_envs()
+            self.envs = self._create_envs(self.num_envs)
 
     def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, List[dict]):
         if actions.dtype not in (torch.short, torch.int, torch.long):
@@ -188,21 +188,13 @@ class SingleSnakeEnvironments(object):
         """
         t0 = time()
 
-        new_envs = self._create_envs()
-
-        # Clear old envs by multiplying by 0
-        reset_mask = (1 - done)[:, None, None, None].expand((self.num_envs, 3, self.size, self.size)).float()
-        self.envs.mul_(reset_mask)
-
-        # Add new envs
-        new_env_mask = done[:, None, None, None].expand((self.num_envs, 3, self.size, self.size)).float()
-        self.envs.add_(new_envs * new_env_mask)
-
-        self.envs.round_()
+        if done.sum() > 0:
+            new_envs = self._create_envs(done.sum().item())
+            self.envs[done, :, :, :] = new_envs
 
         print(f'Resetting {done.sum().item()} envs: {time() - t0}s')
 
-    def _create_envs(self):
+    def _create_envs(self, num_envs: int):
         """Vectorised environment creation. Creates self.num_envs environments simultaneously."""
         if self.size <= 10:
             raise NotImplementedError('Cannot make an env this small without making this code more clever')
@@ -210,23 +202,23 @@ class SingleSnakeEnvironments(object):
         if self.initial_snake_length != 4:
             raise NotImplementedError('Only initial snake length = 4 has been implemented.')
 
-        envs = torch.zeros((self.num_envs, 3, self.size, self.size)).to(self.device)
+        envs = torch.zeros((num_envs, 3, self.size, self.size)).to(self.device)
 
         # Create head locations at random points
         head_indices = torch.stack([
-            torch.arange(self.num_envs),
-            torch.zeros((self.num_envs,)).long(),
-            torch.randint(1 + self.initial_snake_length, self.size - (1 + self.initial_snake_length), size=(self.num_envs,)),
-            torch.randint(1 + self.initial_snake_length, self.size - (1 + self.initial_snake_length), size=(self.num_envs,))
+            torch.arange(num_envs),
+            torch.zeros((num_envs,)).long(),
+            torch.randint(1 + self.initial_snake_length, self.size - (1 + self.initial_snake_length), size=(num_envs,)),
+            torch.randint(1 + self.initial_snake_length, self.size - (1 + self.initial_snake_length), size=(num_envs,))
         ]).to(self.device)
         heads = torch.sparse_coo_tensor(
-            head_indices, torch.ones(self.num_envs), (self.num_envs, 1, self.size, self.size), device=self.device
+            head_indices, torch.ones(num_envs), (num_envs, 1, self.size, self.size), device=self.device
         )
         envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :] += heads.to_dense()
 
         # Choose random starting directions
-        random_directions = torch.randint(4, (self.num_envs,)).to(self.device)
-        random_directions_onehot = torch.Tensor(self.num_envs, 4).float().to(self.device)
+        random_directions = torch.randint(4, (num_envs,)).to(self.device)
+        random_directions_onehot = torch.Tensor(num_envs, 4).float().to(self.device)
         random_directions_onehot.zero_()
         random_directions_onehot.scatter_(1, random_directions.unsqueeze(-1), 1)
 
