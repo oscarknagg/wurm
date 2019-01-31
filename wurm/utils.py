@@ -122,7 +122,13 @@ def env_consistency(envs: torch.Tensor):
     if not head_is_at_end_of_body:
         raise RuntimeError('An environment has a snake with it\'s head not at the end of the body.')
 
-    # Body is in decreasing order
+    # Sum of body channel is a triangular number
+    # This checks that the body contains elements like {1, 2, 3}, {1, 2, 3, 4}, range(1, n)
+    body_totals = body(envs).view(n, -1).sum(dim=-1)
+    estimated_body_sizes = (torch.sqrt(8 * body_totals + 1) - 1) / 2
+    consistent_body_size = torch.equal(estimated_body_sizes, body_sizes)
+    if not consistent_body_size:
+        raise RuntimeError('An environment has a body with inconsistent values i.e. not range(n)')
 
     # Environment contains one food instance
     contains_one_food = torch.all(food(envs).view(n, -1).sum(dim=-1) == 1)

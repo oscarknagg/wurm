@@ -116,14 +116,15 @@ class SingleSnakeEnvironments(object):
         ################
 
         t0 = time()
-        # Decay the body sizes by 1, hence moving the body, apply ReLu to keep above 0
-        self.envs[:, BODY_CHANNEL:BODY_CHANNEL+1, :, :].sub_(1).relu_()
         # Create a new head position in the body channel
         self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :, :] += \
-            head(self.envs) * snake_sizes[:, None, None, None].expand((self.num_envs, 1, self.size, self.size))
+            head(self.envs) * (snake_sizes[:, None, None, None].expand((self.num_envs, 1, self.size, self.size)) + 1)
+        # Add +1 to all body locations if the head overlaps with a  food location
         head_food_overlap = (head(self.envs) * food(self.envs)).view(self.num_envs, -1).sum(dim=-1)
         self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :, :] += \
             body(self.envs).clamp(0, 1) * head_food_overlap[:, None, None, None].expand((self.num_envs, 1, self.size, self.size))
+        # Decay the body sizes by 1, hence moving the body, apply ReLu to keep above 0
+        self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :, :].sub_(1).relu_()
         print(f'Body movement: {time()-t0}')
 
         t0 = time()
