@@ -9,7 +9,7 @@ from wurm.vis import plot_envs
 from config import DEFAULT_DEVICE
 
 
-visualise = True
+visualise = False
 size = 12
 
 
@@ -22,17 +22,23 @@ class TestSingleSnakeEnv(unittest.TestCase):
 
         t0 = time()
         for i, a in enumerate(actions):
+            if visualise:
+                plot_envs(env.envs)
+                plt.show()
+
             observations, reward, done, info = env.step(a)
             env.reset(done)
             env_consistency(env.envs)
-            print()
 
         t = time() - t0
         print(f'Ran {num_envs*num_steps} actions in {t}s = {num_envs*num_steps/t} actions/s')
 
     def test_setup(self):
-        env = SingleSnakeEnvironments(num_envs=4096, size=size)
+        n = 97
+        env = SingleSnakeEnvironments(num_envs=n, size=size)
         env_consistency(env.envs)
+        expected_body_sum = env.initial_snake_length * (env.initial_snake_length + 1) / 2
+        self.assertTrue(torch.all(body(env.envs).view(n, -1).sum(dim=-1) == expected_body_sum))
 
     def test_reset(self):
         env = SingleSnakeEnvironments(num_envs=1, size=size)
@@ -73,7 +79,7 @@ class TestSingleSnakeEnv(unittest.TestCase):
     def test_eat_food(self):
         env = SingleSnakeEnvironments(num_envs=1, size=size, manual_setup=True)
         env.envs = get_test_env(size, 'up').to(DEFAULT_DEVICE)
-        actions = torch.Tensor([0, 3, 3, 0, 0, 1]).unsqueeze(1).long().to(DEFAULT_DEVICE)
+        actions = torch.Tensor([0, 3, 3, 0, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE)
 
         initial_size = body(env.envs).max()
 
@@ -86,6 +92,11 @@ class TestSingleSnakeEnv(unittest.TestCase):
 
         final_size = body(env.envs).max()
         self.assertGreater(final_size, initial_size)
+
+        # Food is created agin after being eaten
+        num_food = food(env.envs).sum()
+        print(num_food, 1)
+        self.assertEqual(num_food, 1)
 
         if visualise:
             plot_envs(env.envs)

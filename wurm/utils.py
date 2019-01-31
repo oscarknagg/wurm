@@ -125,7 +125,9 @@ def env_consistency(envs: torch.Tensor):
     # Body is in decreasing order
 
     # Environment contains one food instance
-    torch.all(food(envs).view(n, -1).sum(dim=-1) == 1)
+    contains_one_food = torch.all(food(envs).view(n, -1).sum(dim=-1) == 1)
+    if not contains_one_food:
+        raise RuntimeError('An environment doesn\'t contain exactly one food instance')
 
 
 def unique1d(tensor: torch.Tensor, return_index: bool = False):
