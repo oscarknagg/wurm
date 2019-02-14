@@ -2,7 +2,7 @@ from typing import Union, List
 import matplotlib.pyplot as plt
 import torch
 
-from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL
+from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL, EPS
 
 
 def plot_envs(
@@ -13,7 +13,7 @@ def plot_envs(
     size = envs.shape[-1]
 
     if mode == 'single':
-        img = (envs[env_idx, BODY_CHANNEL, :, :].cpu().numpy() > 0) * 0.5
+        img = (envs[env_idx, BODY_CHANNEL, :, :].cpu().numpy() > EPS) * 0.5
         img += envs[env_idx, HEAD_CHANNEL, :, :].cpu().numpy() * 0.5
         img += envs[env_idx, FOOD_CHANNEL, :, :].cpu().numpy() * 1.5
         plt.imshow(img, vmin=0, vmax=1.5)
@@ -29,7 +29,7 @@ def plot_envs(
             axes[i].grid()
             axes[i].set_xlim((0, size-1))
             axes[i].set_ylim((0, size-1))
-    if mode == 'multi':
+    elif mode == 'multi':
         n = len(env_idx)
         fig, axes = plt.subplots(1, n, figsize=(n*5, 5))
 
