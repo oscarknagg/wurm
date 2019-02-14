@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from typing import List
 from time import time
 
-from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL, DEFAULT_DEVICE
+from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL
 from wurm.utils import food, head, body, determine_orientations, drop_duplicates
 from wurm._filters import *
 
@@ -44,7 +44,7 @@ class SingleSnakeEnvironments(object):
                  initial_snake_length: int = 3,
                  on_death: str = 'restart',
                  device: str = DEFAULT_DEVICE,
-                 manual_setup = False):
+                 manual_setup: bool = False):
         """Initialise the environments
 
         Args:
