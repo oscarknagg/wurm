@@ -59,12 +59,13 @@ class SingleSnakeEnvironments(object):
         self.on_death = on_death
         self.device = device
 
-        self.envs = torch.zeros((num_envs, 3, size, size)).to(self.device)
+        self.envs = torch.zeros((num_envs, 3, size, size)).to(self.device).requires_grad_(False)
         self.t = 0
 
         if not manual_setup:
             # Create environments
             self.envs = self._create_envs(self.num_envs)
+            self.envs.requires_grad_(False)
 
     def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, List[dict]):
         if actions.dtype not in (torch.short, torch.int, torch.long):
@@ -74,8 +75,8 @@ class SingleSnakeEnvironments(object):
         if actions.shape[0] != self.num_envs:
             raise RuntimeError('Must have the same number of actions as environments.')
 
-        reward = torch.zeros((self.num_envs,)).long().to(self.device)
-        done = torch.zeros((self.num_envs,)).byte().to(self.device)
+        reward = torch.zeros((self.num_envs,)).float().to(self.device).requires_grad_(False)
+        done = torch.zeros((self.num_envs,)).byte().to(self.device).requires_grad_(False)
         info = [dict(), ] * self.num_envs
 
         t0 = time()
@@ -131,7 +132,7 @@ class SingleSnakeEnvironments(object):
         # Remove food and give reward
         # `food_removal` is 0 except where a snake head is at the same location as food where it is -1
         food_removal = head(self.envs) * food(self.envs) * -1
-        reward.sub_(food_removal.view(self.num_envs, -1).sum(dim=-1).long())
+        reward.sub_(food_removal.view(self.num_envs, -1).sum(dim=-1).float())
         self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
         print(f'Food removal: {time() - t0}s')
 
