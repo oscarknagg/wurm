@@ -81,7 +81,7 @@ class SingleSnakeEnvironments(object):
         self.done = torch.zeros((num_envs)).to(self.device).byte()
 
     def _observe(self):
-        if self.observation_mode is None:
+        if self.observation_mode == 'default':
             return self.envs
         elif self.observation_mode == 'one_channel':
             observation = (self.envs[:, BODY_CHANNEL, :, :] > EPS).float() * 0.5
@@ -92,10 +92,23 @@ class SingleSnakeEnvironments(object):
             observation[:, -1:, :] = -1
             observation[:, :, -1:] = -1
             return observation.unsqueeze(1)
+        elif self.observation_mode == 'positions':
+            observation = (self.envs[:, BODY_CHANNEL, :, :] > EPS).float() * 0.5
+            observation += self.envs[:, HEAD_CHANNEL, :, :] * 0.5
+            observation += self.envs[:, FOOD_CHANNEL, :, :] * 1.5
+            head_idx = self.envs[:, HEAD_CHANNEL, :, :].view(self.num_envs, self.size ** 2).argmax(dim=-1)
+            food_idx = self.envs[:, FOOD_CHANNEL, :, :].view(self.num_envs, self.size ** 2).argmax(dim=-1)
+            observation = torch.Tensor([
+                head_idx // self.size,
+                head_idx % self.size,
+                food_idx // self.size,
+                food_idx % self.size
+            ]).float()
+            return observation
         else:
             raise Exception
 
-    def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, List[dict]):
+    def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, dict):
         if actions.dtype not in (torch.short, torch.int, torch.long):
             raise TypeError('actions Tensor must be an integer type i.e. '
                             '{torch.ShortTensor, torch.IntTensor, torch.LongTensor}')
@@ -105,7 +118,7 @@ class SingleSnakeEnvironments(object):
 
         reward = torch.zeros((self.num_envs,)).float().to(self.device).requires_grad_(False)
         done = torch.zeros((self.num_envs,)).byte().to(self.device).requires_grad_(False)
-        info = [dict(), ] * self.num_envs
+        info = dict()
 
         t0 = time()
         snake_sizes = self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(self.num_envs, -1).max(dim=1)[0]
@@ -137,11 +150,12 @@ class SingleSnakeEnvironments(object):
 
         t0 = time()
         # Check for hitting self
-        hit_self = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > EPS
+        self_collision = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > EPS
+        info.update({'self_collision': self_collision})
 
-        done = torch.clamp(done + hit_self, 0, 1)
+        done = torch.clamp(done + self_collision, 0, 1)
         if self.verbose:
-            print(f'Self collision ({hit_self.sum().item()} envs): {time() - t0}s')
+            print(f'Self collision ({self_collision.sum().item()} envs): {time() - t0}s')
 
         ################
         # Apply update #
@@ -183,13 +197,14 @@ class SingleSnakeEnvironments(object):
         # Check for boundary, Done by performing a convolution with no padding
         # If the head is at the edge then it will be cut off and the sum of the head
         # channel will be 0
-        head_at_edge = F.conv2d(
+        edge_collision = F.conv2d(
             head(self.envs),
             NO_CHANGE_FILTER.to(self.device),
         ).view(self.num_envs, -1).sum(dim=-1) < EPS
-        done = torch.clamp(done + head_at_edge, 0, 1)
+        done = torch.clamp(done + edge_collision, 0, 1)
+        info.update({'edge_collision': edge_collision})
         if self.verbose:
-            print(f'Edge collision ({head_at_edge.sum().item()} envs): {time() - t0}s')
+            print(f'Edge collision ({edge_collision.sum().item()} envs): {time() - t0}s')
 
         # Apply rounding to stop numerical errors accumulating
         self.envs.round_()
