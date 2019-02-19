@@ -46,6 +46,9 @@ class TestSingleSnakeEnv(unittest.TestCase):
         env.reset(torch.Tensor([1]).to(DEFAULT_DEVICE))
         env_consistency(env.envs)
 
+    def test_loop_movement(self):
+        pass
+
     def test_basic_movement(self):
         env = SingleSnakeEnvironments(num_envs=1, size=size, manual_setup=True)
         env.envs = get_test_env(size, 'up').to(DEFAULT_DEVICE)
@@ -72,6 +75,10 @@ class TestSingleSnakeEnv(unittest.TestCase):
 
             self.assertTrue(torch.equal(head_position, expected_head_positions[i]))
 
+            if torch.any(done):
+                # The given actions shouldn't cause a death
+                assert False
+
         if visualise:
             plot_envs(env.envs)
             plt.show()
@@ -90,13 +97,20 @@ class TestSingleSnakeEnv(unittest.TestCase):
 
             observations, reward, done, info = env.step(a)
 
+            if torch.any(done):
+                # The given actions shouldn't cause a death
+                assert False
+
         final_size = body(env.envs).max()
         self.assertGreater(final_size, initial_size)
 
-        # Food is created agin after being eaten
+        # Food is created again after being eaten
         num_food = food(env.envs).sum()
         print(num_food, 1)
         self.assertEqual(num_food, 1)
+
+        # Check overall consistency
+        env_consistency(env.envs)
 
         if visualise:
             plot_envs(env.envs)
@@ -177,6 +191,10 @@ class TestSingleSnakeEnv(unittest.TestCase):
             ])
 
             self.assertTrue(torch.equal(head_position, expected_head_positions[i]))
+
+            if torch.any(done):
+                # The given actions shouldn't cause a death
+                assert False
 
         if visualise:
             plot_envs(env.envs)
