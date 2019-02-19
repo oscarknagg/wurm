@@ -27,10 +27,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--env')
 parser.add_argument('--observation', default='default', type=str)
 parser.add_argument('--coord-conv', default=True, type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--num-envs', default=1, type=int)
 args = parser.parse_args()
 
 
 SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
+SavedTransition = namedtuple('SavedTransition', ['state', 'action'])
 
 
 class A2C(nn.Module):
@@ -58,7 +60,7 @@ if args.env == 'cartpole':
     model = A2C(2)
 elif args.env == 'snake':
     size = 12
-    env = SingleSnakeEnvironments(num_envs=1, size=size, device='cpu', observation_mode=args.observation)
+    env = SingleSnakeEnvironments(num_envs=args.num_envs, size=size, device='cpu', observation_mode=args.observation)
     if args.observation == 'positions':
         model = A2C(4)
     else:
@@ -73,12 +75,11 @@ def select_action(model, state, action_store):
     probs, state_value = model(state)
     m = Categorical(probs)
     action = m.sample()
-    # model.saved_actions.append(SavedAction(m.log_prob(action), state_value))
     action_store.append(SavedAction(m.log_prob(action), state_value))
     if args.env == 'cartpole':
         return action.item()
     elif args.env == 'snake':
-        return torch.Tensor([action.item()]).long()
+        return action.clone().long()
     else:
         raise ValueError('Unrecognised environment')
 
@@ -95,7 +96,12 @@ def finish_episode(model, optimizer, saved_rewards, saved_actions):
         R = r + GAMMA * R
         rewards.insert(0, R)
 
-    rewards = torch.Tensor(rewards)
+    # print(rewards)
+    # rewards = torch.Tensor(rewards)
+    rewards = torch.stack(rewards)
+    # print(rewards.shape)
+    # print(torch.Tensor(rewards).shape)
+    # exit()
     rewards = (rewards - rewards.mean()) / (rewards.std() + eps)
     for (log_prob, value), r in zip(saved_actions, rewards):
         reward = r - value.item()
@@ -105,11 +111,10 @@ def finish_episode(model, optimizer, saved_rewards, saved_actions):
     optimizer.zero_grad()
     loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
     if torch.isnan(loss):
-        print('NAN')
         return [], []
 
     loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
 
     return [], []
@@ -122,36 +127,66 @@ stay_alive_reward = 0.01
 saved_rewards = []
 saved_actions = []
 
+from collections import deque
+# previous_transitions = deque(maxlen=2)
+
+
 running_reward = None
 running_length = None
 running_self_collisions = None
 running_edge_collisions = None
 for i_episode in count(1):
     episode_reward = []
+    previous_transitions = []
     state = env.reset()
     for t in range(250):  # Don't infinite loop while learning
         action = select_action(model, state, saved_actions)
+        previous_transitions.append(SavedTransition(state[0].copy(), action))
         state, reward, done, info = env.step(action)
 
         if RENDER:
             env.render()
 
         if args.env == 'snake':
+            try:
+                if not done:
+                    env_consistency(env.envs)
+            except RuntimeError:
+                print('INCONSISTENCY!')
+                print('PREVIOUS STATES')
+                for i, sa in enumerate(list(previous_transitions)):
+                    print(f'------ {i} ------')
+                    print(sa.state)
+                    print(sa.action)
+                    print()
+
+                print(f'------ {t + 1} ------')
+                print(state[0])
+                print('DONE = ', done)
+                exit()
+
             # Hacky reward shaping
-            # head_idx = env.envs[:, HEAD_CHANNEL, :, :].view(env.num_envs, env.size ** 2).argmax(dim=-1)
-            # food_idx = env.envs[:, FOOD_CHANNEL, :, :].view(env.num_envs, env.size ** 2).argmax(dim=-1)
-            # head_pos = torch.Tensor((head_idx // env.size, head_idx % env.size)).float()
-            # food_pos = torch.Tensor((food_idx // env.size, food_idx % env.size)).float()
-            # food_closeness_reward = - torch.norm(head_pos - food_pos) * 0.01
-            saved_rewards.append(reward + stay_alive_reward + done.float() * -10.)
+            head_idx = env.envs[:, HEAD_CHANNEL, :, :].view(env.num_envs, env.size ** 2).argmax(dim=-1)
+            food_idx = env.envs[:, FOOD_CHANNEL, :, :].view(env.num_envs, env.size ** 2).argmax(dim=-1)
+            head_pos = torch.Tensor((head_idx // env.size, head_idx % env.size)).float()
+            food_pos = torch.Tensor((food_idx // env.size, food_idx % env.size)).float()
+            food_closeness_reward = max(1 - torch.norm(head_pos - food_pos, p=1).item() * 0.1, 0)
+            # print(food_closeness_reward, head_pos, food_pos)
+
+            # saved_rewards.append(reward + stay_alive_reward + done.float() * -10.)
+            saved_rewards.append(reward + stay_alive_reward + done.float() * -0.1 + food_closeness_reward)
         else:
-            saved_rewards.append(reward)
+            saved_rewards.append(torch.Tensor([reward]))
 
         # Just intrinsic reward
         episode_reward.append(reward)
 
-        if done:
-            break
+        if torch.is_tensor(done):
+            if torch.all(done):
+                break
+        else:
+            if done:
+                break
 
     saved_rewards, saved_actions = finish_episode(model, optimizer, saved_rewards, saved_actions)
 
