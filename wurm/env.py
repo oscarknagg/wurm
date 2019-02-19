@@ -2,10 +2,14 @@ import torch
 import torch.nn.functional as F
 from typing import List
 from time import time
+from collections import namedtuple
 
 from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL, EPS
 from wurm.utils import food, head, body, determine_orientations, drop_duplicates
 from wurm._filters import *
+
+
+Spec = namedtuple('Spec', ['reward_threshold'])
 
 
 class SingleSnakeEnvironments(object):
@@ -37,14 +41,19 @@ class SingleSnakeEnvironments(object):
     The advantage of this representation is that the dynamics of multiple environments can be stepped in a parallel
     fashion using using just tensor operations allowing one to run 1000s of envs in parallel on a single machine.
     """
+
+    spec = Spec(float('inf'))
+
     def __init__(self,
                  num_envs: int,
                  size: int,
                  max_timesteps: int = None,
                  initial_snake_length: int = 3,
                  on_death: str = 'restart',
+                 observation_mode: str = 'one_channel',
                  device: str = DEFAULT_DEVICE,
-                 manual_setup: bool = False):
+                 manual_setup: bool = False,
+                 verbose: int = 0):
         """Initialise the environments
 
         Args:
@@ -57,7 +66,9 @@ class SingleSnakeEnvironments(object):
         self.max_timesteps = max_timesteps
         self.initial_snake_length = initial_snake_length
         self.on_death = on_death
+        self.observation_mode = observation_mode
         self.device = device
+        self.verbose = verbose
 
         self.envs = torch.zeros((num_envs, 3, size, size)).to(self.device).requires_grad_(False)
         self.t = 0
@@ -66,6 +77,23 @@ class SingleSnakeEnvironments(object):
             # Create environments
             self.envs = self._create_envs(self.num_envs)
             self.envs.requires_grad_(False)
+
+        self.done = torch.zeros((num_envs)).to(self.device).byte()
+
+    def _observe(self):
+        if self.observation_mode is None:
+            return self.envs
+        elif self.observation_mode == 'one_channel':
+            observation = (self.envs[:, BODY_CHANNEL, :, :] > EPS).float() * 0.5
+            observation += self.envs[:, HEAD_CHANNEL, :, :] * 0.5
+            observation += self.envs[:, FOOD_CHANNEL, :, :] * 1.5
+            observation[:, :1, :] = -1
+            observation[:, :, :1] = -1
+            observation[:, -1:, :] = -1
+            observation[:, :, -1:] = -1
+            return observation.unsqueeze(1)
+        else:
+            raise Exception
 
     def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, List[dict]):
         if actions.dtype not in (torch.short, torch.int, torch.long):
@@ -83,7 +111,8 @@ class SingleSnakeEnvironments(object):
         snake_sizes = self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(self.num_envs, -1).max(dim=1)[0]
 
         orientations = determine_orientations(self.envs)
-        print(f'\nOrientations: {time()-t0}s')
+        if self.verbose > 0:
+            print(f'\nOrientations: {time()-t0}s')
 
         t0 = time()
         # Check if any snakes are trying to move backwards and change
@@ -103,14 +132,16 @@ class SingleSnakeEnvironments(object):
 
         # Move head position by applying delta
         self.envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :].add_(head_deltas).round_()
-        print(f'Head movement: {time() - t0}s')
+        if self.verbose:
+            print(f'Head movement: {time() - t0}s')
 
         t0 = time()
         # Check for hitting self
         hit_self = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > EPS
 
         done = torch.clamp(done + hit_self, 0, 1)
-        print(f'Self collision ({hit_self.sum().item()} envs): {time() - t0}s')
+        if self.verbose:
+            print(f'Self collision ({hit_self.sum().item()} envs): {time() - t0}s')
 
         ################
         # Apply update #
@@ -126,7 +157,8 @@ class SingleSnakeEnvironments(object):
             body(self.envs).clamp(0, 1) * head_food_overlap[:, None, None, None].expand((self.num_envs, 1, self.size, self.size))
         # Decay the body sizes by 1, hence moving the body, apply ReLu to keep above 0
         self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :, :].sub_(1).relu_()
-        print(f'Body movement: {time()-t0}')
+        if self.verbose:
+            print(f'Body movement: {time()-t0}')
 
         t0 = time()
         # Remove food and give reward
@@ -134,7 +166,8 @@ class SingleSnakeEnvironments(object):
         food_removal = head(self.envs) * food(self.envs) * -1
         reward.sub_(food_removal.view(self.num_envs, -1).sum(dim=-1).float())
         self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
-        print(f'Food removal: {time() - t0}s')
+        if self.verbose:
+            print(f'Food removal: {time() - t0}s')
 
         # Add new food if necessary.
         if food_removal.sum() < 0:
@@ -143,7 +176,8 @@ class SingleSnakeEnvironments(object):
             add_food_envs = self.envs[food_addition_env_indices, :, :, :]
             food_addition = self._get_food_addition(add_food_envs)
             self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL+1, :, :] += food_addition
-            print(f'Food addition ({food_addition_env_indices.sum().item()} envs): {time() - t0}s')
+            if self.verbose:
+                print(f'Food addition ({food_addition_env_indices.sum().item()} envs): {time() - t0}s')
 
         t0 = time()
         # Check for boundary, Done by performing a convolution with no padding
@@ -154,12 +188,15 @@ class SingleSnakeEnvironments(object):
             NO_CHANGE_FILTER.to(self.device),
         ).view(self.num_envs, -1).sum(dim=-1) < EPS
         done = torch.clamp(done + head_at_edge, 0, 1)
-        print(f'Edge collision ({head_at_edge.sum().item()} envs): {time() - t0}s')
+        if self.verbose:
+            print(f'Edge collision ({head_at_edge.sum().item()} envs): {time() - t0}s')
 
         # Apply rounding to stop numerical errors accumulating
         self.envs.round_()
 
-        return self.envs, reward, done, info
+        self.done = done
+
+        return self._observe().cpu().numpy(), reward, done, info
 
     def _select_from_available_locations(self, locs: torch.Tensor) -> torch.Tensor:
         locations = torch.nonzero(locs)
@@ -182,24 +219,30 @@ class SingleSnakeEnvironments(object):
 
         return food_addition
 
-    def reset(self, done: torch.Tensor):
+    def reset(self, done: torch.Tensor = None):
         """Resets environments in which the snake has died
 
         Args:
             done: A 1D Tensor of length self.num_envs. A value of 1 means the corresponding environment needs to be
                 reset
         """
+        if done is None:
+            done = self.done
+
         t0 = time()
 
         if done.sum() > 0:
             new_envs = self._create_envs(int(done.sum().item()))
             self.envs[done.byte(), :, :, :] = new_envs
 
-        print(f'Resetting {done.sum().item()} envs: {time() - t0}s')
+        if self.verbose:
+            print(f'Resetting {done.sum().item()} envs: {time() - t0}s')
+
+        return self._observe().cpu().numpy()
 
     def _create_envs(self, num_envs: int):
         """Vectorised environment creation. Creates self.num_envs environments simultaneously."""
-        if self.size <= 10:
+        if self.size <= 8:
             raise NotImplementedError('Cannot make an env this small without making this code more clever')
 
         if self.initial_snake_length != 3:
