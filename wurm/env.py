@@ -148,29 +148,33 @@ class SingleSnakeEnvironments(object):
         if self.verbose:
             print(f'Head movement: {time() - t0}s')
 
-        t0 = time()
-        # Check for hitting self
-        self_collision = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > EPS
-        info.update({'self_collision': self_collision})
-
-        done = torch.clamp(done + self_collision, 0, 1)
-        if self.verbose:
-            print(f'Self collision ({self_collision.sum().item()} envs): {time() - t0}s')
-
         ################
         # Apply update #
         ################
 
         t0 = time()
-        # Create a new head position in the body channel
-        self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :, :] += \
-            head(self.envs) * (snake_sizes[:, None, None, None].expand((self.num_envs, 1, self.size, self.size)) + 1)
-        # Add +1 to all body locations if the head overlaps with a  food location
         head_food_overlap = (head(self.envs) * food(self.envs)).view(self.num_envs, -1).sum(dim=-1)
-        self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :, :] += \
-            body(self.envs).clamp(0, 1) * head_food_overlap[:, None, None, None].expand((self.num_envs, 1, self.size, self.size))
+
         # Decay the body sizes by 1, hence moving the body, apply ReLu to keep above 0
-        self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :, :].sub_(1).relu_()
+        # Only do this for environments which haven't just eaten food
+        body_decay_env_indices = ~head_food_overlap.byte()
+        self.envs[body_decay_env_indices, BODY_CHANNEL:BODY_CHANNEL + 1, :, :] -= 1
+        self.envs[body_decay_env_indices, BODY_CHANNEL:BODY_CHANNEL + 1, :, :] = \
+            self.envs[body_decay_env_indices, BODY_CHANNEL:BODY_CHANNEL + 1, :, :].relu()
+
+        # Check for hitting self
+        self_collision = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > EPS
+        info.update({'self_collision': self_collision})
+        done = torch.clamp(done + self_collision, 0, 1)
+
+        # Create a new head position in the body channel
+        # Make this head +1 greater if the snake has just eaten food
+        self.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :, :] += \
+            head(self.envs) * (
+                snake_sizes[:, None, None, None].expand((self.num_envs, 1, self.size, self.size)) +
+                head_food_overlap[:, None, None, None].expand((self.num_envs, 1, self.size, self.size))
+            )
+
         if self.verbose:
             print(f'Body movement: {time()-t0}')
 
