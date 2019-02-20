@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
 
-from wurm.env import SingleSnakeEnvironments
+from wurm.envs import SingleSnakeEnvironments
 from wurm.vis import plot_envs
 from wurm.utils import env_consistency
 from wurm.agents import A2C as Snake2C
@@ -173,8 +173,8 @@ for i_episode in count(1):
             food_closeness_reward = max(1 - torch.norm(head_pos - food_pos, p=1).item() * 0.1, 0)
             # print(food_closeness_reward, head_pos, food_pos)
 
-            # saved_rewards.append(reward + stay_alive_reward + done.float() * -10.)
-            saved_rewards.append(reward + stay_alive_reward + done.float() * -0.1 + food_closeness_reward)
+            saved_rewards.append(reward)
+            # saved_rewards.append(reward + stay_alive_reward + done.float() * -0.1 + food_closeness_reward)
         else:
             saved_rewards.append(torch.Tensor([reward]))
 

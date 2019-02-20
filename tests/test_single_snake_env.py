@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from time import time
 
 from wurm.utils import get_test_env, head, body, food, env_consistency
-from wurm.env import SingleSnakeEnvironments
+from wurm.envs import SingleSnakeEnvironments
 from wurm.vis import plot_envs
 from config import DEFAULT_DEVICE
 
