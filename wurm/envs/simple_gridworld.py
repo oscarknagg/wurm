@@ -90,7 +90,7 @@ class SimpleGridworld(object):
                 head_idx % self.size,
                 food_idx // self.size,
                 food_idx % self.size
-            ]).float()
+            ]).float().unsqueeze(0)
             return observation
         else:
             raise Exception
@@ -126,8 +126,6 @@ class SimpleGridworld(object):
         ################
 
         t0 = time()
-        head_food_overlap = (head(self.envs) * food(self.envs)).view(self.num_envs, -1).sum(dim=-1)
-
         # Check for hitting self
         self_collision = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > EPS
         info.update({'self_collision': self_collision})

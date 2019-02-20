@@ -51,3 +51,20 @@ class TestSimpleGridworld(unittest.TestCase):
 
         # Check for food respawn
         self.assertEqual(env.envs[0, FOOD_CHANNEL].sum().item(), 1)
+
+    def test_edge_collision(self):
+        env = SimpleGridworld(num_envs=1, size=size, start_location=(3, 3), manual_setup=True)
+        env.envs[0, FOOD_CHANNEL, 1, 1] = 1
+        env.envs[0, HEAD_CHANNEL, 3, 3] = 1
+
+        actions = torch.Tensor([0, 0, 0, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE)
+
+        for i, a in enumerate(actions):
+            observations, reward, done, info = env.step(a)
+
+            if i == 2:
+                self.assertTrue(done.item())
+                break
+            else:
+                self.assertFalse(done.item())
+

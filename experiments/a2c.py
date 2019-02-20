@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
 
-from wurm.envs import SingleSnakeEnvironments
+from wurm.envs import SingleSnakeEnvironments, SimpleGridworld
 from wurm.vis import plot_envs
 from wurm.utils import env_consistency
 from wurm.agents import A2C as Snake2C
@@ -66,6 +66,13 @@ elif args.env == 'snake':
     else:
         model = Snake2C(
             in_channels=1 if args.observation == 'one_channel' else 3, size=size, coord_conv=args.coord_conv).to('cpu')
+if args.env == 'gridworld':
+    size = 5
+    env = SimpleGridworld(num_envs=args.num_envs, size=size, start_location=(3, 3), observation_mode=args.observation)
+    if args.observation == 'positions':
+        model = A2C(4)
+    else:
+        model = Snake2C(in_channels=2, size=size, coord_conv=args.coord_conv).to('cpu')
 else:
     raise ValueError('Unrecognised environment')
 
@@ -78,7 +85,7 @@ def select_action(model, state, action_store):
     action_store.append(SavedAction(m.log_prob(action), state_value))
     if args.env == 'cartpole':
         return action.item()
-    elif args.env == 'snake':
+    elif args.env == 'snake' or args.env == 'gridworld':
         return action.clone().long()
     else:
         raise ValueError('Unrecognised environment')
@@ -96,12 +103,7 @@ def finish_episode(model, optimizer, saved_rewards, saved_actions):
         R = r + GAMMA * R
         rewards.insert(0, R)
 
-    # print(rewards)
-    # rewards = torch.Tensor(rewards)
     rewards = torch.stack(rewards)
-    # print(rewards.shape)
-    # print(torch.Tensor(rewards).shape)
-    # exit()
     rewards = (rewards - rewards.mean()) / (rewards.std() + eps)
     for (log_prob, value), r in zip(saved_actions, rewards):
         reward = r - value.item()
@@ -205,6 +207,8 @@ for i_episode in count(1):
         if args.env == 'snake':
             log_string += '\tEdge Collision: {:.1f}%'.format(running_edge_collisions * 100)
             log_string += '\tSelf Collision: {:.1f}%'.format(running_self_collisions * 100)
+            log_string += '\tReward rate: {:.3f}'.format(running_reward / running_length)
+        if args.env == 'gridworld':
             log_string += '\tReward rate: {:.3f}'.format(running_reward / running_length)
         print(log_string)
     if running_reward > env.spec.reward_threshold:
