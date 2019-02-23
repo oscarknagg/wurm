@@ -171,7 +171,7 @@ class SimpleGridworld(object):
 
         self.done = done
 
-        return self._observe().cpu().numpy(), reward, done, info
+        return self._observe(), reward, done, info
 
     def _select_from_available_locations(self, locs: torch.Tensor) -> torch.Tensor:
         locations = torch.nonzero(locs)
@@ -213,7 +213,7 @@ class SimpleGridworld(object):
         if self.verbose:
             print(f'Resetting {done.sum().item()} envs: {time() - t0}s')
 
-        return self._observe().cpu().numpy()
+        return self._observe()
 
     def _create_envs(self, num_envs: int):
         """Vectorised environment creation. Creates self.num_envs environments simultaneously."""
