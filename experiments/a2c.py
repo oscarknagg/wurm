@@ -11,16 +11,15 @@ import torch.optim as optim
 from torch.distributions import Categorical
 
 from wurm.envs import SingleSnakeEnvironments, SimpleGridworld
-from wurm.vis import plot_envs
-from wurm.utils import env_consistency
 from wurm.agents import A2C as Snake2C
-from config import HEAD_CHANNEL, FOOD_CHANNEL
 
 
 SEED = 543
 GAMMA = 0.99
 RENDER = False
-LOG_INTERVAL = 10
+LOG_INTERVAL = 100
+UPDATE_STEPS = 10
+MAX_GRAD_NORM = 0.5
 
 
 parser = argparse.ArgumentParser()
@@ -28,11 +27,13 @@ parser.add_argument('--env')
 parser.add_argument('--observation', default='default', type=str)
 parser.add_argument('--coord-conv', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--num-envs', default=1, type=int)
+parser.add_argument('--verbose', default=0, type=int)
+parser.add_argument('--device', default='cpu', type=str)
 args = parser.parse_args()
 
 
 SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
-SavedTransition = namedtuple('SavedTransition', ['state', 'action'])
+Transition = namedtuple('Transition', ['action', 'log_prob', 'value', 'reward', 'done'])
 
 
 class A2C(nn.Module):
@@ -53,166 +54,139 @@ class A2C(nn.Module):
         return F.softmax(action_scores, dim=-1), state_values
 
 
-if args.env == 'cartpole':
-    env = gym.make('CartPole-v0')
-    env.seed(SEED)
-    torch.manual_seed(SEED)
-    model = A2C(2)
-elif args.env == 'snake':
-    size = 12
-    env = SingleSnakeEnvironments(num_envs=args.num_envs, size=size, device='cpu', observation_mode=args.observation)
-    if args.observation == 'positions':
-        model = A2C(4)
-    else:
-        model = Snake2C(
-            in_channels=1 if args.observation == 'one_channel' else 3, size=size, coord_conv=args.coord_conv).to('cpu')
 if args.env == 'gridworld':
     size = 5
-    env = SimpleGridworld(num_envs=args.num_envs, size=size, start_location=(3, 3), observation_mode=args.observation)
+    env = SimpleGridworld(num_envs=args.num_envs, size=size, start_location=(2, 2), observation_mode=args.observation, device=args.device)
     if args.observation == 'positions':
-        model = A2C(4)
+        model = A2C(4).to(args.device)
     else:
-        model = Snake2C(in_channels=2, size=size, coord_conv=args.coord_conv).to('cpu')
+        model = Snake2C(in_channels=2, size=size, coord_conv=args.coord_conv).to(args.device)
+elif args.env == 'snake':
+    size = 12
+    env = SingleSnakeEnvironments(num_envs=args.num_envs, size=size, device=args.device, observation_mode=args.observation)
+    if args.observation == 'positions':
+        model = A2C(4).to(args.device)
+    else:
+        model = Snake2C(
+            in_channels=1 if args.observation == 'one_channel' else 3, size=size, coord_conv=args.coord_conv).to(args.device)
 else:
     raise ValueError('Unrecognised environment')
 
 
-def select_action(model, state, action_store):
-    state = torch.from_numpy(state).float()
-    probs, state_value = model(state)
-    m = Categorical(probs)
-    action = m.sample()
-    action_store.append(SavedAction(m.log_prob(action), state_value))
-    if args.env == 'cartpole':
-        return action.item()
-    elif args.env == 'snake' or args.env == 'gridworld':
-        return action.clone().long()
-    else:
-        raise ValueError('Unrecognised environment')
-
-
-def finish_episode(model, optimizer, saved_rewards, saved_actions):
-    if len(saved_rewards) == 0 or len(saved_actions) == 0:
-        return [], []
-
-    R = 0
-    policy_losses = []
-    value_losses = []
-    rewards = []
-    for r in saved_rewards[::-1]:
-        R = r + GAMMA * R
-        rewards.insert(0, R)
-
-    rewards = torch.stack(rewards)
-    rewards = (rewards - rewards.mean()) / (rewards.std() + eps)
-    for (log_prob, value), r in zip(saved_actions, rewards):
-        reward = r - value.item()
-        policy_losses.append(-log_prob * reward)
-        value_losses.append(F.smooth_l1_loss(value, torch.Tensor([r])))
-
-    optimizer.zero_grad()
-    loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
-    if torch.isnan(loss):
-        return [], []
-
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    optimizer.step()
-
-    return [], []
-
-
-optimizer = optim.Adam(model.parameters(), lr=3e-2 if args.env == 'cartpole' else 1e-3)
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
 eps = np.finfo(np.float32).eps.item()
-stay_alive_reward = 0.01
-
-saved_rewards = []
-saved_actions = []
-
-from collections import deque
-# previous_transitions = deque(maxlen=2)
-
 
 running_reward = None
 running_length = None
 running_self_collisions = None
 running_edge_collisions = None
-for i_episode in count(1):
-    episode_reward = []
-    previous_transitions = []
-    state = env.reset()
-    for t in range(250):  # Don't infinite loop while learning
-        action = select_action(model, state, saved_actions)
-        previous_transitions.append(SavedTransition(state[0].copy(), action))
-        state, reward, done, info = env.step(action)
 
-        if RENDER:
-            env.render()
 
-        if args.env == 'snake':
-            try:
-                if not done:
-                    env_consistency(env.envs)
-            except RuntimeError:
-                print('INCONSISTENCY!')
-                print('PREVIOUS STATES')
-                for i, sa in enumerate(list(previous_transitions)):
-                    print(f'------ {i} ------')
-                    print(sa.state)
-                    print(sa.action)
-                    print()
+saved_rewards = []
+saved_actions = []
+saved_transitions = []
 
-                print(f'------ {t + 1} ------')
-                print(state[0])
-                print('DONE = ', done)
-                exit()
+episode_length = 0
+num_episode = 0
+num_steps = 0
 
-            # Hacky reward shaping
-            head_idx = env.envs[:, HEAD_CHANNEL, :, :].view(env.num_envs, env.size ** 2).argmax(dim=-1)
-            food_idx = env.envs[:, FOOD_CHANNEL, :, :].view(env.num_envs, env.size ** 2).argmax(dim=-1)
-            head_pos = torch.Tensor((head_idx // env.size, head_idx % env.size)).float()
-            food_pos = torch.Tensor((food_idx // env.size, food_idx % env.size)).float()
-            food_closeness_reward = max(1 - torch.norm(head_pos - food_pos, p=1).item() * 0.1, 0)
-            # print(food_closeness_reward, head_pos, food_pos)
+rollouts = []
 
-            saved_rewards.append(reward)
-            # saved_rewards.append(reward + stay_alive_reward + done.float() * -0.1 + food_closeness_reward)
-        else:
-            saved_rewards.append(torch.Tensor([reward]))
+state = env.reset()
+for i_step in count(1):
+    probs, state_value = model(state)
+    m = Categorical(probs)
+    action = m.sample().clone().long()
 
-        # Just intrinsic reward
-        episode_reward.append(reward)
+    saved_actions.append(SavedAction(m.log_prob(action)[0], state_value[0]))
 
-        if torch.is_tensor(done):
-            if torch.all(done):
-                break
-        else:
-            if done:
-                break
+    state, reward, done, info = env.step(action)
 
-    saved_rewards, saved_actions = finish_episode(model, optimizer, saved_rewards, saved_actions)
+    saved_rewards.append(reward[0])
+    saved_transitions.append(Transition(action, m.log_prob(action), state_value, reward, done))
 
-    episode_reward = sum(episode_reward) if args.env == 'cartpole' else torch.stack(episode_reward).sum().item()
-    running_reward = episode_reward if running_reward is None else running_reward * 0.95 + episode_reward * 0.05
+    env.reset(done)
 
-    running_length = t if running_length is None else running_length * 0.95 + t * 0.05
+    if done[0]:
+        running_length = episode_length if running_length is None else running_length * 0.975 + episode_length * 0.025
+        episode_length = 0
+        num_episode += 1
+    else:
+        episode_length += 1
 
+    if i_step % UPDATE_STEPS == 0:
+        if args.verbose > 1:
+            print('========')
+
+        with torch.no_grad():
+            _, bootstrap_value = model(state)
+
+        # R = bootstrap_value * (~done).float()
+        R = 0
+        returns = []
+        for t in saved_transitions[::-1]:
+            R = t.reward + GAMMA * R * (~t.done).float()
+            returns.insert(0, R)
+
+        returns = torch.stack(returns)
+
+        # Normalise returns
+        unnormalised_returns = returns.clone()
+        # returns = (returns - returns.mean()) / (returns.std() + eps)
+        # print('MINE:')
+        # print(returns[:, 0])
+        done = torch.stack([transition.done for transition in saved_transitions])
+        rewards = torch.stack([transition.reward for transition in saved_transitions])
+
+        policy_losses, value_losses = [], []
+        for t, return_ in zip(saved_transitions, returns):
+            advantage = return_ - t.value.detach()
+            if args.verbose > 1:
+                print(return_.item(), t.value.item(), advantage.item())
+            policy_losses.append(-t.log_prob * advantage)
+            value_losses.append(F.smooth_l1_loss(t.value, return_))
+
+        value_losses, policy_losses = torch.stack(value_losses), torch.stack(policy_losses)
+        if args.verbose > 1:
+            print('          return, done  , reward, v_loss, p_loss')
+            print(torch.cat([
+                unnormalised_returns.squeeze(-1),
+                done.float().squeeze(-1),
+                rewards.squeeze(-1),
+                value_losses.unsqueeze(-1),
+                policy_losses[:, 0]
+            ], dim=-1))
+
+        values = torch.stack([transition.value for transition in saved_transitions])
+        value_loss = F.smooth_l1_loss(values, returns).mean()
+        advantages = returns - values
+        log_probs = torch.stack([transition.log_prob for transition in saved_transitions]).unsqueeze(-1)
+        policy_loss = - (advantages.detach() * log_probs).mean()
+
+        optimizer.zero_grad()
+        loss = value_loss + policy_loss
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+        optimizer.step()
+
+        saved_transitions = []
+
+    running_reward = reward.mean().item() if running_reward is None else running_reward * 0.975 + reward.mean().item() * 0.025
     if args.env == 'snake':
-        running_self_collisions = info['self_collision'].item() if running_self_collisions is None else running_self_collisions * 0.95 + info['self_collision'].item() * 0.05
-        running_edge_collisions = info['edge_collision'].item() if running_edge_collisions is None else running_edge_collisions * 0.95 + info['edge_collision'].item() * 0.05
+        running_self_collisions = info[
+            'self_collision'].float().mean().item() if running_self_collisions is None else running_self_collisions * 0.95 + info[
+            'self_collision'].float().mean().item() * 0.05
+        running_edge_collisions = info[
+            'edge_collision'].float().mean().item() if running_edge_collisions is None else running_edge_collisions * 0.95 + info[
+            'edge_collision'].float().mean().item() * 0.05
 
-    if i_episode % LOG_INTERVAL == 0:
-        log_string = 'Episode {}\tAverage reward: {:.2f}\tEpisode length: {:.2f}'.format(
-            i_episode, running_reward, running_length)
+    if i_step % LOG_INTERVAL == 0:
+        log_string = 'Steps {}\t'.format(i_step)
+        log_string += 'Episode length: {:.3f}\t'.format(running_length)
+        log_string += 'Episode reward: {:.3f}\t'.format(running_reward)
+
         if args.env == 'snake':
             log_string += '\tEdge Collision: {:.1f}%'.format(running_edge_collisions * 100)
             log_string += '\tSelf Collision: {:.1f}%'.format(running_self_collisions * 100)
             log_string += '\tReward rate: {:.3f}'.format(running_reward / running_length)
-        if args.env == 'gridworld':
-            log_string += '\tReward rate: {:.3f}'.format(running_reward / running_length)
         print(log_string)
-    if running_reward > env.spec.reward_threshold:
-        print("Solved! Running reward is now {} and "
-              "the last episode runs to {} time steps!".format(running_reward, t))
-        break
-

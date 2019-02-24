@@ -216,7 +216,7 @@ class SingleSnakeEnvironments(object):
 
         self.done = done
 
-        return self._observe().cpu().numpy(), reward, done, info
+        return self._observe(), reward.unsqueeze(-1), done.unsqueeze(-1), info
 
     def _select_from_available_locations(self, locs: torch.Tensor) -> torch.Tensor:
         locations = torch.nonzero(locs)
@@ -249,8 +249,9 @@ class SingleSnakeEnvironments(object):
         if done is None:
             done = self.done
 
-        t0 = time()
+        done = done.view((done.shape[0]))
 
+        t0 = time()
         if done.sum() > 0:
             new_envs = self._create_envs(int(done.sum().item()))
             self.envs[done.byte(), :, :, :] = new_envs
@@ -258,7 +259,7 @@ class SingleSnakeEnvironments(object):
         if self.verbose:
             print(f'Resetting {done.sum().item()} envs: {time() - t0}s')
 
-        return self._observe().cpu().numpy()
+        return self._observe()
 
     def _create_envs(self, num_envs: int):
         """Vectorised environment creation. Creates self.num_envs environments simultaneously."""

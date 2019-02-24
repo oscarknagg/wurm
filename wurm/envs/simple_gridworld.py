@@ -171,7 +171,7 @@ class SimpleGridworld(object):
 
         self.done = done
 
-        return self._observe(), reward, done, info
+        return self._observe(), reward.unsqueeze(-1), done.unsqueeze(-1), info
 
     def _select_from_available_locations(self, locs: torch.Tensor) -> torch.Tensor:
         locations = torch.nonzero(locs)
@@ -204,8 +204,9 @@ class SimpleGridworld(object):
         if done is None:
             done = self.done
 
-        t0 = time()
+        done = done.view((done.shape[0]))
 
+        t0 = time()
         if done.sum() > 0:
             new_envs = self._create_envs(int(done.sum().item()))
             self.envs[done.byte(), :, :, :] = new_envs
