@@ -83,7 +83,7 @@ class SingleSnakeEnvironments(object):
 
     def _observe(self):
         if self.observation_mode == 'default':
-            return self.envs
+            return self.envs.clone()
         elif self.observation_mode == 'one_channel':
             observation = (self.envs[:, BODY_CHANNEL, :, :] > EPS).float() * 0.5
             observation += self.envs[:, HEAD_CHANNEL, :, :] * 0.5
@@ -99,12 +99,13 @@ class SingleSnakeEnvironments(object):
             observation += self.envs[:, FOOD_CHANNEL, :, :] * 1.5
             head_idx = self.envs[:, HEAD_CHANNEL, :, :].view(self.num_envs, self.size ** 2).argmax(dim=-1)
             food_idx = self.envs[:, FOOD_CHANNEL, :, :].view(self.num_envs, self.size ** 2).argmax(dim=-1)
-            observation = torch.Tensor([
-                head_idx // self.size,
-                head_idx % self.size,
-                food_idx // self.size,
-                food_idx % self.size
-            ]).float()
+            size = torch.Tensor([self.size, ]*self.num_envs).long().to(self.device)
+            observation = torch.stack([
+                head_idx // size,
+                head_idx % size,
+                food_idx // size,
+                food_idx % size
+            ]).float().t()
             return observation
         else:
             raise Exception
