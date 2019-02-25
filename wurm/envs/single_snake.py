@@ -4,7 +4,7 @@ import torch
 from torch.nn import functional as F
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
-from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES, FULL_FILTER
+from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
 from wurm.utils import determine_orientations, head, food, body, drop_duplicates
 
 
@@ -83,11 +83,18 @@ class SingleSnakeEnvironments(object):
 
     def _observe(self):
         if self.observation_mode == 'default':
-            return self.envs.clone()
+            observation = self.envs.clone()
+            # Add in -1 values to indicate edge of map
+            observation[:, :, :1, :] = -1
+            observation[:, :, :, :1] = -1
+            observation[:, :, -1:, :] = -1
+            observation[:, :, :, -1:] = -1
+            return observation
         elif self.observation_mode == 'one_channel':
             observation = (self.envs[:, BODY_CHANNEL, :, :] > EPS).float() * 0.5
             observation += self.envs[:, HEAD_CHANNEL, :, :] * 0.5
             observation += self.envs[:, FOOD_CHANNEL, :, :] * 1.5
+            # Add in -1 values to indicate edge of map
             observation[:, :1, :] = -1
             observation[:, :, :1] = -1
             observation[:, -1:, :] = -1
@@ -107,12 +114,32 @@ class SingleSnakeEnvironments(object):
                 food_idx % size
             ]).float().t()
             return observation
-        elif self.observation_mode == 'partial':
-            filter = torch.ones((1, 1, 3, 3)).to(self.device)
+        elif self.observation_mode.startswith('partial_'):
+            observation_size = int(self.observation_mode.split('_')[-1])
+            observation_width = 2 * observation_size + 1
+
+            # Pad envs so we ge tthe correct size observation even when the head of the snake
+            # is close to the edge of the environment
+            padding = [observation_size, observation_size, ] * 2
+            padded_envs = F.pad(self.envs.clone(), padding)
+
+            filter = torch.ones((1, 1, observation_width, observation_width)).to(self.device)
             head_area_indices = torch.nn.functional.conv2d(
-                self.envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1], filter, padding=1
-            )
-            return self.envs[head_area_indices.expand_as(self.envs).byte()].view((self.num_envs, 27)).clone()
+                padded_envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1].clone(), filter, padding=observation_size
+            ).round()
+
+            # Add in -1 values to indicate edge of map
+            padded_envs[:, :, :observation_size, :] = -1
+            padded_envs[:, :, :, :observation_size] = -1
+            padded_envs[:, :, -observation_size:, :] = -1
+            padded_envs[:, :, :, -observation_size:] = -1
+
+            observations = padded_envs[
+                head_area_indices.expand_as(padded_envs).byte()
+            ]
+            observations = observations.view((self.num_envs, 3 * (observation_width ** 2))).clone()
+
+            return observations
         else:
             raise Exception
 

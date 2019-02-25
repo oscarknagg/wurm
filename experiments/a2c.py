@@ -1,8 +1,8 @@
-import gym
 import numpy as np
 from itertools import count
 from collections import namedtuple
 import argparse
+from time import time
 
 import torch
 import torch.nn as nn
@@ -32,7 +32,7 @@ parser.add_argument('--num-envs', default=1, type=int)
 parser.add_argument('--size', default=9, type=int)
 parser.add_argument('--update-steps', default=20, type=int)
 parser.add_argument('--verbose', default=0, type=int)
-parser.add_argument('--device', default='cpu', type=str)
+parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--entropy', default=0.0, type=float)
 args = parser.parse_args()
 argstring = '__'.join([f'{k}={v}' for k, v in args.__dict__.items()])
@@ -72,8 +72,10 @@ elif args.env == 'snake':
     env = SingleSnakeEnvironments(num_envs=args.num_envs, size=size, device=args.device, observation_mode=args.observation)
     if args.observation == 'positions':
         model = A2C(4).to(args.device)
-    if args.observation == 'partial':
-        model = A2C(4, num_inputs=27).to(args.device)
+    if args.observation.startswith('partial_'):
+        observation_size = int(args.observation.split('_')[-1])
+        observation_width = 2 * observation_size + 1
+        model = A2C(4, num_inputs=3 * (observation_width ** 2)).to(args.device)
     else:
         model = Snake2C(
             in_channels=1 if args.observation == 'one_channel' else 3, size=size, coord_conv=args.coord_conv).to(args.device)
@@ -97,6 +99,7 @@ num_episodes = 0
 num_steps = 0
 logger = CSVLogger(filename=f'{PATH}/logs/{argstring}.csv')
 
+t0 = time()
 state = env.reset()
 for i_step in count(1):
     probs, state_value = model(state)
@@ -118,6 +121,10 @@ for i_step in count(1):
         food_closeness_reward = torch.clamp(0.1 - torch.norm(head_pos - food_pos, p=1, dim=-1) * 0.01, 0, 0.1)
 
     saved_transitions.append(Transition(action, m.log_prob(action), state_value, reward, done, entropy))
+
+    # snake_sizes = env.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(env.num_envs, -1).max(dim=1)[0]
+    # if done[0] and snake_sizes[0] > 4:
+    #     print(env.envs[0])
 
     env.reset(done)
 
@@ -168,11 +175,14 @@ for i_step in count(1):
             'edge_collision'].float().mean().item() * 0.025
 
     if i_step % LOG_INTERVAL == 0:
-        log_string = 'Steps {:.2f}e6\t'.format(num_steps/1e6)
+        t = time() - t0
+        log_string = '[{:02d}:{:02d}]\t'.format(int((t // 60) % 60), int(t % 60))
+        log_string += 'Steps {:.2f}e6\t'.format(num_steps/1e6)
         log_string += 'Reward rate: {:.3e}\t'.format(running_reward_rate)
         log_string += 'Entropy: {:.3e}\t'.format(running_entropy)
 
         logs = {
+            't': t,
             'steps': num_steps,
             'episodes': num_episodes,
             'reward_rate': running_reward_rate,

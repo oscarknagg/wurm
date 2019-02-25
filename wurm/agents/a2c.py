@@ -6,7 +6,7 @@ from wurm.modules import CoordConv2D
 
 
 class A2C(nn.Module):
-    def __init__(self, in_channels: int, size: int, coord_conv: bool = True):
+    def __init__(self, in_channels: int, size: int, coord_conv: bool = True, channels: int = 16):
         """
         Advantage actor-critic (synchronous)
 
@@ -17,12 +17,11 @@ class A2C(nn.Module):
         """
         super(A2C, self).__init__()
         if coord_conv:
-            self.conv1 = CoordConv2D(in_channels, 16, kernel_size=3, padding=1)
+            self.conv1 = CoordConv2D(in_channels, channels, kernel_size=3, padding=1)
         else:
-            self.conv1 = nn.Conv2d(in_channels, 16, 3, padding=1)
+            self.conv1 = nn.Conv2d(in_channels, channels, 3, padding=1)
 
-
-        self.linear = nn.Linear(16 * size * size, 64)
+        self.linear = nn.Linear(channels * size * size, 64)
         self.value_head = nn.Linear(64, 1)
         self.policy_head = nn.Linear(64, 4)
 

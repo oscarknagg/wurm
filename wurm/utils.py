@@ -110,6 +110,8 @@ def get_test_env(size: int, orientation: str = 'up') -> torch.Tensor:
 def env_consistency(envs: torch.Tensor):
     """Runs multiple checks for environment consistency and throws an exception if any fail"""
     n = envs.shape[0]
+    if n == 0:
+        return
 
     one_head_per_snake = torch.all(head(envs).view(n, -1).sum(dim=-1) == 1)
     if not one_head_per_snake:
