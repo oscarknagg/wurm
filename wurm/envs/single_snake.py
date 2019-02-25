@@ -4,7 +4,7 @@ import torch
 from torch.nn import functional as F
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
-from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
+from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES, FULL_FILTER
 from wurm.utils import determine_orientations, head, food, body, drop_duplicates
 
 
@@ -107,6 +107,12 @@ class SingleSnakeEnvironments(object):
                 food_idx % size
             ]).float().t()
             return observation
+        elif self.observation_mode == 'partial':
+            filter = torch.ones((1, 1, 3, 3)).to(self.device)
+            head_area_indices = torch.nn.functional.conv2d(
+                self.envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1], filter, padding=1
+            )
+            return self.envs[head_area_indices.expand_as(self.envs).byte()].view((self.num_envs, 27)).clone()
         else:
             raise Exception
 

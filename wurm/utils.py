@@ -1,5 +1,10 @@
 import torch
 import torch.nn.functional as F
+from collections import Iterable, OrderedDict
+import numpy as np
+import csv
+import os
+import io
 
 from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL
 from wurm._filters import ORIENTATION_FILTERS
@@ -188,3 +193,70 @@ def drop_duplicates(tensor: torch.Tensor, column: int, random: bool = True):
     unique = tensor[indices.long()]
 
     return unique
+
+
+class CSVLogger(object):
+    """Stream results to a csv file.
+
+    Supports all values that can be represented as a string,
+    including 1D iterables such as np.ndarray.
+
+    Args:
+        filename: filename of the csv file, e.g. 'run/log.csv'.
+        separator: string used to separate elements in the csv file.
+        append: True: append if file exists (useful for continuing training). False: overwrite existing file.
+        """
+
+    def __init__(self, filename: str, separator: str = ',', append: bool = False):
+        self.sep = separator
+        self.filename = filename
+        self.append = append
+        self.writer = None
+        self.keys = None
+        self.append_header = True
+        self.file_flags = ''
+        self._open_args = {'newline': '\n'}
+
+        if self.append:
+            if os.path.exists(self.filename):
+                with open(self.filename, 'r' + self.file_flags) as f:
+                    self.append_header = not bool(len(f.readline()))
+            mode = 'a'
+        else:
+            mode = 'w'
+
+        self.csv_file = io.open(self.filename,
+                                mode + self.file_flags,
+                                **self._open_args)
+
+    def write(self, logs: dict):
+        def handle_value(k):
+            is_zero_dim_tensor = isinstance(k, torch.Tensor) and k.ndimension() == 0
+            is_zero_dim_ndarray = isinstance(k, np.ndarray) and k.ndim == 0
+            if isinstance(k, str):
+                return k
+            elif isinstance(k, Iterable) and not is_zero_dim_ndarray and not is_zero_dim_tensor:
+                return '"[%s]"' % (', '.join(map(str, k)))
+            elif is_zero_dim_tensor:
+                return k.item()
+            else:
+                return k
+
+        if self.keys is None:
+            self.keys = sorted(logs.keys())
+
+        if not self.writer:
+            class CustomDialect(csv.excel):
+                delimiter = self.sep
+
+            fieldnames = self.keys
+            self.writer = csv.DictWriter(self.csv_file,
+                                         fieldnames=fieldnames,
+                                         dialect=CustomDialect)
+            if self.append_header:
+                self.writer.writeheader()
+
+        row_dict = OrderedDict()
+        row_dict.update((key, handle_value(logs[key])) for key in self.keys)
+        self.writer.writerow(row_dict)
+        self.csv_file.flush()
