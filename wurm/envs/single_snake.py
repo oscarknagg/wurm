@@ -152,7 +152,7 @@ class SingleSnakeEnvironments(object):
             raise RuntimeError('Must have the same number of actions as environments.')
 
         reward = torch.zeros((self.num_envs,)).float().to(self.device).requires_grad_(False)
-        done = torch.zeros((self.num_envs,)).byte().to(self.device).requires_grad_(False)
+        done = torch.zeros((self.num_envs,)).byte().to(self.device).byte().requires_grad_(False)
         info = dict()
 
         t0 = time()
@@ -200,7 +200,7 @@ class SingleSnakeEnvironments(object):
         # Check for hitting self
         self_collision = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > EPS
         info.update({'self_collision': self_collision})
-        done = torch.clamp(done + self_collision, 0, 1)
+        done = done | self_collision
 
         # Create a new head position in the body channel
         # Make this head +1 greater if the snake has just eaten food
@@ -240,7 +240,7 @@ class SingleSnakeEnvironments(object):
             head(self.envs),
             NO_CHANGE_FILTER.to(self.device),
         ).view(self.num_envs, -1).sum(dim=-1) < EPS
-        done = torch.clamp(done + edge_collision, 0, 1)
+        done = done | edge_collision
         info.update({'edge_collision': edge_collision})
         if self.verbose:
             print(f'Edge collision ({edge_collision.sum().item()} envs): {time() - t0}s')
