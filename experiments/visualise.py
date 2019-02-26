@@ -2,7 +2,8 @@ import numpy as np
 from itertools import count
 from collections import namedtuple
 import argparse
-from time import time
+from time import time, sleep
+import os
 
 import torch
 import torch.nn as nn
@@ -13,13 +14,14 @@ from torch.distributions import Categorical
 from wurm.envs import SingleSnakeEnvironments, SimpleGridworld
 from wurm.agents import A2C as Snake2C
 from wurm.utils import env_consistency, CSVLogger
-from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
+from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH, EPS
 
 
 SEED = 543
 RENDER = False
 LOG_INTERVAL = 100
 MAX_GRAD_NORM = 0.5
+FPS = 24
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--env')
@@ -30,9 +32,9 @@ parser.add_argument('--reward-shaping', default=False, type=lambda x: x.lower()[
 parser.add_argument('--render', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--gamma', default=0.99, type=float)
-parser.add_argument('--num-envs', default=1, type=int)
 parser.add_argument('--size', default=9, type=int)
 parser.add_argument('--update-steps', default=20, type=int)
+parser.add_argument('--num-envs', default=1, type=int)
 parser.add_argument('--verbose', default=0, type=int)
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--entropy', default=0.0, type=float)
@@ -64,14 +66,14 @@ class A2C(nn.Module):
 
 if args.env == 'gridworld':
     size = args.size
-    env = SimpleGridworld(num_envs=args.num_envs, size=size, start_location=(size//2, size//2), observation_mode=args.observation, device=args.device)
+    env = SimpleGridworld(num_envs=1, size=size, start_location=(size//2, size//2), observation_mode=args.observation, device=args.device)
     if args.observation == 'positions':
         model = A2C(4).to(args.device)
     else:
         model = Snake2C(in_channels=2, size=size, coord_conv=args.coord_conv).to(args.device)
 elif args.env == 'snake':
     size = args.size
-    env = SingleSnakeEnvironments(num_envs=args.num_envs, size=size, device=args.device, observation_mode=args.observation)
+    env = SingleSnakeEnvironments(num_envs=1, size=size, device=args.device, observation_mode=args.observation)
     if args.observation == 'positions':
         model = A2C(4).to(args.device)
     if args.observation.startswith('partial_'):
@@ -84,6 +86,9 @@ elif args.env == 'snake':
 else:
     raise ValueError('Unrecognised environment')
 
+
+model.load_state_dict(torch.load(f'{PATH}/models/{argstring}.pt'))
+model.eval()
 
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
 eps = np.finfo(np.float32).eps.item()
@@ -104,6 +109,9 @@ logger = CSVLogger(filename=f'{PATH}/logs/{argstring}.csv')
 t0 = time()
 state = env.reset()
 for i_step in count(1):
+    env.render()
+    sleep(1./FPS)
+
     probs, state_value = model(state)
     m = Categorical(probs)
     entropy = m.entropy().mean()
@@ -114,6 +122,7 @@ for i_step in count(1):
         env_consistency(env.envs[~done.squeeze(-1)])
 
     if args.reward_shaping:
+        # Hacky reward shaping
         size = torch.Tensor([env.size, ] * env.num_envs).long().to(env.device)
         head_idx = env.envs[:, HEAD_CHANNEL, :, :].view(env.num_envs, env.size ** 2).argmax(dim=-1)
         food_idx = env.envs[:, FOOD_CHANNEL, :, :].view(env.num_envs, env.size ** 2).argmax(dim=-1)
@@ -125,86 +134,4 @@ for i_step in count(1):
 
     env.reset(done)
 
-    if i_step % args.update_steps == 0:
-        with torch.no_grad():
-            _, bootstrap_value = model(state)
 
-        R = bootstrap_value * (~done).float()
-        returns = []
-        for t in saved_transitions[::-1]:
-            R = t.reward + args.gamma * R * (~t.done).float()
-            returns.insert(0, R)
-
-        returns = torch.stack(returns)
-
-        # Normalise returns
-        returns = (returns - returns.mean()) / (returns.std() + eps)
-        done = torch.stack([transition.done for transition in saved_transitions])
-
-        values = torch.stack([transition.value for transition in saved_transitions])
-        value_loss = F.smooth_l1_loss(values, returns).mean()
-        advantages = returns - values
-        log_probs = torch.stack([transition.log_prob for transition in saved_transitions]).unsqueeze(-1)
-        policy_loss = - (advantages.detach() * log_probs).mean()
-
-        entropy_loss = - args.entropy * torch.stack([transition.entropy for transition in saved_transitions]).mean()
-
-        optimizer.zero_grad()
-        loss = value_loss + policy_loss + entropy_loss
-        loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
-        optimizer.step()
-
-        saved_transitions = []
-
-    # Metrics
-    num_episodes += done.sum().item()
-    num_steps += args.num_envs
-
-    running_entropy = entropy.mean().item() if running_entropy is None else running_entropy * 0.975 + 0.025 * entropy.mean().item()
-    running_reward_rate = reward.mean().item() if running_reward_rate is None else running_reward_rate * 0.975 + 0.025 * reward.mean().item()
-    if args.env == 'snake':
-        running_self_collisions = info[
-            'self_collision'].float().mean().item() if running_self_collisions is None else running_self_collisions * 0.975 + info[
-            'self_collision'].float().mean().item() * 0.025
-        running_edge_collisions = info[
-            'edge_collision'].float().mean().item() if running_edge_collisions is None else running_edge_collisions * 0.975 + info[
-            'edge_collision'].float().mean().item() * 0.025
-
-    if i_step % LOG_INTERVAL == 0:
-        # Save model
-        torch.save(model.state_dict(), f'{PATH}/models/{argstring}.pt')
-
-        # Logging
-        t = time() - t0
-        log_string = '[{:02d}:{:02d}]\t'.format(int((t // 60) % 60), int(t % 60))
-        log_string += 'Steps {:.2f}e6\t'.format(num_steps/1e6)
-        log_string += 'Reward rate: {:.3e}\t'.format(running_reward_rate)
-        log_string += 'Entropy: {:.3e}\t'.format(running_entropy)
-
-        logs = {
-            't': t,
-            'steps': num_steps,
-            'episodes': num_episodes,
-            'reward_rate': running_reward_rate,
-            'policy_entropy': running_entropy,
-            'value_loss': value_loss,
-            'policy_loss': policy_loss,
-            'entropy_loss': entropy_loss,
-        }
-
-        if args.env == 'snake':
-            log_string += 'Avg. size: {:.3f}\t'.format(env.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(args.num_envs, -1).max(dim=1)[0].mean().item())
-            log_string += 'Edge Collision: {:.3e}\t'.format(running_edge_collisions)
-            log_string += 'Self Collision: {:.3e}\t'.format(running_self_collisions)
-            # log_string += 'Reward rate: {:.3f}\tS'.format(running_reward / running_length)
-            logs.update({
-                'avg_size': env.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(args.num_envs, -1).max(dim=1)[0].mean().item(),
-                'edge_collisions': running_edge_collisions,
-                'self_collisions': running_self_collisions
-            })
-        logger.write(logs)
-        print(log_string)
-
-    if num_steps >= 100e6:
-        break

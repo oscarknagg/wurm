@@ -2,6 +2,9 @@ from time import time
 from collections import namedtuple
 import torch
 from torch.nn import functional as F
+from gym.envs.classic_control import rendering
+import numpy as np
+from scipy.misc import imresize
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
 from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
@@ -80,6 +83,8 @@ class SingleSnakeEnvironments(object):
             self.envs.requires_grad_(False)
 
         self.done = torch.zeros((num_envs)).to(self.device).byte()
+
+        self.viewer = None
 
     def _observe(self):
         if self.observation_mode == 'default':
@@ -339,3 +344,30 @@ class SingleSnakeEnvironments(object):
         envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
 
         return envs.round()
+
+    def render(self):
+        if self.num_envs != 1:
+            raise RuntimeError('Rendering is only supported for a single environment at a time')
+
+        if self.viewer is None:
+            self.viewer = rendering.SimpleImageViewer()
+
+        body_colour = np.array((0, 255*0.5, 0), dtype=np.uint8)
+        head_colour = np.array((0, 255, 0), dtype=np.uint8)
+        food_colour = np.array((255, 0, 0), dtype=np.uint8)
+
+        img = np.zeros((self.size, self.size, 3), dtype=np.uint8)
+
+        body_locations = (self.envs[0, BODY_CHANNEL, :, :].cpu().numpy() > EPS).astype(bool)
+        img[body_locations.astype(bool)] = body_colour
+
+        body_locations = (self.envs[0, HEAD_CHANNEL, :, :].cpu().numpy() > EPS).astype(bool)
+        img[body_locations.astype(bool)] = head_colour
+
+        body_locations = (self.envs[0, FOOD_CHANNEL, :, :].cpu().numpy() > EPS).astype(bool)
+        img[body_locations.astype(bool)] = food_colour
+
+        img = imresize(img, (500, 500, 3), interp='nearest')
+        self.viewer.imshow(img)
+
+        return self.viewer.isopen
