@@ -91,30 +91,39 @@ class SingleSnakeEnvironments(object):
         self.food_colour = torch.Tensor((255, 0, 0)).short().to(self.device)
         self.edge_colour = torch.Tensor((0, 0, 0)).short().to(self.device)
 
+    def _get_rgb(self):
+        # RGB image same as is displayed in .render()
+        img = torch.ones_like(self.envs).short() * 255
+
+        # Convert to BHWC axes for easier indexing here
+        img = img.permute((0, 2, 3, 1))
+
+        body_locations = (body(self.envs) > EPS).squeeze(1)
+        img[body_locations, :] = self.body_colour
+
+        head_locations = (head(self.envs) > EPS).squeeze(1)
+        img[head_locations, :] = self.head_colour
+
+        food_locations = (food(self.envs) > EPS).squeeze(1)
+        img[food_locations, :] = self.food_colour
+
+        img[:, :1, :, :] = self.edge_colour
+        img[:, :, :1, :] = self.edge_colour
+        img[:, -1:, :, :] = self.edge_colour
+        img[:, :, -1:, :] = self.edge_colour
+
+        # Convert back to BCHW axes
+        img = img.permute((0, 3, 1, 2))
+
+        return img
+
     def _observe(self, observation_mode: str = 'default'):
         if observation_mode == 'default':
             # RGB image same as is displayed in .render()
-            observation = torch.ones_like(self.envs).short() * 255
+            observation = self._get_rgb()
 
-            # Convert to BHWC axes for easier indexing here
-            observation = observation.permute((0, 2, 3, 1))
-
-            body_locations = (body(self.envs) > EPS).squeeze(1)
-            observation[body_locations, :] = self.body_colour
-
-            head_locations = (head(self.envs) > EPS).squeeze(1)
-            observation[head_locations, :] = self.head_colour
-
-            food_locations = (food(self.envs) > EPS).squeeze(1)
-            observation[food_locations, :] = self.food_colour
-
-            observation[:, :1, :, :] = self.edge_colour
-            observation[:, :, :1, :] = self.edge_colour
-            observation[:, -1:, :, :] = self.edge_colour
-            observation[:, :, -1:, :] = self.edge_colour
-
-            # Convert back to BCHW axes
-            observation = observation.permute((0, 3, 1, 2))
+            # Normalise to 0-1
+            observation = observation.float() / 255
 
             return observation
         elif observation_mode == 'raw':
@@ -148,24 +157,26 @@ class SingleSnakeEnvironments(object):
             observation_size = int(self.observation_mode.split('_')[-1])
             observation_width = 2 * observation_size + 1
 
+            # RGB image same as is displayed in .render()
+            img = self._get_rgb()
+
+            # Normalise to 0-1
+            img = img.float() / 255
+
             # Pad envs so we ge tthe correct size observation even when the head of the snake
             # is close to the edge of the environment
             padding = [observation_size, observation_size, ] * 2
-            padded_envs = F.pad(self.envs.clone(), padding)
+            padded_img = F.pad(img, padding)
 
             filter = torch.ones((1, 1, observation_width, observation_width)).to(self.device)
             head_area_indices = torch.nn.functional.conv2d(
-                padded_envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1].clone(), filter, padding=observation_size
+                F.pad(self.envs.clone(), padding)[:, HEAD_CHANNEL:HEAD_CHANNEL + 1].clone(),
+                filter,
+                padding=observation_size
             ).round()
 
-            # Add in -1 values to indicate edge of map
-            padded_envs[:, :, :observation_size, :] = -1
-            padded_envs[:, :, :, :observation_size] = -1
-            padded_envs[:, :, -observation_size:, :] = -1
-            padded_envs[:, :, :, -observation_size:] = -1
-
-            observations = padded_envs[
-                head_area_indices.expand_as(padded_envs).byte()
+            observations = padded_img[
+                head_area_indices.expand_as(padded_img).byte()
             ]
             observations = observations.view((self.num_envs, 3 * (observation_width ** 2))).clone()
 
@@ -373,7 +384,7 @@ class SingleSnakeEnvironments(object):
             self.viewer = rendering.SimpleImageViewer()
 
         # Get RBG Tensor BCHW
-        img = self._observe('default')
+        img = self._get_rgb()
 
         # Convert to numpy, transpose to HWC and resize
         img = img.cpu().numpy()[0]
