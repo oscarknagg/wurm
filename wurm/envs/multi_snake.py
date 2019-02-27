@@ -3,6 +3,9 @@ from typing import Dict, Tuple
 from collections import namedtuple, OrderedDict
 import torch
 from torch.nn import functional as F
+from gym.envs.classic_control import rendering
+import numpy as np
+from PIL import Image
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
 from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
@@ -76,6 +79,7 @@ class MultiSnakeEnvironments(object):
         self.head_channels = [1 + 2*i for i in range(self.num_snakes)]
         self.body_channels = [2 + 2*i for i in range(self.num_snakes)]
         self.t = 0
+        self.viewer = 0
 
         if not manual_setup:
             # Create environments
@@ -83,6 +87,58 @@ class MultiSnakeEnvironments(object):
             self.envs.requires_grad_(False)
 
         self.done = torch.zeros(num_envs).to(self.device).byte()
+
+        self.viewer = None
+
+        self.body_colour = torch.Tensor((0, 255 * 0.5, 0)).short().to(self.device)
+        self.head_colour = torch.Tensor((0, 255, 0)).short().to(self.device)
+        self.food_colour = torch.Tensor((255, 0, 0)).short().to(self.device)
+        self.edge_colour = torch.Tensor((0, 0, 0)).short().to(self.device)
+
+    def _get_rgb(self):
+        # RGB image same as is displayed in .render()
+        img = torch.ones((self.num_envs, 3, self.size, self.size)).to(self.device).short() * 255
+
+        # Convert to BHWC axes for easier indexing here
+        img = img.permute((0, 2, 3, 1))
+
+
+        body_locations = ((self._bodies > EPS).squeeze(1).sum(dim=1) > EPS).byte()
+        img[body_locations, :] = self.body_colour
+
+        head_locations = ((self._heads > EPS).squeeze(1).sum(dim=1) > EPS).byte()
+        img[head_locations, :] = self.head_colour
+
+        food_locations = (food(self.envs) > EPS).squeeze(1)
+        img[food_locations, :] = self.food_colour
+
+        img[:, :1, :, :] = self.edge_colour
+        img[:, :, :1, :] = self.edge_colour
+        img[:, -1:, :, :] = self.edge_colour
+        img[:, :, -1:, :] = self.edge_colour
+
+        # Convert back to BCHW axes
+        img = img.permute((0, 3, 1, 2))
+
+        return img
+
+    def render(self):
+        if self.num_envs != 1:
+            raise RuntimeError('Rendering is only supported for a single environment at a time')
+
+        if self.viewer is None:
+            self.viewer = rendering.SimpleImageViewer()
+
+        # Get RBG Tensor BCHW
+        img = self._get_rgb()
+
+        # Convert to numpy, transpose to HWC and resize
+        img = img.cpu().numpy()[0]
+        img = np.transpose(img, (1, 2, 0))
+        img = np.array(Image.fromarray(img.astype(np.uint8)).resize((500, 500)))
+        self.viewer.imshow(img)
+
+        return self.viewer.isopen
 
     def _observe(self):
         if self.observation_mode == 'default':
@@ -258,19 +314,23 @@ class MultiSnakeEnvironments(object):
                     food_consumption[agent][:, None, None, None].expand((self.num_envs, 1, self.size, self.size))
                 )
 
-        # # Remove food and give reward
-        # # `food_removal` is 0 except where a snake head is at the same location as food where it is -1
-        # food_removal = head(self.envs) * food(self.envs) * -1
-        # reward.sub_(food_removal.view(self.num_envs, -1).sum(dim=-1).float())
-        # self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
-        #
-        # # Add new food if necessary.
-        # if food_removal.sum() < 0:
-        #     t0 = time()
-        #     food_addition_env_indices = (food_removal * -1).view(self.num_envs, -1).sum(dim=-1).byte()
-        #     add_food_envs = self.envs[food_addition_env_indices, :, :, :]
-        #     food_addition = self._get_food_addition(add_food_envs)
-        #     self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL+1, :, :] += food_addition
+        for i, (agent, act) in enumerate(actions.items()):
+            # Remove food and give reward
+            # `food_removal` is 0 except where a snake head is at the same location as food where it is -1
+            head_channel = self.head_channels[i]
+            body_channel = self.body_channels[i]
+            _env = self.envs[:, [0, head_channel, body_channel], :, :]
+
+            food_removal = head(_env) * food(_env) * -1
+            rewards[agent].sub_(food_removal.view(self.num_envs, -1).sum(dim=-1).float())
+            self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
+
+        # Add new food if necessary.
+        food_addition_env_indices = (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < EPS)
+        if food_addition_env_indices.sum().item() > 0:
+            add_food_envs = self.envs[food_addition_env_indices, :, :, :]
+            food_addition = self._get_food_addition(add_food_envs)
+            self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL+1, :, :] += food_addition
 
         for i, (agent, act) in enumerate(actions.items()):
             # Check for boundary, Done by performing a convolution with no padding
@@ -285,6 +345,15 @@ class MultiSnakeEnvironments(object):
             ).view(self.num_envs, -1).sum(dim=-1) < EPS
             dones[agent] = dones[agent] | edge_collision
             info.update({f'edge_collision_{i}': edge_collision})
+
+        for i, (agent, act) in enumerate(actions.items()):
+            # Remove any snakes that are dead
+            self._bodies[dones[agent]] = 0
+            self._heads[dones[agent]] = 0
+
+            # TODO:
+            # Keep track of which snakes are already dead not just which have died
+            # in the current step
 
         # Apply rounding to stop numerical errors accumulating
         self.envs.round_()

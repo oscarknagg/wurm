@@ -4,7 +4,7 @@ import torch
 from torch.nn import functional as F
 from gym.envs.classic_control import rendering
 import numpy as np
-from scipy.misc import imresize
+from PIL import Image
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
 from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
@@ -389,7 +389,7 @@ class SingleSnakeEnvironments(object):
         # Convert to numpy, transpose to HWC and resize
         img = img.cpu().numpy()[0]
         img = np.transpose(img, (1, 2, 0))
-        img = imresize(img, (500, 500, 3), interp='nearest')
+        img = np.array(Image.fromarray(img.astype(np.uint8)).resize((500, 500)))
         self.viewer.imshow(img)
 
         return self.viewer.isopen
