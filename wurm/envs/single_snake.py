@@ -252,11 +252,6 @@ class SingleSnakeEnvironments(object):
 
         return self._observe(), reward.unsqueeze(-1), done.unsqueeze(-1), info
 
-    def _select_from_available_locations(self, locs: torch.Tensor) -> torch.Tensor:
-        locations = torch.nonzero(locs)
-        random_loc = locations[torch.randperm(locations.shape[0])[:1]]
-        return random_loc
-
     def _get_food_addition(self, envs: torch.Tensor):
         # Get empty locations
         available_locations = envs.sum(dim=1, keepdim=True) < EPS
