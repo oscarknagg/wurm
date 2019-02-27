@@ -126,15 +126,6 @@ class SimpleGridworld(object):
         ################
 
         t0 = time()
-        # Check for hitting self
-        self_collision = (head(self.envs) * body(self.envs)).view(self.num_envs, -1).sum(dim=-1) > EPS
-        info.update({'self_collision': self_collision})
-        done = torch.clamp(done + self_collision, 0, 1)
-
-        if self.verbose:
-            print(f'Body movement: {time()-t0}')
-
-        t0 = time()
         # Remove food and give reward
         # `food_removal` is 0 except where a snake head is at the same location as food where it is -1
         food_removal = head(self.envs) * food(self.envs) * -1
@@ -161,7 +152,7 @@ class SimpleGridworld(object):
             head(self.envs),
             NO_CHANGE_FILTER.to(self.device),
         ).view(self.num_envs, -1).sum(dim=-1) < EPS
-        done = torch.clamp(done + edge_collision, 0, 1)
+        done = done | edge_collision
         info.update({'edge_collision': edge_collision})
         if self.verbose:
             print(f'Edge collision ({edge_collision.sum().item()} envs): {time() - t0}s')
