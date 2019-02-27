@@ -86,16 +86,41 @@ class SingleSnakeEnvironments(object):
 
         self.viewer = None
 
-    def _observe(self):
-        if self.observation_mode == 'default':
-            observation = self.envs.clone()
-            # Add in -1 values to indicate edge of map
-            observation[:, :, :1, :] = -1
-            observation[:, :, :, :1] = -1
-            observation[:, :, -1:, :] = -1
-            observation[:, :, :, -1:] = -1
+        self.body_colour = torch.Tensor((0, 255 * 0.5, 0)).short().to(self.device)
+        self.head_colour = torch.Tensor((0, 255, 0)).short().to(self.device)
+        self.food_colour = torch.Tensor((255, 0, 0)).short().to(self.device)
+        self.edge_colour = torch.Tensor((0, 0, 0)).short().to(self.device)
+
+    def _observe(self, observation_mode: str = 'default'):
+        if observation_mode == 'default':
+            # RGB image same as is displayed in .render()
+            observation = torch.ones_like(self.envs).short() * 255
+
+            # Convert to BHWC axes for easier indexing here
+            observation = observation.permute((0, 2, 3, 1))
+
+            body_locations = (body(self.envs) > EPS).squeeze(1)
+            observation[body_locations, :] = self.body_colour
+
+            head_locations = (head(self.envs) > EPS).squeeze(1)
+            observation[head_locations, :] = self.head_colour
+
+            food_locations = (food(self.envs) > EPS).squeeze(1)
+            observation[food_locations, :] = self.food_colour
+
+            observation[:, :1, :, :] = self.edge_colour
+            observation[:, :, :1, :] = self.edge_colour
+            observation[:, -1:, :, :] = self.edge_colour
+            observation[:, :, -1:, :] = self.edge_colour
+
+            # Convert back to BCHW axes
+            observation = observation.permute((0, 3, 1, 2))
+
             return observation
-        elif self.observation_mode == 'one_channel':
+        elif observation_mode == 'raw':
+            observation = self.envs.clone()
+            return observation
+        elif observation_mode == 'one_channel':
             observation = (self.envs[:, BODY_CHANNEL, :, :] > EPS).float() * 0.5
             observation += self.envs[:, HEAD_CHANNEL, :, :] * 0.5
             observation += self.envs[:, FOOD_CHANNEL, :, :] * 1.5
@@ -105,7 +130,7 @@ class SingleSnakeEnvironments(object):
             observation[:, -1:, :] = -1
             observation[:, :, -1:] = -1
             return observation.unsqueeze(1)
-        elif self.observation_mode == 'positions':
+        elif observation_mode == 'positions':
             observation = (self.envs[:, BODY_CHANNEL, :, :] > EPS).float() * 0.5
             observation += self.envs[:, HEAD_CHANNEL, :, :] * 0.5
             observation += self.envs[:, FOOD_CHANNEL, :, :] * 1.5
@@ -119,7 +144,7 @@ class SingleSnakeEnvironments(object):
                 food_idx % size
             ]).float().t()
             return observation
-        elif self.observation_mode.startswith('partial_'):
+        elif observation_mode.startswith('partial_'):
             observation_size = int(self.observation_mode.split('_')[-1])
             observation_width = 2 * observation_size + 1
 
@@ -255,7 +280,7 @@ class SingleSnakeEnvironments(object):
 
         self.done = done
 
-        return self._observe(), reward.unsqueeze(-1), done.unsqueeze(-1), info
+        return self._observe(self.observation_mode), reward.unsqueeze(-1), done.unsqueeze(-1), info
 
     def _get_food_addition(self, envs: torch.Tensor):
         # Get empty locations
@@ -293,7 +318,7 @@ class SingleSnakeEnvironments(object):
         if self.verbose:
             print(f'Resetting {done.sum().item()} envs: {time() - t0}s')
 
-        return self._observe()
+        return self._observe(self.observation_mode)
 
     def _create_envs(self, num_envs: int):
         """Vectorised environment creation. Creates self.num_envs environments simultaneously."""
@@ -347,21 +372,12 @@ class SingleSnakeEnvironments(object):
         if self.viewer is None:
             self.viewer = rendering.SimpleImageViewer()
 
-        body_colour = np.array((0, 255*0.5, 0), dtype=np.uint8)
-        head_colour = np.array((0, 255, 0), dtype=np.uint8)
-        food_colour = np.array((255, 0, 0), dtype=np.uint8)
+        # Get RBG Tensor BCHW
+        img = self._observe('default')
 
-        img = np.zeros((self.size, self.size, 3), dtype=np.uint8)
-
-        body_locations = (self.envs[0, BODY_CHANNEL, :, :].cpu().numpy() > EPS).astype(bool)
-        img[body_locations.astype(bool)] = body_colour
-
-        body_locations = (self.envs[0, HEAD_CHANNEL, :, :].cpu().numpy() > EPS).astype(bool)
-        img[body_locations.astype(bool)] = head_colour
-
-        body_locations = (self.envs[0, FOOD_CHANNEL, :, :].cpu().numpy() > EPS).astype(bool)
-        img[body_locations.astype(bool)] = food_colour
-
+        # Convert to numpy, transpose to HWC and resize
+        img = img.cpu().numpy()[0]
+        img = np.transpose(img, (1, 2, 0))
         img = imresize(img, (500, 500, 3), interp='nearest')
         self.viewer.imshow(img)
 
