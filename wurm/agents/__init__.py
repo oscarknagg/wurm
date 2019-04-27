@@ -1,1 +1,2 @@
-from .a2c import A2C
+from .relational import RelationalBackbone
+from .convolutional import BaselineConvBackbone

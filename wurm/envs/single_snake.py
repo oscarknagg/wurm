@@ -365,7 +365,7 @@ class SingleSnakeEnvironments(object):
         ]).unsqueeze(1)
         envs[:, BODY_CHANNEL:BODY_CHANNEL+1, :, :] = bodies
 
-        # Create heads at end of bodies
+        # Create num_heads at end of bodies
         snake_sizes = envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(num_envs, -1).max(dim=1)[0]
         snake_size_mask = snake_sizes[:, None, None, None].expand((num_envs, 1, self.size, self.size))
         envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :] = (bodies == snake_size_mask).float()

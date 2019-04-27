@@ -11,7 +11,8 @@ import torch.optim as optim
 from torch.distributions import Categorical
 
 from wurm.envs import SingleSnakeEnvironments, SimpleGridworld
-from wurm.agents import A2C as Snake2C
+from wurm.rl import A2C as ConvAgent
+from wurm import agents
 from wurm.utils import env_consistency, CSVLogger
 from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
@@ -21,13 +22,14 @@ RENDER = False
 LOG_INTERVAL = 100
 MAX_GRAD_NORM = 0.5
 
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--env')
+parser.add_argument('--agent')
 parser.add_argument('--mode', default='train', type=str)
 parser.add_argument('--observation', default='default', type=str)
 parser.add_argument('--coord-conv', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--reward-shaping', default=False, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--render', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--gamma', default=0.99, type=float)
 parser.add_argument('--num-envs', default=1, type=int)
@@ -44,9 +46,9 @@ print(argstring)
 Transition = namedtuple('Transition', ['action', 'log_prob', 'value', 'reward', 'done', 'entropy'])
 
 
-class A2C(nn.Module):
+class FeedforwardAgent(nn.Module):
     def __init__(self, num_actions: int, num_inputs: int = 4):
-        super(A2C, self).__init__()
+        super(FeedforwardAgent, self).__init__()
         self.num_actions = num_actions
         self.affine1 = nn.Linear(num_inputs, 128)
         self.action_head = nn.Linear(128, self.num_actions)
@@ -62,27 +64,83 @@ class A2C(nn.Module):
         return F.softmax(action_scores, dim=-1), state_values
 
 
+class RelationalAgent(nn.Module):
+    def __init__(self,
+                 num_convs: int,
+                 in_channels: int,
+                 conv_channels: int,
+                 num_relational: int,
+                 num_attention_heads: int,
+                 relational_dim: int,
+                 num_feedforward: int,
+                 feedforward_dim: int,
+                 num_actions: int,
+                 residual: bool):
+        super(RelationalAgent, self).__init__()
+        self.backbone = agents.RelationalBackbone(num_convs, in_channels, conv_channels, num_relational,
+                                                  num_attention_heads, relational_dim, num_feedforward, feedforward_dim,
+                                                  residual)
+
+        self.num_actions = num_actions
+        self.action_head = nn.Linear(feedforward_dim, self.num_actions)
+        self.value_head = nn.Linear(feedforward_dim, 1)
+
+    def forward(self, x: torch.Tensor):
+        x = self.backbone(x)
+        action_scores = self.action_head(x)
+        state_values = self.value_head(x)
+        return F.softmax(action_scores, dim=-1), state_values
+
+
+#################
+# Configure Env #
+#################
 if args.env == 'gridworld':
-    size = args.size
-    env = SimpleGridworld(num_envs=args.num_envs, size=size, start_location=(size//2, size//2), observation_mode=args.observation, device=args.device)
-    if args.observation == 'positions':
-        model = A2C(4).to(args.device)
-    else:
-        model = Snake2C(in_channels=2, size=size, coord_conv=args.coord_conv).to(args.device)
+    env = SimpleGridworld(num_envs=args.num_envs, size=args.size, start_location=(args.size//2, args.size//2),
+                          observation_mode=args.observation, device=args.device)
 elif args.env == 'snake':
-    size = args.size
-    env = SingleSnakeEnvironments(num_envs=args.num_envs, size=size, device=args.device, observation_mode=args.observation)
-    if args.observation == 'positions':
-        model = A2C(4).to(args.device)
-    if args.observation.startswith('partial_'):
-        observation_size = int(args.observation.split('_')[-1])
-        observation_width = 2 * observation_size + 1
-        model = A2C(4, num_inputs=3 * (observation_width ** 2)).to(args.device)
-    else:
-        model = Snake2C(
-            in_channels=1 if args.observation == 'one_channel' else 3, size=size, coord_conv=args.coord_conv).to(args.device)
+    env = SingleSnakeEnvironments(num_envs=args.num_envs, size=args.size, device=args.device,
+                                  observation_mode=args.observation)
 else:
     raise ValueError('Unrecognised environment')
+
+
+###################
+# Configure Agent #
+###################
+if args.observation == 'one_channel':
+    in_channels = 1
+elif args.observation == 'default':
+    in_channels = 3
+elif args.observation == 'raw':
+    in_channels = env.envs.size(1)
+elif args.observation.startswith('partial_'):
+    in_channels = 3
+else:
+    raise ValueError
+
+if args.agent == 'relational':
+    model = RelationalAgent(num_actions=4, num_convs=1, in_channels=in_channels, conv_channels=14, num_relational=2,
+                            num_attention_heads=4, relational_dim=64, num_feedforward=1, feedforward_dim=64,
+                            residual=True).to(args.device)
+elif args.agent == 'convolutional':
+    model = ConvAgent(
+        in_channels=in_channels, size=args.size, coord_conv=args.coord_conv).to(
+        args.device)
+elif args.agent == 'feedforward':
+    if args.observation == 'positions':
+        num_inputs = 4
+    elif args.observation.startswith('partial_'):
+        observation_size = int(args.observation.split('_')[-1])
+        observation_width = 2 * observation_size + 1
+        num_inputs = 3 * (observation_width ** 2)
+    else:
+        raise ValueError('Feedforward agent only compatible with partial and position observations.')
+
+    model = FeedforwardAgent(4, num_inputs).to(args.device)
+else:
+    raise ValueError('Unrecognised agent')
+print(model)
 
 
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -104,6 +162,7 @@ logger = CSVLogger(filename=f'{PATH}/logs/{argstring}.csv')
 t0 = time()
 state = env.reset()
 for i_step in count(1):
+    # print(i_step)
     probs, state_value = model(state)
     m = Categorical(probs)
     entropy = m.entropy().mean()

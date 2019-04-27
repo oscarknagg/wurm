@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
+import math
 
 
 class AddCoords(nn.Module):
@@ -46,3 +48,82 @@ class CoordConv2D(nn.Module):
         ret = self.addcoords(x)
         ret = self.conv(ret)
         return ret
+
+
+class MultiHeadDotProductAttention(nn.Module):
+
+    def __init__(self, num_heads: int, input_dim: int, output_dim: int):
+        super().__init__()
+
+        if input_dim % num_heads != 0:
+            raise ValueError('Number of num_heads must divide')
+
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.per_head_dim = input_dim // num_heads
+        self.num_heads = num_heads
+
+        self.q_linear = nn.Linear(input_dim, output_dim)
+        self.v_linear = nn.Linear(input_dim, output_dim)
+        self.k_linear = nn.Linear(input_dim, output_dim)
+        self.out = nn.Linear(output_dim, output_dim)
+
+        self.layer_norm = nn.LayerNorm(normalized_shape=self.per_head_dim, elementwise_affine=False)
+
+    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, d_k: int):
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+
+        scores = F.softmax(scores, dim=-1)
+
+        output = torch.matmul(scores, v)
+        return output
+
+    def forward(self, x: torch.Tensor):
+        batch_size = x.size(0)
+
+        # Calculate queries, keys, values and split into num_heads
+        k = self.layer_norm(self.k_linear(x).view(batch_size, -1, self.num_heads, self.per_head_dim))
+        q = self.layer_norm(self.q_linear(x).view(batch_size, -1, self.num_heads, self.per_head_dim))
+        v = self.layer_norm(self.v_linear(x).view(batch_size, -1, self.num_heads, self.per_head_dim))
+
+        # Transpose to get dimensions batch_size * num_heads * sequence_length * input_dim
+        k = k.transpose(1, 2)
+        q = q.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        scores = self.attention(q, k, v, self.per_head_dim)
+
+        # Concatenate num_heads and put through final linear layer
+        concat = scores.transpose(1, 2).contiguous() \
+            .view(batch_size, -1, self.output_dim)
+
+        output = self.out(concat)
+
+        return output
+
+
+class RelationalModule2D(nn.Module):
+    """Implements the relational module from https://arxiv.org/pdf/1806.01830.pdf"""
+    def __init__(self,
+                 num_heads: int,
+                 input_dim: int,
+                 output_dim: int,
+                 residual: bool):
+        super().__init__()
+        self.attention = MultiHeadDotProductAttention(num_heads, input_dim, output_dim)
+        self.residual = residual
+
+    def forward(self, x: torch.Tensor):
+        identity = x
+        n, c, h, w = x.size()
+
+        # Unroll the 2D image tensor to a sequence so it can be fed to
+        # the attention module then return to original shape
+        out = x.view(n, c, h*w).transpose(1, 2)  # n, h*w, c
+        out = self.attention(out)
+        out = out.transpose(2, 1).view(n, self.attention.output_dim, h, w)
+
+        if self.residual:
+            out += identity
+
+        return out

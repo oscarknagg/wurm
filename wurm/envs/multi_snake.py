@@ -87,6 +87,7 @@ class MultiSnakeEnvironments(object):
             self.envs.requires_grad_(False)
 
         self.done = torch.zeros(num_envs).to(self.device).byte()
+        self.dead = torch.zeros(num_envs, num_snakes).to(self.device).byte()
 
         self.viewer = None
 
@@ -348,8 +349,9 @@ class MultiSnakeEnvironments(object):
 
         for i, (agent, act) in enumerate(actions.items()):
             # Remove any snakes that are dead
-            self._bodies[dones[agent]] = 0
-            self._heads[dones[agent]] = 0
+            # self._bodies (num_envs, num_snakes, size, size)
+            self._bodies[dones[agent], i, 0, 0] = 0
+            self._heads[dones[agent], i, 0, 0] = 0
 
             # TODO:
             # Keep track of which snakes are already dead not just which have died
@@ -449,7 +451,7 @@ class MultiSnakeEnvironments(object):
         ]).unsqueeze(1)
         envs[:, BODY_CHANNEL:BODY_CHANNEL+1, :, :] = bodies
 
-        # Create heads at end of bodies
+        # Create num_heads at end of bodies
         snake_sizes = envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(num_envs, -1).max(dim=1)[0]
         snake_size_mask = snake_sizes[:, None, None, None].expand((num_envs, 1, self.size, self.size))
         envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1, :, :] = (bodies == snake_size_mask).float()

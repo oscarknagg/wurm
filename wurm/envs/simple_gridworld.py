@@ -79,10 +79,47 @@ class SimpleGridworld(object):
 
         self.done = torch.zeros(num_envs).to(self.device).byte()
 
-    def _observe(self):
-        if self.observation_mode == 'default':
-            return self.envs
-        elif self.observation_mode == 'positions':
+        self.viewer = None
+
+        self.head_colour = torch.Tensor((0, 255, 0)).short().to(self.device)
+        self.food_colour = torch.Tensor((255, 0, 0)).short().to(self.device)
+        self.edge_colour = torch.Tensor((0, 0, 0)).short().to(self.device)
+
+    def _get_rgb(self):
+        # RGB image same as is displayed in .render()
+        img = torch.zeros((self.num_envs, 3, self.size, self.size)).short().to(self.device).requires_grad_(False) * 255
+
+        # Convert to BHWC axes for easier indexing here
+        img = img.permute((0, 2, 3, 1))
+
+        head_locations = (head(self.envs) > EPS).squeeze(1)
+        img[head_locations, :] = self.head_colour
+
+        food_locations = (food(self.envs) > EPS).squeeze(1)
+        img[food_locations, :] = self.food_colour
+
+        img[:, :1, :, :] = self.edge_colour
+        img[:, :, :1, :] = self.edge_colour
+        img[:, -1:, :, :] = self.edge_colour
+        img[:, :, -1:, :] = self.edge_colour
+
+        # Convert back to BCHW axes
+        img = img.permute((0, 3, 1, 2))
+
+        return img
+
+    def _observe(self, observation_mode: str = 'default'):
+        if observation_mode == 'default':
+            # RGB image same as is displayed in .render()
+            observation = self._get_rgb()
+
+            # Normalise to 0-1
+            observation = observation.float() / 255
+
+            return observation
+        elif observation_mode == 'raw':
+            return self.envs.clone()
+        elif observation_mode == 'positions':
             head_idx = self.envs[:, HEAD_CHANNEL, :, :].view(self.num_envs, self.size ** 2).argmax(dim=-1)
             food_idx = self.envs[:, FOOD_CHANNEL, :, :].view(self.num_envs, self.size ** 2).argmax(dim=-1)
             observation = torch.Tensor([
@@ -162,7 +199,7 @@ class SimpleGridworld(object):
 
         self.done = done
 
-        return self._observe(), reward.unsqueeze(-1), done.unsqueeze(-1), info
+        return self._observe(self.observation_mode), reward.unsqueeze(-1), done.unsqueeze(-1), info
 
     def _select_from_available_locations(self, locs: torch.Tensor) -> torch.Tensor:
         locations = torch.nonzero(locs)
@@ -205,7 +242,7 @@ class SimpleGridworld(object):
         if self.verbose:
             print(f'Resetting {done.sum().item()} envs: {time() - t0}s')
 
-        return self._observe()
+        return self._observe(self.observation_mode)
 
     def _create_envs(self, num_envs: int):
         """Vectorised environment creation. Creates self.num_envs environments simultaneously."""

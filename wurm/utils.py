@@ -11,7 +11,7 @@ from wurm._filters import ORIENTATION_FILTERS
 
 
 """
-Each of the following functions takes a batch of envs and returns the channel corresponding to either the food, heads or
+Each of the following functions takes a batch of envs and returns the channel corresponding to either the food, num_heads or
 bodies of each env.
 
 Return shape should be (num_envs, 1, size, size)
@@ -115,7 +115,7 @@ def env_consistency(envs: torch.Tensor):
 
     one_head_per_snake = torch.all(head(envs).view(n, -1).sum(dim=-1) == 1)
     if not one_head_per_snake:
-        raise RuntimeError('An environment has multiple heads for a single snake.')
+        raise RuntimeError('An environment has multiple num_heads for a single snake.')
 
     # Environment contains a snake
     envs_contain_snake = torch.all(body(envs).view(n, -1).sum(dim=-1) > 0)
