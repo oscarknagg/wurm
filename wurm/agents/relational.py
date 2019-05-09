@@ -2,28 +2,14 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from wurm.modules import RelationalModule2D, CoordConv2D, AddCoords
+from wurm.modules import RelationalModule2D, CoordConv2D, AddCoords, ConvBlock, feedforward_block
 
 
-def conv_block(in_channels: int, out_channels: int):
-    return nn.Sequential(
-        CoordConv2D(in_channels, out_channels, kernel_size=3, padding=1),
-        nn.ReLU()
-    )
-
-
-def feedforward_block(input_dim: int, output_dim: int):
-    return nn.Sequential(
-        nn.Linear(input_dim, output_dim),
-        nn.ReLU()
-    )
-
-
-class RelationalBackbone(nn.Module):
+class RelationalAgent(nn.Module):
     """Implementation of Relational agent architecture from https://arxiv.org/pdf/1806.01830.pdf"""
 
     def __init__(self,
-                 num_convs: int,
+                 num_initial_convs: int,
                  in_channels: int,
                  conv_channels: int,
                  num_relational: int,
@@ -31,9 +17,10 @@ class RelationalBackbone(nn.Module):
                  relational_dim: int,
                  num_feedforward: int,
                  feedforward_dim: int,
-                 residual: bool):
+                 residual: bool,
+                 num_actions: int):
         super().__init__()
-        self.num_convs = num_convs
+        self.num_initial_convs = num_initial_convs
         self.in_channels = in_channels
         self.conv_channels = conv_channels
         self.num_relational = num_relational
@@ -42,12 +29,13 @@ class RelationalBackbone(nn.Module):
         self.num_feedforward = num_feedforward
         self.feedforward_dim = feedforward_dim
         self.residual = residual
+        self.num_actions = num_actions
 
-        convs = [conv_block(self.in_channels, self.conv_channels), ]
-        for _ in range(self.num_convs-1):
-            convs.append(conv_block(self.conv_channels, self.conv_channels))
+        convs = [ConvBlock(self.in_channels, self.conv_channels, residual=False), ]
+        for _ in range(self.num_initial_convs - 1):
+            convs.append(ConvBlock(self.conv_channels, self.conv_channels, residual=False))
 
-        self.conv_blocks = nn.Sequential(*convs)
+        self.initial_conv_blocks = nn.Sequential(*convs)
         self.coords = AddCoords()
 
         relational_blocks = [RelationalModule2D(self.num_attention_heads, self.conv_channels+2, self.relational_dim,
@@ -64,10 +52,17 @@ class RelationalBackbone(nn.Module):
 
         self.feedforward = nn.Sequential(*feedforwards)
 
-    def forward(self, x: torch.Tensor):
-        x = self.conv_blocks(x)
+        self.num_actions = num_actions
+        self.action_head = nn.Linear(feedforward_dim, self.num_actions)
+        self.value_head = nn.Linear(feedforward_dim, 1)
+
+    def forward(self, x: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+        x = self.initial_conv_blocks(x)
         x = self.coords(x)
         x = self.relational_blocks(x)
         x = F.adaptive_max_pool2d(x, (1, 1)).view(x.size(0), -1)
         x = self.feedforward(x)
-        return x
+        action_scores = self.action_head(x)
+        state_values = self.value_head(x)
+        return F.softmax(action_scores, dim=-1), state_values
+

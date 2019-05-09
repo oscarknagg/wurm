@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import math
+from torch.nn import functional as F
 
 
 class AddCoords(nn.Module):
@@ -60,7 +61,7 @@ class MultiHeadDotProductAttention(nn.Module):
 
         self.input_dim = input_dim
         self.output_dim = output_dim
-        self.per_head_dim = input_dim // num_heads
+        self.per_head_dim = output_dim // num_heads
         self.num_heads = num_heads
 
         self.q_linear = nn.Linear(input_dim, output_dim)
@@ -127,3 +128,30 @@ class RelationalModule2D(nn.Module):
             out += identity
 
         return out
+
+
+class ConvBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, residual: bool):
+        super(ConvBlock, self).__init__()
+        self.residual = residual
+        if residual:
+            assert in_channels == out_channels
+        self.conv = CoordConv2D(in_channels, out_channels, kernel_size=3, padding=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = x
+
+        out = self.conv(x)
+        out = F.relu(out)
+
+        if self.residual:
+            out += identity
+
+        return out
+
+
+def feedforward_block(input_dim: int, output_dim: int):
+    return nn.Sequential(
+        nn.Linear(input_dim, output_dim),
+        nn.ReLU()
+    )
