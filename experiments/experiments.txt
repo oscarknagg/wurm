@@ -17,7 +17,13 @@ python -m experiments.transfer --agent /home/oscar/PycharmProjects/wurm/models/e
 
 # Round 2
 # Updated models for fairer + random agent for baseline
-python -m experiments.a2c --agent relational    --env snake --num-envs 1 --size 9 --observation default --update-steps 40 --entropy 0.01 --total-steps 200
-python -m experiments.a2c --agent convolutional --env snake --num-envs 1 --size 9 --observation default --update-steps 40 --entropy 0.01 --total-steps 200
-python -m experiments.a2c --agent feedforward   --env snake --num-envs 1 --size 9 --observation partial_2 --update-steps 40 --entropy 0.01 --total-steps 200
-python -m experiments.a2c --agent random        --env snake --num-envs 1 --size 9 --observation default --update-steps 40 --entropy 0.01 --total-steps 200
+python -m experiments.a2c --agent relational    --env snake --num-envs 64 --size 9 --observation default --update-steps 40 --entropy 0.01 --total-steps 50e6 --r 0
+python -m experiments.a2c --agent relational    --env snake --num-envs 64 --size 9 --observation default --update-steps 40 --entropy 0.01 --total-steps 50e6 --r 1
+python -m experiments.a2c --agent relational    --env snake --num-envs 64 --size 9 --observation default --update-steps 40 --entropy 0.01 --total-steps 50e6 --r 2
+python -m experiments.a2c --agent convolutional --env snake --num-envs 64 --size 9 --observation default --update-steps 40 --entropy 0.01 --total-steps 50e6 --r 0
+python -m experiments.a2c --agent convolutional --env snake --num-envs 64 --size 9 --observation default --update-steps 40 --entropy 0.01 --total-steps 50e6 --r 1
+python -m experiments.a2c --agent convolutional --env snake --num-envs 64 --size 9 --observation default --update-steps 40 --entropy 0.01 --total-steps 50e6 --r 2
+python -m experiments.a2c --agent feedforward   --env snake --num-envs 64 --size 9 --observation partial_2 --update-steps 40 --entropy 0.01 --total-steps 50e6 --r 0
+python -m experiments.a2c --agent feedforward   --env snake --num-envs 64 --size 9 --observation partial_2 --update-steps 40 --entropy 0.01 --total-steps 50e6 --r 1
+python -m experiments.a2c --agent feedforward   --env snake --num-envs 64 --size 9 --observation partial_2 --update-steps 40 --entropy 0.01 --total-steps 50e6 --r 2
+python -m experiments.a2c --agent random        --env snake --num-envs 64 --size 9 --observation default --update-steps 40 --entropy 0.01 --total-steps 50e6 --r 0

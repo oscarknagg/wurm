@@ -25,7 +25,7 @@ MAX_GRAD_NORM = 0.5
 parser = argparse.ArgumentParser()
 parser.add_argument('--env')
 parser.add_argument('--agent')
-parser.add_argument('--mode', default='train', type=str)
+# parser.add_argument('--mode', default='train', type=str)
 parser.add_argument('--observation', default='default', type=str)
 parser.add_argument('--coord-conv', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--lr', default=1e-3, type=float)
@@ -37,8 +37,12 @@ parser.add_argument('--verbose', default=0, type=int)
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--entropy', default=0.0, type=float)
 parser.add_argument('--total-steps', default=50e6, type=float)
+parser.add_argument('--r', default=0, type=int, help='Repeat number')
 args = parser.parse_args()
-argstring = '__'.join([f'{k}={v}' for k, v in args.__dict__.items()])
+
+excluded_args = ['device', ]
+argsdict = {k: v for k, v in args.__dict__.items() if k not in excluded_args}
+argstring = '__'.join([f'{k}={v}' for k, v in argsdict])
 print(argstring)
 
 
