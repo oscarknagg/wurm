@@ -42,7 +42,8 @@ parser.add_argument('--update-steps', default=20, type=int)
 parser.add_argument('--verbose', default=0, type=int)
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--entropy', default=0.0, type=float)
-parser.add_argument('--total-steps', default=50e6, type=float)
+parser.add_argument('--total-steps', default=float('inf'), type=float)
+parser.add_argument('--total-episodes', default=float('inf'), type=float)
 parser.add_argument('--save-model', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--save-logs', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] == 't')
@@ -297,3 +298,9 @@ for i_step in count(1):
 
     if num_steps >= args.total_steps:
         break
+
+    if num_episodes >= args.total_episodes:
+        break
+
+if args.save_video:
+    recorder.close()
