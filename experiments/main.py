@@ -4,6 +4,7 @@ from itertools import count
 from collections import namedtuple
 import argparse
 from time import time, sleep
+from pprint import pprint
 import os
 
 import torch
@@ -62,44 +63,43 @@ else:
     save_file = args.save_location
 
 
-#################
-# Configure Env #
-#################
-if args.env == 'gridworld':
-    env = SimpleGridworld(num_envs=args.num_envs, size=args.size, start_location=(args.size//2, args.size//2),
-                          observation_mode=args.observation, device=args.device)
-elif args.env == 'snake':
-    env = SingleSnakeEnvironments(num_envs=args.num_envs, size=args.size, device=args.device,
-                                  observation_mode=args.observation)
-else:
-    raise ValueError('Unrecognised environment')
-
-
 ###################
 # Configure Agent #
 ###################
-if args.observation == 'one_channel':
-    in_channels = 1
-elif args.observation == 'default':
-    in_channels = 3
-elif args.observation == 'raw':
-    in_channels = env.envs.size(1)
-elif args.observation.startswith('partial_'):
-    in_channels = 3
-else:
-    raise ValueError
-
+# Reload/fresh model
 if os.path.exists(args.agent):
     # Agent is to be loaded from a file
     agent_str = args.agent.split('/')[-1][:-3]
     agent_params = {kv.split('=')[0]: kv.split('=')[1] for kv in agent_str.split('__')}
     agent_type = agent_params['agent']
+    observation_type = agent_params['observation']
     reload = True
+    print('Loading agent from file. Agent params:')
+    pprint(agent_params)
 else:
     # Creating a new agent
     agent_type = args.agent
+    observation_type = args.observation
     reload = False
 
+# Configure observation type
+if observation_type == 'one_channel':
+    in_channels = 1
+elif observation_type == 'default':
+    in_channels = 3
+elif observation_type == 'raw':
+    if args.env == 'gridworld':
+        in_channels = 2
+    elif args.env == 'snake':
+        in_channels = 3
+    else:
+        raise RuntimeError
+elif observation_type.startswith('partial_'):
+    in_channels = 3
+else:
+    raise ValueError
+
+# Create agent
 if agent_type == 'relational':
     model = agents.RelationalAgent(num_actions=4, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                                    num_relational=2, num_attention_heads=2, relational_dim=32, num_feedforward=1,
@@ -108,14 +108,14 @@ elif agent_type == 'simpleconv':
     model = agents.SimpleConvAgent(
         in_channels=in_channels, size=args.size, coord_conv=args.coord_conv).to(
         args.device)
-elif args.agent == 'convolutional':
+elif agent_type == 'convolutional':
     model = agents.ConvAgent(num_actions=4, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                              num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(args.device)
 elif agent_type == 'feedforward':
-    if args.observation == 'positions':
+    if observation_type == 'positions':
         num_inputs = 4
-    elif args.observation.startswith('partial_'):
-        observation_size = int(args.observation.split('_')[-1])
+    elif observation_type.startswith('partial_'):
+        observation_size = int(observation_type.split('_')[-1])
         observation_width = 2 * observation_size + 1
         num_inputs = 3 * (observation_width ** 2)
     else:
@@ -137,10 +137,22 @@ else:
     model.eval()
 print(model)
 
-
 if args.agent != 'random' and args.train:
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 eps = np.finfo(np.float32).eps.item()
+
+
+#################
+# Configure Env #
+#################
+if args.env == 'gridworld':
+    env = SimpleGridworld(num_envs=args.num_envs, size=args.size, start_location=(args.size//2, args.size//2),
+                          observation_mode=observation_type, device=args.device)
+elif args.env == 'snake':
+    env = SingleSnakeEnvironments(num_envs=args.num_envs, size=args.size, device=args.device,
+                                  observation_mode=observation_type)
+else:
+    raise ValueError('Unrecognised environment')
 
 running_length = None
 running_self_collisions = None
@@ -154,6 +166,7 @@ episode_length = 0
 num_episodes = 0
 num_steps = 0
 logger = CSVLogger(filename=f'{PATH}/logs/{save_file}.csv')
+
 
 ############################
 # Run agent in environment #
