@@ -36,13 +36,14 @@ class RelationalAgent(nn.Module):
             convs.append(ConvBlock(self.conv_channels, self.conv_channels, residual=False))
 
         self.initial_conv_blocks = nn.Sequential(*convs)
-        self.coords = AddCoords()
 
-        relational_blocks = [RelationalModule2D(self.num_attention_heads, self.conv_channels+2, self.relational_dim,
-                                                residual=False)]
+        relational_blocks = [RelationalModule2D(self.num_attention_heads, self.conv_channels, self.relational_dim,
+                                                residual=False, add_coords=True)]
         for _ in range(self.num_relational-1):
-            relational_blocks.append(RelationalModule2D(self.num_attention_heads, self.relational_dim,
-                                                        self.relational_dim, residual=self.residual))
+            relational_blocks.append(
+                RelationalModule2D(self.num_attention_heads, self.relational_dim,
+                                   self.relational_dim, residual=self.residual, add_coords=True)
+            )
 
         self.relational_blocks = nn.Sequential(*relational_blocks)
 
@@ -58,11 +59,9 @@ class RelationalAgent(nn.Module):
 
     def forward(self, x: torch.Tensor) -> (torch.Tensor, torch.Tensor):
         x = self.initial_conv_blocks(x)
-        x = self.coords(x)
         x = self.relational_blocks(x)
         x = F.adaptive_max_pool2d(x, (1, 1)).view(x.size(0), -1)
         x = self.feedforward(x)
         action_scores = self.action_head(x)
         state_values = self.value_head(x)
         return F.softmax(action_scores, dim=-1), state_values
-

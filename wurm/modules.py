@@ -109,14 +109,22 @@ class RelationalModule2D(nn.Module):
                  num_heads: int,
                  input_dim: int,
                  output_dim: int,
-                 residual: bool):
+                 residual: bool,
+                 add_coords: bool = True):
         super().__init__()
+        if add_coords:
+            self.addcoords = AddCoords()
+            input_dim = input_dim + 2
         self.attention = MultiHeadDotProductAttention(num_heads, input_dim, output_dim)
         self.residual = residual
 
     def forward(self, x: torch.Tensor):
         identity = x
         n, c, h, w = x.size()
+
+        if hasattr(self, 'addcoords'):
+            x = self.addcoords(x)
+            c += 2
 
         # Unroll the 2D image tensor to a sequence so it can be fed to
         # the attention module then return to original shape
@@ -131,7 +139,7 @@ class RelationalModule2D(nn.Module):
 
 
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, residual: bool):
+    def __init__(self, in_channels: int, out_channels: int, residual: bool, add_coords: bool = True):
         super(ConvBlock, self).__init__()
         self.residual = residual
         if residual:
