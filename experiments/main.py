@@ -6,6 +6,7 @@ import argparse
 from time import time, sleep
 from pprint import pprint
 import os
+from gym.wrappers.monitoring.video_recorder import VideoRecorder
 
 import torch
 import torch.nn as nn
@@ -44,6 +45,7 @@ parser.add_argument('--entropy', default=0.0, type=float)
 parser.add_argument('--total-steps', default=50e6, type=float)
 parser.add_argument('--save-model', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--save-logs', default=True, type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--save-location', type=str, default=None)
 parser.add_argument('--r', default=0, type=int, help='Repeat number')
 args = parser.parse_args()
@@ -166,6 +168,11 @@ episode_length = 0
 num_episodes = 0
 num_steps = 0
 logger = CSVLogger(filename=f'{PATH}/logs/{save_file}.csv')
+if args.save_video:
+    if args.num_envs != 1:
+        raise NotImplementedError('Video saving only implemented for a single env at a time.')
+    os.makedirs(PATH + f'/videos/{save_file}', exist_ok=True)
+    recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/0.mp4')
 
 
 ############################
@@ -177,6 +184,9 @@ for i_step in count(1):
     if args.render:
         env.render()
         sleep(1. / FPS)
+
+    if args.save_video:
+        recorder.capture_frame()
 
     probs, state_value = model(state)
     m = Categorical(probs)
@@ -228,6 +238,11 @@ for i_step in count(1):
     # Metrics
     num_episodes += done.sum().item()
     num_steps += args.num_envs
+
+    if args.save_video and done:
+        # Save video and make a new recorder
+        recorder.close()
+        recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/{num_episodes}.mp4')
 
     running_entropy = entropy.mean().item() if running_entropy is None else running_entropy * 0.975 + 0.025 * entropy.mean().item()
     running_reward_rate = reward.mean().item() if running_reward_rate is None else running_reward_rate * 0.975 + 0.025 * reward.mean().item()

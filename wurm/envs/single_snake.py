@@ -47,6 +47,10 @@ class SingleSnakeEnvironments(object):
     """
 
     spec = Spec(float('inf'))
+    metadata = {
+        'render.modes': ['rgb_array'],
+        'video.frames_per_second': 10
+    }
 
     def __init__(self,
                  num_envs: int,
@@ -376,7 +380,7 @@ class SingleSnakeEnvironments(object):
 
         return envs.round()
 
-    def render(self):
+    def render(self, mode: str = 'human'):
         if self.num_envs != 1:
             raise RuntimeError('Rendering is only supported for a single environment at a time')
 
@@ -390,6 +394,9 @@ class SingleSnakeEnvironments(object):
         img = img.cpu().numpy()[0]
         img = np.transpose(img, (1, 2, 0))
         img = np.array(Image.fromarray(img.astype(np.uint8)).resize((500, 500)))
-        self.viewer.imshow(img)
+        if mode == 'human':
+            self.viewer.imshow(img)
+        elif mode == 'rgb_array':
+            return img
 
-        return self.viewer.isopen
+        # return self.viewer.isopen
