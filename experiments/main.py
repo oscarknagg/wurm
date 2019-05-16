@@ -34,6 +34,9 @@ parser.add_argument('--train', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--observation', default='default', type=str)
 parser.add_argument('--coord-conv', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--render', default=False, type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--render-window-size', default=256, type=int)
+parser.add_argument('--render-cols', default=1, type=int)
+parser.add_argument('--render-rows', default=1, type=int)
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--gamma', default=0.99, type=float)
 parser.add_argument('--num-envs', default=1, type=int)
@@ -148,12 +151,17 @@ eps = np.finfo(np.float32).eps.item()
 #################
 # Configure Env #
 #################
+render_args = {
+    'size': args.render_size,
+    'num_rows': args.render_rows,
+    'num_cols': args.render_cols,
+}
 if args.env == 'gridworld':
     env = SimpleGridworld(num_envs=args.num_envs, size=args.size, start_location=(args.size//2, args.size//2),
                           observation_mode=observation_type, device=args.device)
 elif args.env == 'snake':
     env = SingleSnakeEnvironments(num_envs=args.num_envs, size=args.size, device=args.device,
-                                  observation_mode=observation_type)
+                                  observation_mode=observation_type, render_args=render_args)
 else:
     raise ValueError('Unrecognised environment')
 
@@ -168,10 +176,11 @@ saved_transitions = []
 episode_length = 0
 num_episodes = 0
 num_steps = 0
-logger = CSVLogger(filename=f'{PATH}/logs/{save_file}.csv')
+if args.save_logs:
+    logger = CSVLogger(filename=f'{PATH}/logs/{save_file}.csv')
 if args.save_video:
-    if args.num_envs != 1:
-        raise NotImplementedError('Video saving only implemented for a single env at a time.')
+    # if args.num_envs != 1:
+    #     raise NotImplementedError('Video saving only implemented for a single env at a time.')
     os.makedirs(PATH + f'/videos/{save_file}', exist_ok=True)
     recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/0.mp4')
 
@@ -240,10 +249,13 @@ for i_step in count(1):
     num_episodes += done.sum().item()
     num_steps += args.num_envs
 
-    if args.save_video and done:
-        # Save video and make a new recorder
-        recorder.close()
-        recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/{num_episodes}.mp4')
+    if args.save_video:
+        # If theres just one env save each episode to a different file
+        if args.num_envs == 1:
+            if done:
+                # Save video and make a new recorder
+                recorder.close()
+                recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/{num_episodes}.mp4')
 
     running_entropy = entropy.mean().item() if running_entropy is None else running_entropy * 0.975 + 0.025 * entropy.mean().item()
     running_reward_rate = reward.mean().item() if running_reward_rate is None else running_reward_rate * 0.975 + 0.025 * reward.mean().item()
@@ -296,11 +308,13 @@ for i_step in count(1):
             logger.write(logs)
         print(log_string)
 
-    if num_steps >= args.total_steps:
+    if num_steps > args.total_steps:
         break
 
-    if num_episodes >= args.total_episodes:
+    if num_episodes > args.total_episodes:
         break
 
 if args.save_video:
     recorder.close()
+
+print(num_steps / (time() -t0))

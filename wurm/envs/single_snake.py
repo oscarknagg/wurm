@@ -49,7 +49,7 @@ class SingleSnakeEnvironments(object):
     spec = Spec(float('inf'))
     metadata = {
         'render.modes': ['rgb_array'],
-        'video.frames_per_second': 10
+        'video.frames_per_second': 12
     }
 
     def __init__(self,
@@ -61,7 +61,8 @@ class SingleSnakeEnvironments(object):
                  observation_mode: str = 'one_channel',
                  device: str = DEFAULT_DEVICE,
                  manual_setup: bool = False,
-                 verbose: int = 0):
+                 verbose: int = 0,
+                 render_args: dict = None):
         """Initialise the environments
 
         Args:
@@ -77,6 +78,11 @@ class SingleSnakeEnvironments(object):
         self.observation_mode = observation_mode
         self.device = device
         self.verbose = verbose
+
+        if render_args is None:
+            self.render_args = {'num_rows': 1, 'num_cols': 1, 'size': 256}
+        else:
+            self.render_args = render_args
 
         self.envs = torch.zeros((num_envs, 3, size, size)).to(self.device).requires_grad_(False)
         self.t = 0
@@ -381,22 +387,43 @@ class SingleSnakeEnvironments(object):
         return envs.round()
 
     def render(self, mode: str = 'human'):
-        if self.num_envs != 1:
-            raise RuntimeError('Rendering is only supported for a single environment at a time')
-
         if self.viewer is None:
             self.viewer = rendering.SimpleImageViewer()
 
         # Get RBG Tensor BCHW
         img = self._get_rgb()
 
-        # Convert to numpy, transpose to HWC and resize
-        img = img.cpu().numpy()[0]
-        img = np.transpose(img, (1, 2, 0))
-        img = np.array(Image.fromarray(img.astype(np.uint8)).resize((500, 500)))
+        # Convert to numpy
+        img = img.cpu().numpy()
+
+        # Rearrange images depending on number of envs
+        if self.num_envs == 1:
+            num_cols = num_rows = 1
+            img = img[0]
+            img = np.transpose(img, (1, 2, 0))
+        else:
+            num_rows = self.render_args['num_rows']
+            num_cols = self.render_args['num_cols']
+            # Make a 2x2 grid of images
+            output = np.zeros((self.size*num_rows, self.size*num_cols, 3))
+            for i in range(num_rows):
+                for j in range(num_cols):
+                    output[
+                        i*self.size:(i+1)*self.size, j*self.size:(j+1)*self.size, :
+                    ] = np.transpose(img[i*num_cols + j], (1, 2, 0))
+
+            img = output
+
+        img = np.array(Image.fromarray(img.astype(np.uint8)).resize(
+            (self.render_args['size'] * num_cols,
+             self.render_args['size'] * num_rows)
+        ))
+
         if mode == 'human':
             self.viewer.imshow(img)
+            return self.viewer.isopen
         elif mode == 'rgb_array':
             return img
+        else:
+            raise ValueError('Render mode not recognised.')
 
-        # return self.viewer.isopen
