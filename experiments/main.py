@@ -57,6 +57,10 @@ excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 's
                  'render_window_size', 'render_rows', 'render_cols', 'save_video']
 if args.r is None:
     excluded_args += ['r', ]
+if args.total_steps == float('inf'):
+	excluded_args += ['total_steps']
+if args.total_episodes == float('inf'):
+	excluded_args += ['total_episodes']
 argsdict = {k: v for k, v in args.__dict__.items() if k not in excluded_args}
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
@@ -75,8 +79,9 @@ else:
 # Configure Agent #
 ###################
 # Reload/fresh model
-if os.path.exists(args.agent):
+if os.path.exists(args.agent) or os.path.exists(os.path.join(PATH, 'models', args.agent)):
     # Agent is to be loaded from a file
+    agent_path = args.agent if os.path.exists(args.agent) else os.path.join(PATH, 'models', args.agent)
     agent_str = args.agent.split('/')[-1][:-3]
     agent_params = {kv.split('=')[0]: kv.split('=')[1] for kv in agent_str.split('__')}
     agent_type = agent_params['agent']
@@ -136,7 +141,7 @@ else:
     raise ValueError('Unrecognised agent')
 
 if reload:
-    model.load_state_dict(torch.load(args.agent))
+    model.load_state_dict(torch.load(agent_path))
 
 if args.train:
     model.train()
