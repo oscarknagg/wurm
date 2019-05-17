@@ -219,6 +219,9 @@ class CSVLogger(object):
         self.file_flags = ''
         self._open_args = {'newline': '\n'}
 
+        # Make directory
+        os.makedirs(os.path.split(filename)[0])
+
         if self.append:
             if os.path.exists(self.filename):
                 with open(self.filename, 'r' + self.file_flags) as f:
