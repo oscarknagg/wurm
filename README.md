@@ -11,7 +11,7 @@ Clone this project, create a Python 3.6 virtualenv and install
 from `requirements.txt`.
 
 ```
-git clone
+git clone https://github.com/oscarknagg/wurm.git
 cd wurm
 virtualenv -p python3.6 venv
 source venv/bin/activate
