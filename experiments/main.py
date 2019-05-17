@@ -1,4 +1,4 @@
-"""Entry point for training, transfering and visualising agents."""
+"""Entry point for training, transferring and visualising agents."""
 import numpy as np
 from itertools import count
 from collections import namedtuple
@@ -16,7 +16,8 @@ from torch.distributions import Categorical
 
 from wurm.envs import SingleSnakeEnvironments, SimpleGridworld
 from wurm import agents
-from wurm.utils import env_consistency, CSVLogger
+from wurm.utils import env_consistency, CSVLogger, ExponentialMovingAverageTracker
+from wurm.rl import A2C, TrajectoryStore
 from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
 
@@ -54,7 +55,8 @@ parser.add_argument('--save-location', type=str, default=None)
 parser.add_argument('--r', default=0, type=int, help='Repeat number')
 args = parser.parse_args()
 
-excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render']
+excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
+                 'render_window_size', 'render_rows', 'render_cols']
 argsdict = {k: v for k, v in args.__dict__.items() if k not in excluded_args}
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
@@ -152,7 +154,7 @@ eps = np.finfo(np.float32).eps.item()
 # Configure Env #
 #################
 render_args = {
-    'size': args.render_size,
+    'size': args.render_window_size,
     'num_rows': args.render_rows,
     'num_cols': args.render_cols,
 }
@@ -165,13 +167,9 @@ elif args.env == 'snake':
 else:
     raise ValueError('Unrecognised environment')
 
-running_length = None
-running_self_collisions = None
-running_edge_collisions = None
-running_reward_rate = None
-running_entropy = None
 
-saved_transitions = []
+trajectories = TrajectoryStore()
+ewm_tracker = ExponentialMovingAverageTracker(alpha=0.025)
 
 episode_length = 0
 num_episodes = 0
@@ -179,10 +177,10 @@ num_steps = 0
 if args.save_logs:
     logger = CSVLogger(filename=f'{PATH}/logs/{save_file}.csv')
 if args.save_video:
-    # if args.num_envs != 1:
-    #     raise NotImplementedError('Video saving only implemented for a single env at a time.')
     os.makedirs(PATH + f'/videos/{save_file}', exist_ok=True)
     recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/0.mp4')
+
+a2c = A2C(model, gamma=args.gamma)
 
 
 ############################
@@ -198,74 +196,77 @@ for i_step in count(1):
     if args.save_video:
         recorder.capture_frame()
 
+    #############################
+    # Interact with environment #
+    #############################
     probs, state_value = model(state)
-    m = Categorical(probs)
-    entropy = m.entropy().mean()
-    action = m.sample().clone().long()
+    action_distribution = Categorical(probs)
+    entropy = action_distribution.entropy().mean()
+    action = action_distribution.sample().clone().long()
 
     state, reward, done, info = env.step(action)
+
     if args.env == 'snake':
         env_consistency(env.envs[~done.squeeze(-1)])
 
     if args.agent != 'random' and args.train:
-        saved_transitions.append(Transition(action, m.log_prob(action), state_value, reward, done, entropy))
+        trajectories.append(
+            action=action,
+            log_prob=action_distribution.log_prob(action),
+            value=state_value,
+            reward=reward,
+            done=done,
+            entropy=entropy
+        )
 
     env.reset(done)
 
-    if args.agent != 'random' and args.train:
-        if i_step % args.update_steps == 0:
-            with torch.no_grad():
-                _, bootstrap_value = model(state)
+    ##########################
+    # Advantage actor-critic #
+    ##########################
+    if args.agent != 'random' and args.train and i_step % args.update_steps == 0:
+        with torch.no_grad():
+            _, bootstrap_values = model(state)
 
-            R = bootstrap_value * (~done).float()
-            returns = []
-            for t in saved_transitions[::-1]:
-                R = t.reward + args.gamma * R * (~t.done).float()
-                returns.insert(0, R)
+        value_loss, policy_loss = a2c.loss(bootstrap_values, trajectories.rewards, trajectories.values,
+                                           trajectories.log_probs, trajectories.dones)
 
-            returns = torch.stack(returns)
+        entropy_loss = - trajectories.entropies.mean()
 
-            # Normalise returns
-            returns = (returns - returns.mean()) / (returns.std() + eps)
-            done = torch.stack([transition.done for transition in saved_transitions])
+        optimizer.zero_grad()
+        loss = value_loss + policy_loss + args.entropy * entropy_loss
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+        optimizer.step()
 
-            values = torch.stack([transition.value for transition in saved_transitions])
-            value_loss = F.smooth_l1_loss(values, returns).mean()
-            advantages = returns - values
-            log_probs = torch.stack([transition.log_prob for transition in saved_transitions]).unsqueeze(-1)
-            policy_loss = - (advantages.detach() * log_probs).mean()
+        trajectories.clear()
 
-            entropy_loss = - args.entropy * torch.stack([transition.entropy for transition in saved_transitions]).mean()
-
-            optimizer.zero_grad()
-            loss = value_loss + policy_loss + entropy_loss
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
-            optimizer.step()
-
-            saved_transitions = []
-
-    # Metrics
+    ###########
+    # Logging #
+    ###########
     num_episodes += done.sum().item()
     num_steps += args.num_envs
 
     if args.save_video:
-        # If theres just one env save each episode to a different file
+        # If there is just one env save each episode to a different file
+        # Otherwise save the whole video at the end
         if args.num_envs == 1:
             if done:
                 # Save video and make a new recorder
                 recorder.close()
                 recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/{num_episodes}.mp4')
 
-    running_entropy = entropy.mean().item() if running_entropy is None else running_entropy * 0.975 + 0.025 * entropy.mean().item()
-    running_reward_rate = reward.mean().item() if running_reward_rate is None else running_reward_rate * 0.975 + 0.025 * reward.mean().item()
-    running_edge_collisions = info[
-        'edge_collision'].float().mean().item() if running_edge_collisions is None else running_edge_collisions * 0.975 + info[
-        'edge_collision'].float().mean().item() * 0.025
+    ewm_tracker(
+        reward_rate=reward.mean().item(),
+        entropy=entropy.mean().item(),
+        edge_collisions=info['edge_collision'].float().mean().item()
+    )
+
     if args.env == 'snake':
-        running_self_collisions = info[
-            'self_collision'].float().mean().item() if running_self_collisions is None else running_self_collisions * 0.975 + info[
-            'self_collision'].float().mean().item() * 0.025
+        ewm_tracker(
+            self_collisions=info['self_collision'].float().mean().item(),
+            avg_size=env.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(args.num_envs, -1).max(dim=1)[0].mean().item()
+        )
 
     if i_step % LOG_INTERVAL == 0:
         if args.save_model:
@@ -275,8 +276,8 @@ for i_step in count(1):
         t = time() - t0
         log_string = '[{:02d}:{:02d}:{:02d}]\t'.format(int((t // 3600)), int((t // 60) % 60), int(t % 60))
         log_string += 'Steps {:.2f}e6\t'.format(num_steps/1e6)
-        log_string += 'Reward rate: {:.3e}\t'.format(running_reward_rate)
-        log_string += 'Entropy: {:.3e}\t'.format(running_entropy)
+        log_string += 'Reward rate: {:.3e}\t'.format(ewm_tracker['reward_rate'])
+        log_string += 'Entropy: {:.3e}\t'.format(ewm_tracker['entropy'])
 
         logs = {
             't': t,
@@ -284,6 +285,7 @@ for i_step in count(1):
             'episodes': num_episodes,
             'reward_rate': reward.mean().item(),
             'policy_entropy': entropy.mean().item(),
+            'edge_collisions': info['edge_collision'].float().mean().item()
         }
         if args.agent != 'random' and args.train:
             logs.update({
@@ -292,13 +294,11 @@ for i_step in count(1):
                 'entropy_loss': entropy_loss,
             })
 
-        log_string += 'Edge Collision: {:.3e}\t'.format(running_edge_collisions)
-        logs.update({'edge_collisions': info['edge_collision'].float().mean().item()})
+        log_string += 'Edge Collision: {:.3e}\t'.format(ewm_tracker['edge_collisions'])
 
         if args.env == 'snake':
             log_string += 'Avg. size: {:.3f}\t'.format(env.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(args.num_envs, -1).max(dim=1)[0].mean().item())
-            log_string += 'Self Collision: {:.3e}\t'.format(running_self_collisions)
-            # log_string += 'Reward rate: {:.3f}\tS'.format(running_reward / running_length)
+            log_string += 'Self Collision: {:.3e}\t'.format(ewm_tracker['self_collisions'])
             logs.update({
                 'avg_size': env.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(args.num_envs, -1).max(dim=1)[0].mean().item(),
                 'self_collisions': info['self_collision'].float().mean().item()
@@ -306,15 +306,13 @@ for i_step in count(1):
 
         if args.save_logs:
             logger.write(logs)
+
+        ewm_tracker(**logs)
+
         print(log_string)
 
-    if num_steps > args.total_steps:
-        break
-
-    if num_episodes > args.total_episodes:
+    if num_steps > args.total_steps or num_episodes > args.total_episodes:
         break
 
 if args.save_video:
     recorder.close()
-
-print(num_steps / (time() -t0))

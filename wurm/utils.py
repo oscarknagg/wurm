@@ -262,3 +262,31 @@ class CSVLogger(object):
         row_dict.update((key, handle_value(logs[key])) for key in self.keys)
         self.writer.writerow(row_dict)
         self.csv_file.flush()
+
+
+class PrintLogger(object):
+    def __init__(self):
+        pass
+
+    def write(self, logs: dict):
+        print(logs)
+
+
+class ExponentialMovingAverageTracker(object):
+    def __init__(self, alpha: float):
+        assert 0 <= alpha <= 1
+        self.alpha = alpha
+        self.smoothed_values = {}
+
+    def __call__(self, **kwargs):
+        """Takes in raw values and outputs smoothed values"""
+        for k, v in kwargs.items():
+            if k not in self.smoothed_values.keys():
+                self.smoothed_values[k] = v
+            else:
+                self.smoothed_values[k] = self.alpha * v + (1 - self.alpha) * self.smoothed_values[k]
+
+        return self.smoothed_values
+
+    def __getitem__(self, item):
+        return self.smoothed_values[item]
