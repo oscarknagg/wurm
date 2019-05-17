@@ -3,6 +3,12 @@
 Vectorised implementation of the classic mobile game, Snake, as a
 reinforcement learning environment.
 
+See this Medium article for a discussion of what you can do with this repo:
+
+https://medium.com/@oknagg/learning-to-play-snake-at-1-million-fps-4aae8d36d2f1
+
+Some training results are shown below
+
 ![Results](https://media.giphy.com/media/x003Vu0wXLvQQxq9ft/giphy.gif)
 
 ## Setup
@@ -26,6 +32,10 @@ pip install -r requirements.txt
 is a list of arguments.
 
 * env: What environment to run. Choose from {snake, gridworld}
+    - gridworld: Simple gridworld containing only a single agent pixel
+    and a reward pixel that respawns in a random location when reached.
+    Useful for debugging as is solved very quickly.
+    - snake: Clone of the classic mobile game snake.
 * num-envs: How many environments to run in parallel.
 * size: Size of environment in pixels
 * agent: Either the agent architecture to use or a filepath to a
@@ -72,13 +82,17 @@ num-envs argument.
 
 ```
 python -m experiments.main --agent feedforward --env snake --num-envs 512 --size 9 \
-    --observation partial_2 --update-steps 40 --entropy 0.01 --total-steps 10e6 --r -1 \
-    --save-logs True --save-model True --lr 0.001 --gamma 0.99
+    --observation partial_2 --update-steps 40 --entropy 0.01 --total-steps 10e6 \
+    --save-logs True --save-model True --lr 0.0005 --gamma 0.99
 ```
+
+Training curve should look something like this (1 run).
+
+![Imgur](https://i.imgur.com/bmQPWHy.png)
 
 Run this command to visualise the results
 ```
 python -m experiments.main \
-    --agent env=snake__agent=feedforward__observation=partial_2__coord_conv=True__lr=0.001__gamma=0.95__num_envs=512__size=9__update_steps=20__entropy=0.01__total_steps=5000000.0__total_episodes=inf__save_video=False__r=-1.pt \
+    --agent env=snake__num_envs=512__size=9__agent=feedforward__observation=partial_2__coord_conv=True__lr=0.0005__gamma=0.99__update_steps=40__entropy=0.01__total_steps=10000000.0.pt \
     --env snake --num-envs 1 --size 9 --total-episodes 5 --save-model False --save-logs False  --render True --train False
 ```
