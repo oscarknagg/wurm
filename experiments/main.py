@@ -270,6 +270,7 @@ for i_step in count(1):
 
     if i_step % LOG_INTERVAL == 0:
         if args.save_model:
+            os.makedirs(f'{PATH}/models/', exist_ok=True)
             torch.save(model.state_dict(), f'{PATH}/models/{save_file}.pt')
 
         # Logging

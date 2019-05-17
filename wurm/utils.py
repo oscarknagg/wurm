@@ -220,7 +220,7 @@ class CSVLogger(object):
         self._open_args = {'newline': '\n'}
 
         # Make directory
-        os.makedirs(os.path.split(filename)[0])
+        os.makedirs(os.path.split(filename)[0], exist_ok=True)
 
         if self.append:
             if os.path.exists(self.filename):
