@@ -21,7 +21,6 @@ from wurm.rl import A2C, TrajectoryStore
 from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
 
-SEED = 543
 RENDER = False
 LOG_INTERVAL = 100
 MAX_GRAD_NORM = 0.5
@@ -29,8 +28,10 @@ FPS = 10
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--env')
-parser.add_argument('--agent')
+parser.add_argument('--env', type=str)
+parser.add_argument('--num-envs', type=int)
+parser.add_argument('--size', type=int)
+parser.add_argument('--agent', type=str)
 parser.add_argument('--train', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--observation', default='default', type=str)
 parser.add_argument('--coord-conv', default=True, type=lambda x: x.lower()[0] == 't')
@@ -40,23 +41,22 @@ parser.add_argument('--render-cols', default=1, type=int)
 parser.add_argument('--render-rows', default=1, type=int)
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--gamma', default=0.99, type=float)
-parser.add_argument('--num-envs', default=1, type=int)
-parser.add_argument('--size', default=9, type=int)
 parser.add_argument('--update-steps', default=20, type=int)
-parser.add_argument('--verbose', default=0, type=int)
-parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--entropy', default=0.0, type=float)
 parser.add_argument('--total-steps', default=float('inf'), type=float)
 parser.add_argument('--total-episodes', default=float('inf'), type=float)
+parser.add_argument('--save-location', type=str, default=None)
 parser.add_argument('--save-model', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--save-logs', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--save-location', type=str, default=None)
-parser.add_argument('--r', default=0, type=int, help='Repeat number')
+parser.add_argument('--device', default='cuda', type=str)
+parser.add_argument('--r', default=None, type=int, help='Repeat number')
 args = parser.parse_args()
 
 excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
-                 'render_window_size', 'render_rows', 'render_cols']
+                 'render_window_size', 'render_rows', 'render_cols', 'save_video']
+if args.r is None:
+    excluded_args += ['r', ]
 argsdict = {k: v for k, v in args.__dict__.items() if k not in excluded_args}
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
@@ -297,7 +297,7 @@ for i_step in count(1):
         log_string += 'Edge Collision: {:.3e}\t'.format(ewm_tracker['edge_collisions'])
 
         if args.env == 'snake':
-            log_string += 'Avg. size: {:.3f}\t'.format(env.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(args.num_envs, -1).max(dim=1)[0].mean().item())
+            log_string += 'Avg. size: {:.3f}\t'.format(ewm_tracker['avg_size'])
             log_string += 'Self Collision: {:.3e}\t'.format(ewm_tracker['self_collisions'])
             logs.update({
                 'avg_size': env.envs[:, BODY_CHANNEL:BODY_CHANNEL + 1, :].view(args.num_envs, -1).max(dim=1)[0].mean().item(),

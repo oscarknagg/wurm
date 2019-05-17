@@ -28,11 +28,12 @@ is a list of arguments.
 * env: What environment to run. Choose from {snake, gridworld}
 * num-envs: How many environments to run in parallel.
 * size: Size of environment in pixels
-* agent: What agent architecture to use.
+* agent: Either the agent architecture to use or a filepath to a
+pretrained model.
     - random: performs random actions only.
-    - convolutional:
-    - relational:
-    - feedforward: Takes observat
+    - convolutional: 4 convolutional layers.
+    - relational: 2 convolutional layers and 2 spatial self-attention layers.
+    - feedforward: 2 feedforward layers.
 relational, feedforward}
 * train: Whether to train the agent with A2C or not
 * observation: What observation type to use.
