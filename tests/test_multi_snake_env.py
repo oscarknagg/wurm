@@ -14,21 +14,21 @@ render_sleep = 0.5
 size = 12
 
 
-def get_test_env():
-    env = MultiSnake(num_envs=1, num_snakes=2, size=size, manual_setup=True)
+def get_test_env(num_envs=1):
+    env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=True)
 
     # Snake 1
-    env.envs[0, 1, 5, 5] = 1
-    env.envs[0, 2, 5, 5] = 4
-    env.envs[0, 2, 4, 5] = 3
-    env.envs[0, 2, 4, 4] = 2
-    env.envs[0, 2, 4, 3] = 1
+    env.envs[:, 1, 5, 5] = 1
+    env.envs[:, 2, 5, 5] = 4
+    env.envs[:, 2, 4, 5] = 3
+    env.envs[:, 2, 4, 4] = 2
+    env.envs[:, 2, 4, 3] = 1
     # Snake 2
-    env.envs[0, 3, 8, 7] = 1
-    env.envs[0, 4, 8, 7] = 4
-    env.envs[0, 4, 8, 8] = 3
-    env.envs[0, 4, 8, 9] = 2
-    env.envs[0, 4, 9, 9] = 1
+    env.envs[:, 3, 8, 7] = 1
+    env.envs[:, 4, 8, 7] = 4
+    env.envs[:, 4, 8, 8] = 3
+    env.envs[:, 4, 8, 9] = 2
+    env.envs[:, 4, 9, 9] = 1
 
     return env
 
@@ -227,13 +227,15 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env.check_consistency()
 
     def test_reset(self):
+        num_snakes = 2
+
         # agent_1 dies by other-collision, agent_0 dies by edge-collision
-        env = get_test_env()
-        env.envs[0, 0, 1, 1] = 1
+        env = get_test_env(num_envs=1)
+        env.envs[:, 0, 1, 1] = 1
 
         all_actions = {
-            'agent_0': torch.Tensor([1, 2, 3, 3, 3, 3, 3, 3, 3, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.Tensor([0, 1, 2, 2, 2, 2, 2, 2, 2, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_0': torch.Tensor([1, 2, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.Tensor([0, 1, 2, 2, 2, 2, 2, 2, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         print_or_render(env)
@@ -244,14 +246,16 @@ class TestMultiSnakeEnv(unittest.TestCase):
             }
 
             observations, rewards, dones, info = env.step(actions)
-            env.check_consistency()
-
-            print(i, dones)
 
             env.reset(dones['__all__'])
 
+            print(i, dones)
+            env.check_consistency()
+
             print_or_render(env)
 
+        # Both snakes should've died and hence the environment should've reset
+        self.assertTrue(torch.all(env._bodies.view(1, num_snakes, -1).max(dim=-1)[0] == env.initial_snake_length))
 
     def test_agent_observations(self):
         # Test that own snake appears green, others appear blue
