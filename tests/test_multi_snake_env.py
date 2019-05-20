@@ -45,10 +45,9 @@ def print_or_render(env):
 
 class TestMultiSnakeEnv(unittest.TestCase):
     def test_random_actions(self):
-        # Create some environments adn run random actions for N steps, checking for consistency at each step
+        # Create some environments and run random actions for N steps, checking for consistency at each step
         pass
 
-    @pytest.mark.skip()
     def test_basic_movement(self):
         env = get_test_env()
 
@@ -222,16 +221,37 @@ class TestMultiSnakeEnv(unittest.TestCase):
         # Check new food has been created
         self.assertEqual(food(env.envs).sum().item(), 1)
 
-    def test_post_death(self):
-        # Test nothing breaks when 1 snake dies and the other continues
-        pass
-
-    def test_food_creation_on_death(self):
-        pass
+    def test_create_envs(self):
+        # Create a large number of environments and check consistency
+        env = MultiSnake(num_envs=512, num_snakes=2, size=size, manual_setup=False)
+        env.check_consistency()
 
     def test_reset(self):
-        # Environment resets when all snakes are dead
-        pass
+        # agent_1 dies by other-collision, agent_0 dies by edge-collision
+        env = get_test_env()
+        env.envs[0, 0, 1, 1] = 1
+
+        all_actions = {
+            'agent_0': torch.Tensor([1, 2, 3, 3, 3, 3, 3, 3, 3, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.Tensor([0, 1, 2, 2, 2, 2, 2, 2, 2, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        print_or_render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+            env.check_consistency()
+
+            print(i, dones)
+
+            env.reset(dones['__all__'])
+
+            print_or_render(env)
+
 
     def test_agent_observations(self):
         # Test that own snake appears green, others appear blue
