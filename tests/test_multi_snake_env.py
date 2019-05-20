@@ -34,7 +34,7 @@ def get_test_env():
 
 
 def print_or_render(env):
-    print('='*10)
+    print('='*30)
     if print_envs:
         print(env._bodies)
 

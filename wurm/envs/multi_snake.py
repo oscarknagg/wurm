@@ -363,29 +363,14 @@ class MultiSnake(object):
         for i, (agent, act) in enumerate(actions.items()):
             # Create food at dead snake positions
             # Currently create at odd body positions (do randomly later?)
-            dead_snake_locations = (self.envs[dones[agent], self.body_channels[i], :, :] > EPS).byte()
-            food_locations = (self.envs[dones[agent], self.body_channels[i], :, :].fmod(2) > 0).byte()
             if dones[agent].sum() > 0:
-                print(self.envs[dones[agent], self.body_channels[i], :, :])
-                print(self.envs[dones[agent], self.body_channels[i], :, :].fmod(2))
-                print(self.envs[dones[agent], self.body_channels[i], :, :].fmod(2) > 0)
-                # print(
-                #     self.envs[dones[agent], 0:1, :, :].shape,
-                #     (self.envs[dones[agent], self.body_channels[i], :, :].fmod(2) > EPS).float().shape
-                # )
                 self.envs[dones[agent], 0:1, :, :] += (
                     (self.envs[dones[agent], self.body_channels[i], :, :].fmod(2) > EPS).float()
                 )
-                # print(dead_snake_locations.shape, dead_snake_locations.sum(), food_locations.sum())
-                # print(food_locations)
 
                 # Remove any snakes that are dead
                 self.envs[dones[agent], self.body_channels[i], :, :] = 0
                 self.envs[dones[agent], self.head_channels[i], :, :] = 0
-
-            # TODO:
-            # Keep track of which snakes are already dead not just which have died
-            # in the current step
 
         # Apply rounding to stop numerical errors accumulating
         self.envs.round_()
