@@ -9,7 +9,7 @@ from config import DEFAULT_DEVICE
 
 
 print_envs = False
-render_envs = True
+render_envs = False
 render_sleep = 0.5
 size = 12
 
@@ -269,7 +269,6 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
             env.reset(dones['__all__'])
 
-            print(i, dones)
             env.check_consistency()
 
             print_or_render(env)
@@ -279,4 +278,14 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
     def test_agent_observations(self):
         # Test that own snake appears green, others appear blue
-        pass
+        env = get_test_env(num_envs=1)
+        env.envs[:, 0, 1, 1] = 1
+
+        obs_0 = env._observe_agent(0)
+        obs_1 = env._observe_agent(1)
+
+        # Check that own agent appears green and other appears blue
+        self.assertTrue(torch.equal(obs_0[0, :, 4, 5], env.self_body_colour))
+        self.assertTrue(torch.equal(obs_0[0, :, 8, 8], env.other_body_colour))
+        self.assertTrue(torch.equal(obs_1[0, :, 4, 5], env.other_body_colour))
+        self.assertTrue(torch.equal(obs_1[0, :, 8, 8], env.self_body_colour))

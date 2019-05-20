@@ -9,7 +9,7 @@ from PIL import Image
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
 from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
-from wurm.utils import determine_orientations, head, food, body, drop_duplicates, env_consistency, snake_consistency
+from wurm.utils import determine_orientations, drop_duplicates, env_consistency, snake_consistency, head, body, food
 
 
 Spec = namedtuple('Spec', ['reward_threshold'])
@@ -62,7 +62,8 @@ class MultiSnake(object):
                  observation_mode: str = 'one_channel',
                  device: str = DEFAULT_DEVICE,
                  manual_setup: bool = True,
-                 verbose: int = 0):
+                 verbose: int = 0,
+                 render_args: dict = None):
         """Initialise the environments
 
         Args:
@@ -78,6 +79,11 @@ class MultiSnake(object):
         self.observation_mode = observation_mode
         self.device = device
         self.verbose = verbose
+
+        if render_args is None:
+            self.render_args = {'num_rows': 1, 'num_cols': 1, 'size': 256}
+        else:
+            self.render_args = render_args
 
         self.envs = torch.zeros((num_envs, 1 + 2 * num_snakes, size, size)).to(self.device).requires_grad_(False)
         self.head_channels = [1 + 2*i for i in range(self.num_snakes)]
@@ -109,22 +115,55 @@ class MultiSnake(object):
         self.food_colour = torch.Tensor((255, 0, 0)).short().to(self.device)
         self.edge_colour = torch.Tensor((0, 0, 0)).short().to(self.device)
 
-    def _get_rgb(self):
-        # RGB image same as is displayed in .render()
+    # def _get_rgb(self):
+    #     # RGB image same as is displayed in .render()
+    #     img = torch.ones((self.num_envs, 3, self.size, self.size)).to(self.device).short() * 255
+    #
+    #     # Convert to BHWC axes for easier indexing here
+    #     img = img.permute((0, 2, 3, 1))
+    #
+    #     body_locations = ((self._bodies > EPS).squeeze(1).sum(dim=1) > EPS).byte()
+    #     img[body_locations, :] = self.self_body_colour
+    #
+    #     head_locations = ((self._heads > EPS).squeeze(1).sum(dim=1) > EPS).byte()
+    #     img[head_locations, :] = self.self_head_colour
+    #
+    #     food_locations = (self._food > EPS).squeeze(1)
+    #     img[food_locations, :] = self.food_colour
+    #
+    #     img[:, :1, :, :] = self.edge_colour
+    #     img[:, :, :1, :] = self.edge_colour
+    #     img[:, -1:, :, :] = self.edge_colour
+    #     img[:, :, -1:, :] = self.edge_colour
+    #
+    #     # Convert back to BCHW axes
+    #     img = img.permute((0, 3, 1, 2))
+    #
+    #     return img
+
+    def _make_rgb(self,
+                  foods: torch.Tensor,
+                  heads: torch.Tensor,
+                  bodies: torch.Tensor,
+                  other_heads: torch.Tensor = None,
+                  other_bodies: torch.Tensor = None):
         img = torch.ones((self.num_envs, 3, self.size, self.size)).to(self.device).short() * 255
 
         # Convert to BHWC axes for easier indexing here
         img = img.permute((0, 2, 3, 1))
 
+        objects_to_colours = {
+            foods: self.food_colour,
+            bodies: self.self_body_colour,
+            other_bodies: self.other_body_colour,
+            heads: self.self_head_colour,
+            other_heads: self.other_head_colour,
+        }
 
-        body_locations = ((self._bodies > EPS).squeeze(1).sum(dim=1) > EPS).byte()
-        img[body_locations, :] = self.self_body_colour
-
-        head_locations = ((self._heads > EPS).squeeze(1).sum(dim=1) > EPS).byte()
-        img[head_locations, :] = self.self_head_colour
-
-        food_locations = (food(self.envs) > EPS).squeeze(1)
-        img[food_locations, :] = self.food_colour
+        for obj, colour in objects_to_colours.items():
+            if obj is not None:
+                locations = (obj > EPS).squeeze(1)
+                img[locations, :] = colour
 
         img[:, :1, :, :] = self.edge_colour
         img[:, :, :1, :] = self.edge_colour
@@ -136,85 +175,63 @@ class MultiSnake(object):
 
         return img
 
-    def render(self):
-        if self.num_envs != 1:
-            raise RuntimeError('Rendering is only supported for a single environment at a time')
-
+    def render(self, mode: str = 'human'):
         if self.viewer is None:
             self.viewer = rendering.SimpleImageViewer()
 
         # Get RBG Tensor BCHW
-        img = self._get_rgb()
+        img = self._make_rgb(
+            foods=self._food,
+            bodies=self._bodies.sum(dim=1 , keepdim=True),
+            heads=self._heads.sum(dim=1 , keepdim=True)
+        )
 
-        # Convert to numpy, transpose to HWC and resize
-        img = img.cpu().numpy()[0]
-        img = np.transpose(img, (1, 2, 0))
-        img = np.array(Image.fromarray(img.astype(np.uint8)).resize((500, 500)))
-        self.viewer.imshow(img)
+        # Convert to numpy
+        img = img.cpu().numpy()
 
-        return self.viewer.isopen
+        # Rearrange images depending on number of envs
+        if self.num_envs == 1:
+            num_cols = num_rows = 1
+            img = img[0]
+            img = np.transpose(img, (1, 2, 0))
+        else:
+            num_rows = self.render_args['num_rows']
+            num_cols = self.render_args['num_cols']
+            # Make a 2x2 grid of images
+            output = np.zeros((self.size * num_rows, self.size * num_cols, 3))
+            for i in range(num_rows):
+                for j in range(num_cols):
+                    output[
+                    i * self.size:(i + 1) * self.size, j * self.size:(j + 1) * self.size, :
+                    ] = np.transpose(img[i * num_cols + j], (1, 2, 0))
+
+            img = output
+
+        img = np.array(Image.fromarray(img.astype(np.uint8)).resize(
+            (self.render_args['size'] * num_cols,
+             self.render_args['size'] * num_rows)
+        ))
+
+        if mode == 'human':
+            self.viewer.imshow(img)
+            return self.viewer.isopen
+        elif mode == 'rgb_array':
+            return img
+        else:
+            raise ValueError('Render mode not recognised.')
+
+    def _observe_agent(self, agent: int) -> torch.Tensor:
+        agents = torch.arange(self.num_snakes)
+        return self._make_rgb(
+            foods=self._food,
+            bodies=self._bodies[:, agent].unsqueeze(1),
+            heads=self._heads[:, agent].unsqueeze(1),
+            other_bodies=self._bodies[:, agents[agents != agent]],
+            other_heads=self._heads[:, agents[agents != agent]]
+        )
 
     def _observe(self):
-        if self.observation_mode == 'default':
-            observation = self.envs.clone()
-            # Add in -1 values to indicate edge of map
-            observation[:, :, :1, :] = -1
-            observation[:, :, :, :1] = -1
-            observation[:, :, -1:, :] = -1
-            observation[:, :, :, -1:] = -1
-            return observation
-        elif self.observation_mode == 'one_channel':
-            observation = (self.envs[:, BODY_CHANNEL, :, :] > EPS).float() * 0.5
-            observation += self.envs[:, HEAD_CHANNEL, :, :] * 0.5
-            observation += self.envs[:, FOOD_CHANNEL, :, :] * 1.5
-            # Add in -1 values to indicate edge of map
-            observation[:, :1, :] = -1
-            observation[:, :, :1] = -1
-            observation[:, -1:, :] = -1
-            observation[:, :, -1:] = -1
-            return observation.unsqueeze(1)
-        elif self.observation_mode == 'positions':
-            observation = (self.envs[:, BODY_CHANNEL, :, :] > EPS).float() * 0.5
-            observation += self.envs[:, HEAD_CHANNEL, :, :] * 0.5
-            observation += self.envs[:, FOOD_CHANNEL, :, :] * 1.5
-            head_idx = self.envs[:, HEAD_CHANNEL, :, :].view(self.num_envs, self.size ** 2).argmax(dim=-1)
-            food_idx = self.envs[:, FOOD_CHANNEL, :, :].view(self.num_envs, self.size ** 2).argmax(dim=-1)
-            size = torch.Tensor([self.size, ]*self.num_envs).long().to(self.device)
-            observation = torch.stack([
-                head_idx // size,
-                head_idx % size,
-                food_idx // size,
-                food_idx % size
-            ]).float().t()
-            return observation
-        elif self.observation_mode.startswith('partial_'):
-            observation_size = int(self.observation_mode.split('_')[-1])
-            observation_width = 2 * observation_size + 1
-
-            # Pad envs so we ge tthe correct size observation even when the head of the snake
-            # is close to the edge of the environment
-            padding = [observation_size, observation_size, ] * 2
-            padded_envs = F.pad(self.envs.clone(), padding)
-
-            filter = torch.ones((1, 1, observation_width, observation_width)).to(self.device)
-            head_area_indices = torch.nn.functional.conv2d(
-                padded_envs[:, HEAD_CHANNEL:HEAD_CHANNEL + 1].clone(), filter, padding=observation_size
-            ).round()
-
-            # Add in -1 values to indicate edge of map
-            padded_envs[:, :, :observation_size, :] = -1
-            padded_envs[:, :, :, :observation_size] = -1
-            padded_envs[:, :, -observation_size:, :] = -1
-            padded_envs[:, :, :, -observation_size:] = -1
-
-            observations = padded_envs[
-                head_area_indices.expand_as(padded_envs).byte()
-            ]
-            observations = observations.view((self.num_envs, 3 * (observation_width ** 2))).clone()
-
-            return observations
-        else:
-            raise Exception
+        return {f'agent_{i}': self._observe_agent(i) for i in range(self.num_snakes)}
 
     @property
     def _food(self) -> torch.Tensor:
@@ -384,7 +401,7 @@ class MultiSnake(object):
         for i in range(self.num_snakes):
             self.snake_dones[:, i] = self.snake_dones[:, i] | dones[f'agent_{i}']
 
-        return dict(), rewards, dones, info
+        return self._observe(), rewards, dones, info
 
     def check_consistency(self):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
