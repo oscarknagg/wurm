@@ -107,8 +107,8 @@ def get_test_env(size: int, orientation: str = 'up') -> torch.Tensor:
     return env
 
 
-def env_consistency(envs: torch.Tensor):
-    """Runs multiple checks for environment consistency and throws an exception if any fail"""
+def snake_consistency(envs: torch.Tensor):
+    """Checks for consistency of a 3 channel single-snake env."""
     n = envs.shape[0]
     if n == 0:
         return
@@ -136,6 +136,11 @@ def env_consistency(envs: torch.Tensor):
     consistent_body_size = torch.equal(estimated_body_sizes, body_sizes)
     if not consistent_body_size:
         raise RuntimeError('An environment has a body with inconsistent values i.e. not range(n)')
+
+
+def env_consistency(envs: torch.Tensor):
+    """Runs multiple checks for environment consistency and throws an exception if any fail"""
+    snake_consistency(envs)
 
     # Environment contains one food instance
     contains_one_food = torch.all(food(envs).view(n, -1).sum(dim=-1) == 1)

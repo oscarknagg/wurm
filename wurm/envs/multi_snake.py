@@ -9,7 +9,7 @@ from PIL import Image
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
 from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
-from wurm.utils import determine_orientations, head, food, body, drop_duplicates, env_consistency
+from wurm.utils import determine_orientations, head, food, body, drop_duplicates, env_consistency, snake_consistency
 
 
 Spec = namedtuple('Spec', ['reward_threshold'])
@@ -95,6 +95,7 @@ class MultiSnake(object):
 
         # Environment dynamics parameters
         self.respawn_mode = ['all_snakes', 'any_snake'][0]
+        self.food_on_death = True
 
         # Rendering parameters
         self.viewer = None
@@ -215,15 +216,15 @@ class MultiSnake(object):
             raise Exception
 
     @property
-    def _food(self):
+    def _food(self) -> torch.Tensor:
         return self.envs[:, 0:1, :, :]
 
     @property
-    def _heads(self):
+    def _heads(self) -> torch.Tensor:
         return self.envs[:, self.head_channels, :, :]
 
     @property
-    def _bodies(self):
+    def _bodies(self) -> torch.Tensor:
         return self.envs[:, self.body_channels, :, :]
 
     def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[dict, dict, dict, dict]:
@@ -384,17 +385,29 @@ class MultiSnake(object):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
         n = self.num_envs
 
-        # Each snake has one head
+        # Check individual snake consistency
+        # Check at least one food exists
         for i in range(self.num_snakes):
             head_channel = self.head_channels[i]
             body_channel = self.body_channels[i]
             _env = self.envs[:, [0, head_channel, body_channel], :, :]
-            env_consistency(_env)
+            snake_consistency(_env)
 
-        # At least one food exists
-        # Possibly more than one due to snake deaths
+            # Environment contains one food instance
+            contains_one_food = torch.all(food(self.envs).view(n, -1).sum(dim=-1) >= 1)
+            if not contains_one_food:
+                raise RuntimeError('An environment doesn\'t contain at least one food instance')
 
-        #
+        # Check no overlapping bodies
+        # Sum of bodies in each square of each env should be no more than 1
+        no_overlapping_bodies = torch.all(self._bodies.sum(dim=1, keepdim=True).view(n, -1).max(dim=1)[0] <= 1)
+        if not no_overlapping_bodies:
+            raise RuntimeError('An environment contains overlapping snakes')
+
+        # Check number of heads is no more than env.num_snakes
+        num_heads = self._heads.sum(dim=1, keepdim=True).view(n, -1)
+        if not torch.all(num_heads <= self.num_snakes):
+            raise RuntimeError('An environment contains more snakes than it should.')
 
     def _get_food_addition(self, envs: torch.Tensor):
         # Get empty locations
