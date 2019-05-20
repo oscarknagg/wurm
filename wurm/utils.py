@@ -115,6 +115,8 @@ def snake_consistency(envs: torch.Tensor):
 
     one_head_per_snake = torch.all(head(envs).view(n, -1).sum(dim=-1) == 1)
     if not one_head_per_snake:
+        print('Snake head sums: ')
+        print(head(envs).view(n, -1).sum(dim=-1))
         raise RuntimeError('An environment has multiple num_heads for a single snake.')
 
     # Environment contains a snake
