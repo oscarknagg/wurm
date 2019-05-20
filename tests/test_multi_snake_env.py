@@ -1,7 +1,7 @@
 import unittest
 import pytest
 import torch
-from time import sleep
+from time import sleep, time
 
 from wurm.envs import MultiSnake
 from wurm.utils import head, body, food
@@ -45,8 +45,28 @@ def print_or_render(env):
 
 class TestMultiSnakeEnv(unittest.TestCase):
     def test_random_actions(self):
+        num_envs = 100
+        num_steps = 100
         # Create some environments and run random actions for N steps, checking for consistency at each step
-        pass
+        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False)
+        env.check_consistency()
+
+        all_actions = {
+            'agent_0': torch.randint(4, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.randint(4, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE),
+        }
+
+        t0 = time()
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+            observations, reward, done, info = env.step(actions)
+            env.reset(done['__all__'])
+            env.check_consistency()
+
+        t = time() - t0
+        print(f'Ran {num_envs * num_steps} actions in {t}s = {num_envs * num_steps / t} actions/s')
 
     def test_basic_movement(self):
         env = get_test_env()

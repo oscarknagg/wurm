@@ -364,7 +364,7 @@ class MultiSnake(object):
             # Create food at dead snake positions
             # Currently create at odd body positions (do randomly later?)
             if dones[agent].sum() > 0:
-                self.envs[dones[agent], 0:1, :, :] += (
+                self.envs[dones[agent], 0, :, :] += (
                     (self.envs[dones[agent], self.body_channels[i], :, :].fmod(2) > EPS).float()
                 )
 
@@ -396,14 +396,18 @@ class MultiSnake(object):
 
             # Check dead snakes all 0
             if self.snake_dones[:, i].sum() > 0:
-                dead_envs = self.envs[self.snake_dones[:, i], [0, head_channel, body_channel], :, :].unsqueeze(0)
-                dead_all_zeros = dead_envs[:, [1, 2], :, :].sum() == 0
+                dead_envs = torch.cat([
+                    self.envs[self.snake_dones[:, i], head_channel:head_channel+1:, :, :],
+                    self.envs[self.snake_dones[:, i], body_channel:body_channel + 1, :, :]
+                ], dim=1)
+                dead_all_zeros = dead_envs.sum() == 0
                 if not dead_all_zeros:
+                    # print(dead_envs[0].short())
                     raise RuntimeError('Dead snake contains non-zero elements.')
 
             # Check living envs
             if (~self.snake_dones[:, i]).sum() > 0:
-                living_envs = torch.stack([
+                living_envs = torch.cat([
                     self.envs[~self.snake_dones[:, i], 0:1, :, :],
                     self.envs[~self.snake_dones[:, i], head_channel:head_channel + 1, :, :],
                     self.envs[~self.snake_dones[:, i], body_channel:body_channel + 1, :, :]
@@ -502,7 +506,7 @@ class MultiSnake(object):
             available_locations[:, :, :, -l:] = 0
 
             # If there is no available locations for a snake raise an exception
-            any_available_locations = available_locations.view(self.num_envs, -1).max(dim=1)[0].byte()
+            any_available_locations = available_locations.view(num_envs, -1).max(dim=1)[0].byte()
             if torch.any(~any_available_locations):
                 raise RuntimeError('There is no available locations to create snake!')
 
