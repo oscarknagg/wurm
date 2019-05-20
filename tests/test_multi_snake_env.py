@@ -8,7 +8,7 @@ from wurm.utils import head, body, food
 from config import DEFAULT_DEVICE
 
 
-print_envs = True
+print_envs = False
 render_envs = True
 render_sleep = 0.5
 size = 12
@@ -34,8 +34,8 @@ def get_test_env():
 
 
 def print_or_render(env):
-    print('='*30)
     if print_envs:
+        print('='*30)
         print(env._bodies)
 
     if render_envs:
@@ -44,6 +44,10 @@ def print_or_render(env):
 
 
 class TestMultiSnakeEnv(unittest.TestCase):
+    def test_random_actions(self):
+        # Create some environments adn run random actions for N steps, checking for consistency at each step
+        pass
+
     @pytest.mark.skip()
     def test_basic_movement(self):
         env = get_test_env()
@@ -123,18 +127,44 @@ class TestMultiSnakeEnv(unittest.TestCase):
             env.check_consistency()
 
             print_or_render(env)
-            print(i)
-            print(dones)
 
             if i >= 6:
                 self.assertEqual(dones['agent_0'].item(), 1)
             else:
                 self.assertEqual(dones['agent_0'].item(), 0)
 
-
+        # Check some food has been created on death
+        self.assertGreaterEqual(env.envs[:, 0].sum(), 2)
 
     def test_other_snake_collision(self):
-        pass
+        # Actions and snakes are arranged so agent_1 collides with agent_0 and dies
+        env = get_test_env()
+        env.envs[0, 0, 1, 1] = 1
+
+        all_actions = {
+            'agent_0': torch.Tensor([1, 2, 3, 3, 3, 3, 3, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.Tensor([0, 1, 2, 2, 2, 2, 2, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        print_or_render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+            env.check_consistency()
+
+            if i >= 6:
+                self.assertEqual(dones['agent_1'].item(), 1)
+            else:
+                self.assertEqual(dones['agent_1'].item(), 0)
+
+            print_or_render(env)
+
+        # Check some food has been created on death
+        self.assertGreaterEqual(env.envs[:, 0].sum(), 2)
 
     def test_eat_food(self):
         env = get_test_env()
