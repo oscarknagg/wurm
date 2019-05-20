@@ -3,19 +3,19 @@ import pytest
 import torch
 from time import sleep
 
-from wurm.envs import MultiSnakeEnvironments
+from wurm.envs import MultiSnake
 from wurm.utils import head, body, food
 from config import DEFAULT_DEVICE
 
 
 print_envs = False
-render_envs = False
+render_envs = True
 render_sleep = 0.5
 size = 12
 
 
 def get_test_env():
-    env = MultiSnakeEnvironments(num_envs=1, num_snakes=2, size=size, manual_setup=True)
+    env = MultiSnake(num_envs=1, num_snakes=2, size=size, manual_setup=True)
 
     # Snake 1
     env.envs[0, 1, 5, 5] = 1
@@ -172,6 +172,13 @@ class TestMultiSnakeEnv(unittest.TestCase):
         # Test nothing breaks when 1 snake dies and the other continues
         pass
 
+    def test_food_creation_on_death(self):
+        pass
+
     def test_reset(self):
         # Environment resets when all snakes are dead
+        pass
+
+    def test_agent_observations(self):
+        # Test that own snake appears green, others appear blue
         pass

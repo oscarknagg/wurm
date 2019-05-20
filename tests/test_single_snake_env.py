@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from time import time
 
 from wurm.utils import get_test_env, head, body, food, env_consistency
-from wurm.envs import SingleSnakeEnvironments
+from wurm.envs import SingleSnake
 from wurm.vis import plot_envs
 from config import DEFAULT_DEVICE
 
@@ -17,7 +17,7 @@ class TestSingleSnakeEnv(unittest.TestCase):
     def test_multiple_envs(self):
         num_envs = 100
         num_steps = 100
-        env = SingleSnakeEnvironments(num_envs=num_envs, size=size)
+        env = SingleSnake(num_envs=num_envs, size=size)
         actions = torch.randint(4, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE)
 
         t0 = time()
@@ -35,13 +35,13 @@ class TestSingleSnakeEnv(unittest.TestCase):
 
     def test_setup(self):
         n = 97
-        env = SingleSnakeEnvironments(num_envs=n, size=size)
+        env = SingleSnake(num_envs=n, size=size)
         env_consistency(env.envs)
         expected_body_sum = env.initial_snake_length * (env.initial_snake_length + 1) / 2
         self.assertTrue(torch.all(body(env.envs).view(n, -1).sum(dim=-1) == expected_body_sum))
 
     def test_reset(self):
-        env = SingleSnakeEnvironments(num_envs=1, size=size)
+        env = SingleSnake(num_envs=1, size=size)
         env_consistency(env.envs)
         env.reset(torch.Tensor([1]).to(DEFAULT_DEVICE))
         env_consistency(env.envs)
@@ -50,7 +50,7 @@ class TestSingleSnakeEnv(unittest.TestCase):
         pass
 
     def test_basic_movement(self):
-        env = SingleSnakeEnvironments(num_envs=1, size=size, manual_setup=True)
+        env = SingleSnake(num_envs=1, size=size, manual_setup=True)
         env.envs = get_test_env(size, 'up').to(DEFAULT_DEVICE)
         actions = torch.Tensor([0, 0, 3, 0, 0, 1]).unsqueeze(1).long().to(DEFAULT_DEVICE)
         expected_head_positions = torch.Tensor([
@@ -84,7 +84,7 @@ class TestSingleSnakeEnv(unittest.TestCase):
             plt.show()
 
     def test_eat_food(self):
-        env = SingleSnakeEnvironments(num_envs=1, size=size, manual_setup=True)
+        env = SingleSnake(num_envs=1, size=size, manual_setup=True)
         env.envs = get_test_env(size, 'up').to(DEFAULT_DEVICE)
         actions = torch.Tensor([0, 3, 3, 0, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE)
 
@@ -117,7 +117,7 @@ class TestSingleSnakeEnv(unittest.TestCase):
             plt.show()
 
     def test_hit_boundary(self):
-        env = SingleSnakeEnvironments(num_envs=1, size=size, manual_setup=True)
+        env = SingleSnake(num_envs=1, size=size, manual_setup=True)
         env.envs = get_test_env(size, 'up').to(DEFAULT_DEVICE)
         actions = torch.Tensor([1, ] * 10).unsqueeze(1).long().to(DEFAULT_DEVICE)
 
@@ -141,7 +141,7 @@ class TestSingleSnakeEnv(unittest.TestCase):
             plt.show()
 
     def test_hit_self(self):
-        env = SingleSnakeEnvironments(num_envs=1, size=size, manual_setup=True)
+        env = SingleSnake(num_envs=1, size=size, manual_setup=True)
         env.envs = get_test_env(size, 'up').to(DEFAULT_DEVICE)
         actions = torch.Tensor([0, 3, 3, 2, 1, 0, 0, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE)
 
@@ -169,7 +169,7 @@ class TestSingleSnakeEnv(unittest.TestCase):
             plt.show()
 
     def test_cannot_move_backwards(self):
-        env = SingleSnakeEnvironments(num_envs=1, size=size, manual_setup=True)
+        env = SingleSnake(num_envs=1, size=size, manual_setup=True)
         env.envs = get_test_env(size, 'up').to(DEFAULT_DEVICE)
         actions = torch.Tensor([2, 2, 2, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE)
         expected_head_positions = torch.Tensor([

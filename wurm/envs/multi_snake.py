@@ -15,7 +15,7 @@ from wurm.utils import determine_orientations, head, food, body, drop_duplicates
 Spec = namedtuple('Spec', ['reward_threshold'])
 
 
-class MultiSnakeEnvironments(object):
+class MultiSnake(object):
     """Batched snake environment.
 
     The dynamics of this environment aim to emulate that of the mobile phone game "Snake".
@@ -48,6 +48,10 @@ class MultiSnakeEnvironments(object):
     """
 
     spec = Spec(float('inf'))
+    metadata = {
+        'render.modes': ['rgb_array'],
+        'video.frames_per_second': 12
+    }
 
     def __init__(self,
                  num_envs: int,
@@ -89,10 +93,17 @@ class MultiSnakeEnvironments(object):
         self.done = torch.zeros(num_envs).to(self.device).byte()
         self.dead = torch.zeros(num_envs, num_snakes).to(self.device).byte()
 
-        self.viewer = None
+        # Environment dynamics parameters
+        self.respawn_mode = ['all_snakes', 'any_snake'][0]
 
-        self.body_colour = torch.Tensor((0, 255 * 0.5, 0)).short().to(self.device)
-        self.head_colour = torch.Tensor((0, 255, 0)).short().to(self.device)
+        # Rendering parameters
+        self.viewer = None
+        # Own snake appears green
+        self.self_body_colour = torch.Tensor((0, 255 * 0.5, 0)).short().to(self.device)
+        self.self_head_colour = torch.Tensor((0, 255, 0)).short().to(self.device)
+        # Other snakes appear blue
+        self.other_body_colour = torch.Tensor((0, 0, 255 * 0.5)).short().to(self.device)
+        self.other_head_colour = torch.Tensor((0, 0, 255)).short().to(self.device)
         self.food_colour = torch.Tensor((255, 0, 0)).short().to(self.device)
         self.edge_colour = torch.Tensor((0, 0, 0)).short().to(self.device)
 
@@ -105,10 +116,10 @@ class MultiSnakeEnvironments(object):
 
 
         body_locations = ((self._bodies > EPS).squeeze(1).sum(dim=1) > EPS).byte()
-        img[body_locations, :] = self.body_colour
+        img[body_locations, :] = self.self_body_colour
 
         head_locations = ((self._heads > EPS).squeeze(1).sum(dim=1) > EPS).byte()
-        img[head_locations, :] = self.head_colour
+        img[head_locations, :] = self.self_head_colour
 
         food_locations = (food(self.envs) > EPS).squeeze(1)
         img[food_locations, :] = self.food_colour
@@ -373,11 +384,17 @@ class MultiSnakeEnvironments(object):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
         n = self.num_envs
 
+        # Each snake has one head
         for i in range(self.num_snakes):
             head_channel = self.head_channels[i]
             body_channel = self.body_channels[i]
             _env = self.envs[:, [0, head_channel, body_channel], :, :]
             env_consistency(_env)
+
+        # At least one food exists
+        # Possibly more than one due to snake deaths
+
+        #
 
     def _get_food_addition(self, envs: torch.Tensor):
         # Get empty locations

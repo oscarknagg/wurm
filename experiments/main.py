@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
 
-from wurm.envs import SingleSnakeEnvironments, SimpleGridworld
+from wurm.envs import SingleSnake, SimpleGridworld
 from wurm import agents
 from wurm.utils import env_consistency, CSVLogger, ExponentialMovingAverageTracker
 from wurm.rl import A2C, TrajectoryStore
@@ -167,8 +167,8 @@ if args.env == 'gridworld':
     env = SimpleGridworld(num_envs=args.num_envs, size=args.size, start_location=(args.size//2, args.size//2),
                           observation_mode=observation_type, device=args.device)
 elif args.env == 'snake':
-    env = SingleSnakeEnvironments(num_envs=args.num_envs, size=args.size, device=args.device,
-                                  observation_mode=observation_type, render_args=render_args)
+    env = SingleSnake(num_envs=args.num_envs, size=args.size, device=args.device,
+                      observation_mode=observation_type, render_args=render_args)
 else:
     raise ValueError('Unrecognised environment')
 
