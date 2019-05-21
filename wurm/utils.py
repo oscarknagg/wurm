@@ -137,6 +137,7 @@ def snake_consistency(envs: torch.Tensor):
     estimated_body_sizes = (torch.sqrt(8 * body_totals + 1) - 1) / 2
     consistent_body_size = torch.equal(estimated_body_sizes, body_sizes)
     if not consistent_body_size:
+        print(envs[estimated_body_sizes != body_sizes][0])
         raise RuntimeError('An environment has a body with inconsistent values i.e. not range(n)')
 
 

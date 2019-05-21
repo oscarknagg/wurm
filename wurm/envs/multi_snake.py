@@ -62,6 +62,8 @@ class MultiSnake(object):
                  observation_mode: str = 'one_channel',
                  device: str = DEFAULT_DEVICE,
                  manual_setup: bool = False,
+                 food_on_death_prob: float = 0.5,
+                 boost_cost_prob: float = 0.5,
                  verbose: int = 0,
                  render_args: dict = None):
         """Initialise the environments
@@ -102,7 +104,8 @@ class MultiSnake(object):
 
         # Environment dynamics parameters
         self.respawn_mode = ['all_snakes', 'any_snake'][0]
-        self.food_on_death = True
+        self.food_on_death_prob = food_on_death_prob
+        self.boost_cost_prob = boost_cost_prob
 
         # Rendering parameters
         self.viewer = None
@@ -354,12 +357,22 @@ class MultiSnake(object):
             info.update({f'edge_collision_{i}': edge_collision})
 
         for i, (agent, act) in enumerate(actions.items()):
-            # Create food at dead snake positions
-            # Currently create at odd body positions (do randomly later?)
+            # Create food at dead snake positions with probability self.food_on_death_prob
             if dones[agent].sum() > 0:
-                self.envs[dones[agent], 0, :, :] += (
-                    (self.envs[dones[agent], self.body_channels[i], :, :].fmod(2) > EPS).float()
+                dead_snakes = self.envs[dones[agent], self.body_channels[i], :, :].clone()
+                # Clear edge locations so we don't spawn food in the edge
+                dead_snakes[:, :1, :] = 0
+                dead_snakes[:, :, :1] = 0
+                dead_snakes[:, -1:, :] = 0
+                dead_snakes[:, :, -1:] = 0
+                dead_snake_locations = torch.nonzero(
+                    dead_snakes.round()
                 )
+                food_addition_mask = torch.rand(dead_snake_locations.shape[0]) < self.food_on_death_prob
+                food_addition = dead_snake_locations[food_addition_mask, :]
+                self.envs[
+                    torch.arange(self.num_envs)[food_addition[:, 0]], 0, food_addition[:, 1], food_addition[:, 2]] += 1
+                self.envs[:, 0] = self.envs[:, 0].clamp(0, 1)
 
                 # Remove any snakes that are dead
                 self.envs[dones[agent], self.body_channels[i], :, :] = 0
@@ -409,7 +422,6 @@ class MultiSnake(object):
                     snake_consistency(living_envs)
                 except RuntimeError as e:
                     print(f'agent_{i}')
-                    print(living_envs)
                     raise e
 
             # Environment contains one food instance
