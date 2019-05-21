@@ -50,7 +50,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_envs = 100
         num_steps = 50
         # Create some environments and run random actions for N steps, checking for consistency at each step
-        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False)
+        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, food_on_death_prob=0.5)
         env.check_consistency()
 
         all_actions = {
@@ -60,6 +60,31 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
         t0 = time()
         for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+            observations, reward, done, info = env.step(actions)
+            env.reset(done['__all__'])
+            env.check_consistency()
+
+        t = time() - t0
+        print(f'Ran {num_envs * num_steps} actions in {t}s = {num_envs * num_steps / t} actions/s')
+
+    def test_random_actions_with_boost(self):
+        num_envs = 100
+        num_steps = 50
+        # Create some environments and run random actions for N steps, checking for consistency at each step
+        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, boost=True, food_on_death_prob=0)
+        env.check_consistency()
+
+        all_actions = {
+            'agent_0': torch.randint(8, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.randint(8, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE),
+        }
+
+        t0 = time()
+        for i in range(all_actions['agent_0'].shape[0]):
+            # env.render()
             actions = {
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
@@ -128,6 +153,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
     def test_self_collision(self):
         env = get_test_env()
+        env.food_on_death_prob = 1
 
         # Add food so agent_0 eats it and grows
         env.envs[0, 0, 4, 3] = 1
@@ -279,3 +305,29 @@ class TestMultiSnakeEnv(unittest.TestCase):
         self.assertTrue(torch.allclose(obs_0[0, :, 8, 8]*255, env.other_body_colour.float()))
         self.assertTrue(torch.allclose(obs_1[0, :, 4, 5]*255, env.other_body_colour.float()))
         self.assertTrue(torch.allclose(obs_1[0, :, 8, 8]*255, env.self_body_colour.float()))
+
+    def test_boost(self):
+        # Test boosting through a food
+        env = get_test_env(num_envs=1)
+        env.boost = True
+        env.envs[:, 0, 6, 5] = 1
+
+        all_actions = {
+            'agent_0': torch.Tensor([4, 1, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.Tensor([0, 1, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        print_or_render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+
+            env.reset(dones['__all__'])
+
+            env.check_consistency()
+
+            print_or_render(env)

@@ -398,31 +398,36 @@ class MultiSnake(object):
             body_channel = self.body_channels[i]
             snake_sizes[agent] = self.envs[:, body_channel:body_channel + 1, :].view(self.num_envs, -1).max(dim=1)[0]
 
-        if self.boost:
+        if self.boost and torch.stack([v for k, v in boosts.items()]).sum() >= 1:
             ##############
             # Boost step #
             ##############
             # Check orientations and move head positions of all snakes
             for i, (agent, act) in enumerate(actions.items()):
-                self._move_heads(i, agent, directions, boosts[agent])
+                if boosts[agent].sum() >= 1:
+                    self._move_heads(i, agent, directions, boosts[agent])
 
             # Decay bodies of all snakes that haven't eaten food
             food_consumption = dict()
             for i, (agent, _) in enumerate(actions.items()):
-                self._decay_bodies(i, agent, boosts[agent], food_consumption)
+                if boosts[agent].sum() >= 1:
+                    self._decay_bodies(i, agent, boosts[agent], food_consumption)
 
             # Check for collisions with snakes and food
             all_envs = torch.ones(self.num_envs).byte().to(self.device)
             for i, (agent, _) in enumerate(actions.items()):
-                self._check_collisions(i, agent, all_envs, snake_sizes, food_consumption)
+                if boosts[agent].sum() >= 1:
+                    self._check_collisions(i, agent, all_envs, snake_sizes, food_consumption)
 
             # Check for edge collisions
             for i, (agent, _) in enumerate(actions.items()):
-                self._check_boundaries(i, agent, boosts[agent])
+                if boosts[agent].sum() >= 1:
+                    self._check_boundaries(i, agent, boosts[agent])
 
             # Clear dead snakes and create food at dead snakes
             for i, (agent, _) in enumerate(actions.items()):
-                self._handle_deaths(i, agent)
+                if boosts[agent].sum() >= 1:
+                    self._handle_deaths(i, agent)
 
             # Handle cost of boost
             pass
@@ -439,6 +444,13 @@ class MultiSnake(object):
         for i in range(self.num_snakes):
             self.snake_dones[:, i] = self.snake_dones[:, i] | self.dones[f'agent_{i}']
 
+        snake_sizes = dict()
+        for i, (agent, act) in enumerate(actions.items()):
+            body_channel = self.body_channels[i]
+            snake_sizes[agent] = self.envs[:, body_channel:body_channel + 1, :].view(self.num_envs, -1).max(dim=1)[0]
+
+        # Apply rounding to stop numerical errors accumulating
+        self.envs.round_()
         self.check_consistency()
 
         ################
@@ -531,9 +543,6 @@ class MultiSnake(object):
         num_heads = self._heads.sum(dim=1, keepdim=True).view(n, -1)
         if not torch.all(num_heads <= self.num_snakes):
             raise RuntimeError('An environment contains more snakes than it should.')
-
-        # Check no food and head overlap (this should only occur inside .step())
-        pass
 
     def _get_food_addition(self, envs: torch.Tensor):
         # Get empty locations
