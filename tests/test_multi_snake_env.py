@@ -46,7 +46,7 @@ def print_or_render(env):
 class TestMultiSnakeEnv(unittest.TestCase):
     def test_random_actions(self):
         num_envs = 100
-        num_steps = 100
+        num_steps = 50
         # Create some environments and run random actions for N steps, checking for consistency at each step
         env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False)
         env.check_consistency()
@@ -196,13 +196,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             'agent_1': torch.Tensor([0, 1, 3, 2, 1, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
-        print()
-        if print_envs:
-            print(env._bodies)
-
-        if render_envs:
-            env.render()
-            sleep(render_sleep)
+        print_or_render(env)
 
         for i in range(6):
             actions = {
@@ -212,20 +206,11 @@ class TestMultiSnakeEnv(unittest.TestCase):
             observations, rewards, dones, info = env.step(actions)
             env.check_consistency()
 
-            if print_envs:
-                print('=' * 10)
-                print(env._bodies)
-                print('DONES:')
-                print(dones)
-                print()
+            print_or_render(env)
 
             # Check reward given when expected
             if i == 0:
                 self.assertEqual(rewards['agent_1'].item(), 1)
-
-            if render_envs:
-                env.render()
-                sleep(render_sleep)
 
             if any(done for agent, done in dones.items()):
                 # These actions shouldn't cause any deaths
@@ -268,6 +253,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             observations, rewards, dones, info = env.step(actions)
 
             env.reset(dones['__all__'])
+            print(i, dones)
 
             env.check_consistency()
 

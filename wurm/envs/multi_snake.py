@@ -61,7 +61,7 @@ class MultiSnake(object):
                  on_death: str = 'restart',
                  observation_mode: str = 'one_channel',
                  device: str = DEFAULT_DEVICE,
-                 manual_setup: bool = True,
+                 manual_setup: bool = False,
                  verbose: int = 0,
                  render_args: dict = None):
         """Initialise the environments
@@ -114,32 +114,6 @@ class MultiSnake(object):
         self.other_head_colour = torch.Tensor((0, 0, 255)).short().to(self.device)
         self.food_colour = torch.Tensor((255, 0, 0)).short().to(self.device)
         self.edge_colour = torch.Tensor((0, 0, 0)).short().to(self.device)
-
-    # def _get_rgb(self):
-    #     # RGB image same as is displayed in .render()
-    #     img = torch.ones((self.num_envs, 3, self.size, self.size)).to(self.device).short() * 255
-    #
-    #     # Convert to BHWC axes for easier indexing here
-    #     img = img.permute((0, 2, 3, 1))
-    #
-    #     body_locations = ((self._bodies > EPS).squeeze(1).sum(dim=1) > EPS).byte()
-    #     img[body_locations, :] = self.self_body_colour
-    #
-    #     head_locations = ((self._heads > EPS).squeeze(1).sum(dim=1) > EPS).byte()
-    #     img[head_locations, :] = self.self_head_colour
-    #
-    #     food_locations = (self._food > EPS).squeeze(1)
-    #     img[food_locations, :] = self.food_colour
-    #
-    #     img[:, :1, :, :] = self.edge_colour
-    #     img[:, :, :1, :] = self.edge_colour
-    #     img[:, -1:, :, :] = self.edge_colour
-    #     img[:, :, -1:, :] = self.edge_colour
-    #
-    #     # Convert back to BCHW axes
-    #     img = img.permute((0, 3, 1, 2))
-    #
-    #     return img
 
     def _make_rgb(self,
                   foods: torch.Tensor,
@@ -334,7 +308,7 @@ class MultiSnake(object):
             other_heads = self._heads[:, other_snakes, :, :]
             head_collision = (head(_env) * other_heads).view(self.num_envs, -1).sum(dim=-1) > EPS
             snake_collision = body_collision | head_collision
-            info.update({f'self_collision_{i}': snake_collision})
+            info.update({f'snake_collision_{i}': snake_collision})
             dones[agent] = dones[agent] | snake_collision
 
             # Create a new head position in the body channel
@@ -397,7 +371,7 @@ class MultiSnake(object):
         for agent, act in actions.items():
             dones['__all__'] = dones['__all__'] & dones[agent]
 
-        self.env_dones = dones['__all__']
+        self.env_dones = dones['__all__'].clone()
         for i in range(self.num_snakes):
             self.snake_dones[:, i] = self.snake_dones[:, i] | dones[f'agent_{i}']
 
