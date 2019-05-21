@@ -63,6 +63,7 @@ class MultiSnake(object):
                  device: str = DEFAULT_DEVICE,
                  manual_setup: bool = False,
                  food_on_death_prob: float = 0.5,
+                 boost: bool = False,
                  boost_cost_prob: float = 0.5,
                  verbose: int = 0,
                  render_args: dict = None):
@@ -105,6 +106,7 @@ class MultiSnake(object):
         # Environment dynamics parameters
         self.respawn_mode = ['all_snakes', 'any_snake'][0]
         self.food_on_death_prob = food_on_death_prob
+        self.boost = boost
         self.boost_cost_prob = boost_cost_prob
 
         # Rendering parameters
@@ -234,6 +236,12 @@ class MultiSnake(object):
             if act.shape[0] != self.num_envs:
                 raise RuntimeError('Must have the same number of actions as environments.')
 
+        directions = dict()
+        boosts = dict()
+        for i, (agent, act) in enumerate(actions.items()):
+            directions[agent] = act.fmod(4)
+            boosts[agent] = act // 2
+
         rewards = OrderedDict([
             (
                 f'agent_{i}',
@@ -247,6 +255,8 @@ class MultiSnake(object):
             ) for i in range(self.num_snakes)
         ])
         info = dict()
+
+
 
         snake_sizes = dict()
         for i, (agent, act) in enumerate(actions.items()):
@@ -266,15 +276,15 @@ class MultiSnake(object):
             # it's direction/action to just continue forward
             # The test for this is if their orientation number {0, 1, 2, 3}
             # is the same as their action
-            mask = orientations == act
-            act.add_((mask * 2).long()).fmod_(4)
+            mask = orientations == directions[agent]
+            directions[agent].add_((mask * 2).long()).fmod_(4)
 
             # Create head position deltas
             head_deltas = F.conv2d(head(_env), ORIENTATION_FILTERS.to(self.device), padding=1)
             # Select the head position delta corresponding to the correct action
             actions_onehot = torch.Tensor(self.num_envs, 4).float().to(self.device)
             actions_onehot.zero_()
-            actions_onehot.scatter_(1, act.unsqueeze(-1), 1)
+            actions_onehot.scatter_(1, directions[agent].unsqueeze(-1), 1)
             head_deltas = torch.einsum('bchw,bc->bhw', [head_deltas, actions_onehot]).unsqueeze(1)
 
             # Move head position by applying delta
@@ -282,7 +292,7 @@ class MultiSnake(object):
 
         # Decay bodies of all snakes that haven't eaten food
         food_consumption = dict()
-        for i, (agent, act) in enumerate(actions.items()):
+        for i, (agent, _) in enumerate(actions.items()):
             head_channel = self.head_channels[i]
             body_channel = self.body_channels[i]
             _env = self.envs[:, [0, head_channel, body_channel], :, :]
@@ -297,7 +307,7 @@ class MultiSnake(object):
             self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :] = \
                 self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :].relu()
 
-        for i, (agent, act) in enumerate(actions.items()):
+        for i, (agent, _) in enumerate(actions.items()):
             # Check if any snakes have collided with themselves or any other snakes
             head_channel = self.head_channels[i]
             body_channel = self.body_channels[i]
@@ -322,7 +332,7 @@ class MultiSnake(object):
                     food_consumption[agent][:, None, None, None].expand((self.num_envs, 1, self.size, self.size))
                 )
 
-        for i, (agent, act) in enumerate(actions.items()):
+        for i, (agent, _) in enumerate(actions.items()):
             # Remove food and give reward
             # `food_removal` is 0 except where a snake head is at the same location as food where it is -1
             head_channel = self.head_channels[i]
@@ -340,7 +350,7 @@ class MultiSnake(object):
             food_addition = self._get_food_addition(add_food_envs)
             self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL+1, :, :] += food_addition
 
-        for i, (agent, act) in enumerate(actions.items()):
+        for i, (agent, _) in enumerate(actions.items()):
             # Check for boundary, Done by performing a convolution with no padding
             # If the head is at the edge then it will be cut off and the sum of the head
             # channel will be 0
@@ -356,7 +366,7 @@ class MultiSnake(object):
             edge_collision = edge_collision & head_exists
             info.update({f'edge_collision_{i}': edge_collision})
 
-        for i, (agent, act) in enumerate(actions.items()):
+        for i, (agent, _) in enumerate(actions.items()):
             # Create food at dead snake positions with probability self.food_on_death_prob
             if dones[agent].sum() > 0:
                 dead_snakes = self.envs[dones[agent], self.body_channels[i], :, :].clone()
@@ -383,7 +393,7 @@ class MultiSnake(object):
 
         # Environment is finished if all snake are dead
         dones['__all__'] = torch.ones((self.num_envs,)).float().to(self.device).byte().requires_grad_(False)
-        for agent, act in actions.items():
+        for agent, _ in actions.items():
             dones['__all__'] = dones['__all__'] & dones[agent]
 
         self.env_dones = dones['__all__'].clone()
