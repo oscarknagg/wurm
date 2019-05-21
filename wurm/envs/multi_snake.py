@@ -228,12 +228,12 @@ class MultiSnake(object):
     def _bodies(self) -> torch.Tensor:
         return self.envs[:, self.body_channels, :, :]
 
-    def _move_heads(self, i: int, agent: str, directions: Dict[str, torch.Tensor]):
+    def _move_heads(self, i: int, agent: str, directions: Dict[str, torch.Tensor], active_envs: torch.Tensor):
+        n = active_envs.sum()
         # The sub-environment of just one agent
         head_channel = self.head_channels[i]
         body_channel = self.body_channels[i]
-        _env = self.envs[:, [0, head_channel, body_channel], :, :]
-
+        _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
         orientations = determine_orientations(_env)
 
         # Check if this snake is trying to move backwards and change
@@ -246,13 +246,13 @@ class MultiSnake(object):
         # Create head position deltas
         head_deltas = F.conv2d(head(_env), ORIENTATION_FILTERS.to(self.device), padding=1)
         # Select the head position delta corresponding to the correct action
-        actions_onehot = torch.Tensor(self.num_envs, 4).float().to(self.device)
-        actions_onehot.zero_()
-        actions_onehot.scatter_(1, directions[agent].unsqueeze(-1), 1)
-        head_deltas = torch.einsum('bchw,bc->bhw', [head_deltas, actions_onehot]).unsqueeze(1)
+        directions_onehot = torch.Tensor(n, 4).float().to(self.device)
+        directions_onehot.zero_()
+        directions_onehot.scatter_(1, directions[agent].unsqueeze(-1), 1)
+        head_deltas = torch.einsum('bchw,bc->bhw', [head_deltas, directions_onehot]).unsqueeze(1)
 
         # Move head position by applying delta
-        self.envs[:, head_channel:head_channel + 1, :, :].add_(head_deltas).round_()
+        self.envs[active_envs, head_channel:head_channel + 1, :, :] += head_deltas.round()
 
     def _decay_bodies(self, i: int, agent: str, food_consumption: dict):
         head_channel = self.head_channels[i]
@@ -366,7 +366,7 @@ class MultiSnake(object):
         boosts = dict()
         for i, (agent, act) in enumerate(actions.items()):
             directions[agent] = act.fmod(4)
-            boosts[agent] = act // 2
+            boosts[agent] = act > 3
 
         self.rewards = OrderedDict([
             (
@@ -392,7 +392,7 @@ class MultiSnake(object):
 
         # Check orientations and move head positions of all snakes
         for i, (agent, act) in enumerate(actions.items()):
-            self._move_heads(i, agent, directions)
+            self._move_heads(i, agent, directions, ~boosts[agent])
 
         # Decay bodies of all snakes that haven't eaten food
         food_consumption = dict()
