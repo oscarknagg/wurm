@@ -121,6 +121,8 @@ class MultiSnake(object):
         self.edge_colour = torch.Tensor((0, 0, 0)).short().to(self.device)
 
         self.info = {}
+        self.rewards = {}
+        self.dones = {}
 
     def _make_rgb(self,
                   foods: torch.Tensor,
@@ -267,8 +269,7 @@ class MultiSnake(object):
         self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :] = \
             self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :].relu()
 
-    def _check_collisions(self, i: int, agent: str, dones: dict, snake_sizes: dict, food_consumption: dict,
-                          rewards: dict):
+    def _check_collisions(self, i: int, agent: str, snake_sizes: dict, food_consumption: dict):
         # Check if any snakes have collided with themselves or any other snakes
         head_channel = self.head_channels[i]
         body_channel = self.body_channels[i]
@@ -283,7 +284,7 @@ class MultiSnake(object):
         head_collision = (head(_env) * other_heads).view(self.num_envs, -1).sum(dim=-1) > EPS
         snake_collision = body_collision | head_collision
         self.info.update({f'snake_collision_{i}': snake_collision})
-        dones[agent] = dones[agent] | snake_collision
+        self.dones[agent] = self.dones[agent] | snake_collision
 
         # Create a new head position in the body channel
         # Make this head +1 greater if the snake has just eaten food
@@ -298,7 +299,7 @@ class MultiSnake(object):
         _env = self.envs[:, [0, head_channel, body_channel], :, :]
 
         food_removal = head(_env) * food(_env) * -1
-        rewards[agent].sub_(food_removal.view(self.num_envs, -1).sum(dim=-1).float())
+        self.rewards[agent].sub_(food_removal.view(self.num_envs, -1).sum(dim=-1).float())
         self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
 
     def _add_food(self):
@@ -309,7 +310,7 @@ class MultiSnake(object):
             food_addition = self._get_food_addition(add_food_envs)
             self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
 
-    def _check_boundaries(self, i: int, agent: str, dones: dict):
+    def _check_boundaries(self, i: int, agent: str):
         # Check for boundary, Done by performing a convolution with no padding
         # If the head is at the edge then it will be cut off and the sum of the head
         # channel will be 0
@@ -320,15 +321,15 @@ class MultiSnake(object):
             head(_env),
             NO_CHANGE_FILTER.to(self.device),
         ).view(self.num_envs, -1).sum(dim=-1) < EPS
-        dones[agent] = dones[agent] | edge_collision
+        self.dones[agent] = self.dones[agent] | edge_collision
         head_exists = self._heads[:, i].view(self.num_envs, -1).max(dim=-1)[0] > EPS
         edge_collision = edge_collision & head_exists
         self.info.update({f'edge_collision_{i}': edge_collision})
 
-    def _handle_deaths(self, i: int, agent: str, dones: dict):
+    def _handle_deaths(self, i: int, agent: str):
         # Create food at dead snake positions with probability self.food_on_death_prob
-        if dones[agent].sum() > 0:
-            dead_snakes = self.envs[dones[agent], self.body_channels[i], :, :].clone()
+        if self.dones[agent].sum() > 0:
+            dead_snakes = self.envs[self.dones[agent], self.body_channels[i], :, :].clone()
             # Clear edge locations so we don't spawn food in the edge
             dead_snakes[:, :1, :] = 0
             dead_snakes[:, :, :1] = 0
@@ -344,8 +345,8 @@ class MultiSnake(object):
             self.envs[:, 0] = self.envs[:, 0].clamp(0, 1)
 
             # Remove any snakes that are dead
-            self.envs[dones[agent], self.body_channels[i], :, :] = 0
-            self.envs[dones[agent], self.head_channels[i], :, :] = 0
+            self.envs[self.dones[agent], self.body_channels[i], :, :] = 0
+            self.envs[self.dones[agent], self.head_channels[i], :, :] = 0
 
     def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[dict, dict, dict, dict]:
         if len(actions) != self.num_snakes:
@@ -367,14 +368,14 @@ class MultiSnake(object):
             directions[agent] = act.fmod(4)
             boosts[agent] = act // 2
 
-        rewards = OrderedDict([
+        self.rewards = OrderedDict([
             (
                 f'agent_{i}',
                 torch.zeros((self.num_envs,)).float().to(self.device).requires_grad_(False)
             ) for i in range(self.num_snakes)
         ])
         rewards_tensor = torch.zeros((self.num_envs, self.num_snakes)).float().to(self.device).requires_grad_(False)
-        dones = OrderedDict([
+        self.dones = OrderedDict([
             (
                 f'agent_{i}',
                 torch.zeros((self.num_envs,)).float().to(self.device).byte().requires_grad_(False)
@@ -400,32 +401,32 @@ class MultiSnake(object):
 
         # Check for collisions with snakes and food
         for i, (agent, _) in enumerate(actions.items()):
-            self._check_collisions(i, agent, dones, snake_sizes, food_consumption, rewards)
+            self._check_collisions(i, agent, snake_sizes, food_consumption)
 
         # Add food if there is none in the environment
         self._add_food()
 
         # Check for edge collisions
         for i, (agent, _) in enumerate(actions.items()):
-            self._check_boundaries(i, agent, dones)
+            self._check_boundaries(i, agent)
 
         # Clear dead snakes and create food at dead snakes
         for i, (agent, _) in enumerate(actions.items()):
-            self._handle_deaths(i, agent, dones)
+            self._handle_deaths(i, agent)
 
         # Apply rounding to stop numerical errors accumulating
         self.envs.round_()
 
         # Environment is finished if all snake are dead
-        dones['__all__'] = torch.ones((self.num_envs,)).float().to(self.device).byte().requires_grad_(False)
+        self.dones['__all__'] = torch.ones((self.num_envs,)).float().to(self.device).byte().requires_grad_(False)
         for agent, _ in actions.items():
-            dones['__all__'] = dones['__all__'] & dones[agent]
+            self.dones['__all__'] = self.dones['__all__'] & self.dones[agent]
 
-        self.env_dones = dones['__all__'].clone()
+        self.env_dones = self.dones['__all__'].clone()
         for i in range(self.num_snakes):
-            self.snake_dones[:, i] = self.snake_dones[:, i] | dones[f'agent_{i}']
+            self.snake_dones[:, i] = self.snake_dones[:, i] | self.dones[f'agent_{i}']
 
-        return self._observe(), rewards, dones, self.info
+        return self._observe(), self.rewards, self.dones, self.info
 
     def check_consistency(self):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
