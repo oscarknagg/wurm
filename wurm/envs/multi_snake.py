@@ -120,6 +120,8 @@ class MultiSnake(object):
         self.food_colour = torch.Tensor((255, 0, 0)).short().to(self.device)
         self.edge_colour = torch.Tensor((0, 0, 0)).short().to(self.device)
 
+        self.info = {}
+
     def _make_rgb(self,
                   foods: torch.Tensor,
                   heads: torch.Tensor,
@@ -265,7 +267,7 @@ class MultiSnake(object):
         self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :] = \
             self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :].relu()
 
-    def _check_collisions(self, i: int, agent: str, info: dict, dones: dict, snake_sizes: dict, food_consumption: dict,
+    def _check_collisions(self, i: int, agent: str, dones: dict, snake_sizes: dict, food_consumption: dict,
                           rewards: dict):
         # Check if any snakes have collided with themselves or any other snakes
         head_channel = self.head_channels[i]
@@ -280,7 +282,7 @@ class MultiSnake(object):
         other_heads = self._heads[:, other_snakes, :, :]
         head_collision = (head(_env) * other_heads).view(self.num_envs, -1).sum(dim=-1) > EPS
         snake_collision = body_collision | head_collision
-        info.update({f'snake_collision_{i}': snake_collision})
+        self.info.update({f'snake_collision_{i}': snake_collision})
         dones[agent] = dones[agent] | snake_collision
 
         # Create a new head position in the body channel
@@ -307,7 +309,7 @@ class MultiSnake(object):
             food_addition = self._get_food_addition(add_food_envs)
             self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
 
-    def _check_boundaries(self, i: int, agent: str, dones: dict, info: dict):
+    def _check_boundaries(self, i: int, agent: str, dones: dict):
         # Check for boundary, Done by performing a convolution with no padding
         # If the head is at the edge then it will be cut off and the sum of the head
         # channel will be 0
@@ -321,7 +323,7 @@ class MultiSnake(object):
         dones[agent] = dones[agent] | edge_collision
         head_exists = self._heads[:, i].view(self.num_envs, -1).max(dim=-1)[0] > EPS
         edge_collision = edge_collision & head_exists
-        info.update({f'edge_collision_{i}': edge_collision})
+        self.info.update({f'edge_collision_{i}': edge_collision})
 
     def _handle_deaths(self, i: int, agent: str, dones: dict):
         # Create food at dead snake positions with probability self.food_on_death_prob
@@ -357,6 +359,8 @@ class MultiSnake(object):
             if act.shape[0] != self.num_envs:
                 raise RuntimeError('Must have the same number of actions as environments.')
 
+        actions_tensor = torch.stack([v for k, v in actions.items()]).t()
+
         directions = dict()
         boosts = dict()
         for i, (agent, act) in enumerate(actions.items()):
@@ -369,13 +373,17 @@ class MultiSnake(object):
                 torch.zeros((self.num_envs,)).float().to(self.device).requires_grad_(False)
             ) for i in range(self.num_snakes)
         ])
+        rewards_tensor = torch.zeros((self.num_envs, self.num_snakes)).float().to(self.device).requires_grad_(False)
         dones = OrderedDict([
             (
                 f'agent_{i}',
                 torch.zeros((self.num_envs,)).float().to(self.device).byte().requires_grad_(False)
             ) for i in range(self.num_snakes)
         ])
-        info = dict()
+        dones_tensor = torch.zeros((self.num_envs, self.num_snakes)).float().to(self.device).byte().requires_grad_(False)
+
+        # Clear info
+        self.info = {}
         snake_sizes = dict()
         for i, (agent, act) in enumerate(actions.items()):
             body_channel = self.body_channels[i]
@@ -390,14 +398,18 @@ class MultiSnake(object):
         for i, (agent, _) in enumerate(actions.items()):
             self._decay_bodies(i, agent, food_consumption)
 
+        # Check for collisions with snakes and food
         for i, (agent, _) in enumerate(actions.items()):
-            self._check_collisions(i, agent, info, dones, snake_sizes, food_consumption, rewards)
+            self._check_collisions(i, agent, dones, snake_sizes, food_consumption, rewards)
 
+        # Add food if there is none in the environment
         self._add_food()
 
+        # Check for edge collisions
         for i, (agent, _) in enumerate(actions.items()):
-            self._check_boundaries(i, agent, dones, info)
+            self._check_boundaries(i, agent, dones)
 
+        # Clear dead snakes and create food at dead snakes
         for i, (agent, _) in enumerate(actions.items()):
             self._handle_deaths(i, agent, dones)
 
@@ -413,7 +425,7 @@ class MultiSnake(object):
         for i in range(self.num_snakes):
             self.snake_dones[:, i] = self.snake_dones[:, i] | dones[f'agent_{i}']
 
-        return self._observe(), rewards, dones, info
+        return self._observe(), rewards, dones, self.info
 
     def check_consistency(self):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
