@@ -349,6 +349,8 @@ class MultiSnake(object):
                 NO_CHANGE_FILTER.to(self.device),
             ).view(self.num_envs, -1).sum(dim=-1) < EPS
             dones[agent] = dones[agent] | edge_collision
+            head_exists = self._heads[:, i].view(self.num_envs, -1).max(dim=-1)[0] > EPS
+            edge_collision = edge_collision & head_exists
             info.update({f'edge_collision_{i}': edge_collision})
 
         for i, (agent, act) in enumerate(actions.items()):
