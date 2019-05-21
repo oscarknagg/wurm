@@ -250,6 +250,21 @@ class MultiSnake(object):
         # Move head position by applying delta
         self.envs[:, head_channel:head_channel + 1, :, :].add_(head_deltas).round_()
 
+    def _decay_bodies(self, i: int, agent: str, food_consumption: dict):
+        head_channel = self.head_channels[i]
+        body_channel = self.body_channels[i]
+        _env = self.envs[:, [0, head_channel, body_channel], :, :]
+
+        head_food_overlap = (head(_env) * food(_env)).view(self.num_envs, -1).sum(dim=-1)
+        food_consumption[agent] = head_food_overlap
+
+        # Decay the body sizes by 1, hence moving the body, apply ReLu to keep above 0
+        # Only do this for environments which haven't just eaten food
+        body_decay_env_indices = ~head_food_overlap.byte()
+        self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :] -= 1
+        self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :] = \
+            self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :].relu()
+
     def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[dict, dict, dict, dict]:
         if len(actions) != self.num_snakes:
             raise RuntimeError('Must have a Tensor of actions for each snake')
@@ -293,19 +308,7 @@ class MultiSnake(object):
         # Decay bodies of all snakes that haven't eaten food
         food_consumption = dict()
         for i, (agent, _) in enumerate(actions.items()):
-            head_channel = self.head_channels[i]
-            body_channel = self.body_channels[i]
-            _env = self.envs[:, [0, head_channel, body_channel], :, :]
-
-            head_food_overlap = (head(_env) * food(_env)).view(self.num_envs, -1).sum(dim=-1)
-            food_consumption[agent] = head_food_overlap
-
-            # Decay the body sizes by 1, hence moving the body, apply ReLu to keep above 0
-            # Only do this for environments which haven't just eaten food
-            body_decay_env_indices = ~head_food_overlap.byte()
-            self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :] -= 1
-            self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :] = \
-                self.envs[body_decay_env_indices, body_channel:body_channel + 1, :, :].relu()
+            self._decay_bodies(i, agent, food_consumption)
 
         for i, (agent, _) in enumerate(actions.items()):
             # Check if any snakes have collided with themselves or any other snakes
