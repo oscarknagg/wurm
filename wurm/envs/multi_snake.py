@@ -317,14 +317,16 @@ class MultiSnake(object):
         # Check for boundary, Done by performing a convolution with no padding
         # If the head is at the edge then it will be cut off and the sum of the head
         # channel will be 0
+        n = active_envs.sum()
         head_channel = self.head_channels[i]
         body_channel = self.body_channels[i]
         _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
-        edge_collision = F.conv2d(
+        edge_collision = torch.zeros(self.num_envs).byte().to(self.device)
+        edge_collision[active_envs] |= F.conv2d(
             head(_env),
             NO_CHANGE_FILTER.to(self.device),
-        ).view(self.num_envs, -1).sum(dim=-1) < EPS
-        self.dones[agent] = self.dones[agent] | edge_collision
+        ).view(n, -1).sum(dim=-1) < EPS
+        self.dones[agent] |= edge_collision
         head_exists = self._heads[:, i].view(self.num_envs, -1).max(dim=-1)[0] > EPS
         edge_collision = edge_collision & head_exists
         self.info.update({f'edge_collision_{i}': edge_collision})
