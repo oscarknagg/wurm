@@ -12,6 +12,8 @@ print_envs = False
 render_envs = False
 render_sleep = 0.5
 size = 12
+torch.cuda.manual_seed(0)
+torch.random.manual_seed(1)
 
 
 def get_test_env(num_envs=1):
@@ -270,8 +272,10 @@ class TestMultiSnakeEnv(unittest.TestCase):
         obs_0 = env._observe_agent(0)
         obs_1 = env._observe_agent(1)
 
+        # print(obs_0)
+
         # Check that own agent appears green and other appears blue
-        self.assertTrue(torch.equal(obs_0[0, :, 4, 5], env.self_body_colour))
-        self.assertTrue(torch.equal(obs_0[0, :, 8, 8], env.other_body_colour))
-        self.assertTrue(torch.equal(obs_1[0, :, 4, 5], env.other_body_colour))
-        self.assertTrue(torch.equal(obs_1[0, :, 8, 8], env.self_body_colour))
+        self.assertTrue(torch.allclose(obs_0[0, :, 4, 5]*255, env.self_body_colour.float()))
+        self.assertTrue(torch.allclose(obs_0[0, :, 8, 8]*255, env.other_body_colour.float()))
+        self.assertTrue(torch.allclose(obs_1[0, :, 4, 5]*255, env.other_body_colour.float()))
+        self.assertTrue(torch.allclose(obs_1[0, :, 8, 8]*255, env.self_body_colour.float()))
