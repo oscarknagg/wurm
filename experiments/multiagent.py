@@ -22,8 +22,8 @@ from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
 
 RENDER = False
-LOG_INTERVAL = 10
-PRINT_INTERVAL = 10
+LOG_INTERVAL = 1
+PRINT_INTERVAL = 100
 MAX_GRAD_NORM = 0.5
 FPS = 10
 
@@ -64,7 +64,7 @@ if args.total_steps == float('inf'):
 if args.total_episodes == float('inf'):
     excluded_args += ['total_episodes']
 argsdict = {k: v for k, v in args.__dict__.items() if k not in excluded_args}
-argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
+argstring = 'multi-' + '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
 
 
@@ -95,22 +95,6 @@ else:
     observation_type = args.observation
     reload = False
 
-# # Configure observation type
-# if observation_type == 'one_channel':
-#     in_channels = 1
-# elif observation_type == 'default':
-#     in_channels = 3
-# elif observation_type == 'raw':
-#     if args.env == 'gridworld':
-#         in_channels = 2
-#     elif args.env == 'snake':
-#         in_channels = 3
-#     else:
-#         raise RuntimeError
-# elif observation_type.startswith('partial_'):
-#     in_channels = 3
-# else:
-#     raise ValueError
 in_channels = 3
 
 # Create agent
@@ -118,24 +102,9 @@ if agent_type == 'relational':
     model = agents.RelationalAgent(num_actions=4, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                                    num_relational=2, num_attention_heads=2, relational_dim=32, num_feedforward=1,
                                    feedforward_dim=64, residual=True).to(args.device)
-elif agent_type == 'simpleconv':
-    model = agents.SimpleConvAgent(
-        in_channels=in_channels, size=args.size, coord_conv=args.coord_conv).to(
-        args.device)
 elif agent_type == 'convolutional':
     model = agents.ConvAgent(num_actions=4, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                              num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(args.device)
-elif agent_type == 'feedforward':
-    if observation_type == 'positions':
-        num_inputs = 4
-    elif observation_type.startswith('partial_'):
-        observation_size = int(observation_type.split('_')[-1])
-        observation_width = 2 * observation_size + 1
-        num_inputs = 3 * (observation_width ** 2)
-    else:
-        raise ValueError('Feedforward agent only compatible with partial and position observations.')
-
-    model = agents.FeedforwardAgent(num_actions=4, num_inputs=num_inputs, num_layers=2, hidden_units=64).to(args.device)
 elif agent_type == 'random':
     model = agents.RandomAgent(num_actions=4, device=args.device)
 else:
@@ -212,47 +181,57 @@ for i_step in count(1):
         actions[agent] = action_distribution.sample().clone().long()
         values[agent] = value_
         entropies[agent] = action_distribution.entropy()
-
-    # probs, state_value = model(observations)
-    # action_distribution = Categorical(probs)
-    # entropy = action_distribution.entropy().mean()
-    # action = action_distribution.sample().clone().long()
+        probs[agent] = action_distribution.log_prob(actions[agent].clone())
 
     observations, reward, done, info = env.step(actions)
 
-    if args.env == 'snake':
-        env.check_consistency()
-
-    # if args.agent != 'random' and args.train:
-    #     trajectories.append(
-    #         action=action,
-    #         log_prob=action_distribution.log_prob(action),
-    #         value=state_value,
-    #         reward=reward,
-    #         done=done,
-    #         entropy=entropy
-    #     )
     env.reset(done['__all__'])
+    env.check_consistency()
 
-    # ##########################
-    # # Advantage actor-critic #
-    # ##########################
-    # if args.agent != 'random' and args.train and i_step % args.update_steps == 0:
-    #     with torch.no_grad():
-    #         _, bootstrap_values = model(observations)
-    #
-    #     value_loss, policy_loss = a2c.loss(bootstrap_values, trajectories.rewards, trajectories.values,
-    #                                        trajectories.log_probs, trajectories.dones)
-    #
-    #     entropy_loss = - trajectories.entropies.mean()
-    #
-    #     optimizer.zero_grad()
-    #     loss = value_loss + policy_loss + args.entropy * entropy_loss
-    #     loss.backward()
-    #     nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
-    #     optimizer.step()
-    #
-    #     trajectories.clear()
+    if args.agent != 'random' and args.train:
+        # Flatten (num_envs, num_agents) tensor to (num_envs*num_agents, )
+        # and then append to trajectory store
+        all_actions = torch.stack([v for k, v in actions.items()]).view(-1, 1)
+        all_log_probs = torch.stack([v for k, v in probs.items()]).view(-1)
+        all_values = torch.stack([v for k, v in values.items()]).view(-1, 1)
+        all_entropies = torch.stack([v for k, v in entropies.items()]).view(-1, 1)
+        all_rewards = torch.stack([v for k, v in reward.items()]).view(-1, 1)
+        all_dones = torch.stack([v for k, v in done.items() if k.startswith('agent_')]).view(-1, 1)
+
+        trajectories.append(
+            action=all_actions,
+            log_prob=all_log_probs,
+            value=all_values,
+            reward=all_rewards,
+            done=all_dones,
+            entropy=all_entropies
+        )
+
+    ##########################
+    # Advantage actor-critic #
+    ##########################
+    if args.agent != 'random' and args.train and i_step % args.update_steps == 0:
+        with torch.no_grad():
+            all_obs = torch.stack([v for k, v in observations.items()]).view(-1, in_channels, args.size, args.size)
+            _, bootstrap_values = model(all_obs)
+
+        value_loss, policy_loss = a2c.loss(
+            bootstrap_values,
+            trajectories.rewards,
+            trajectories.values,
+            trajectories.log_probs,
+            trajectories.dones
+        )
+
+        entropy_loss = - trajectories.entropies.mean()
+
+        optimizer.zero_grad()
+        loss = value_loss + policy_loss #+  args.entropy * entropy_loss
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+        optimizer.step()
+
+        trajectories.clear()
 
     ###########
     # Logging #
@@ -260,9 +239,6 @@ for i_step in count(1):
     t = time() - t0
     num_episodes += done['__all__'].sum().item()
     num_steps += args.num_envs
-
-    # pprint(info)
-    # pprint(done)
 
     if args.save_video:
         # If there is just one env save each episode to a different file

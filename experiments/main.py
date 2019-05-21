@@ -58,9 +58,9 @@ excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 's
 if args.r is None:
     excluded_args += ['r', ]
 if args.total_steps == float('inf'):
-	excluded_args += ['total_steps']
+    excluded_args += ['total_steps']
 if args.total_episodes == float('inf'):
-	excluded_args += ['total_episodes']
+    excluded_args += ['total_episodes']
 argsdict = {k: v for k, v in args.__dict__.items() if k not in excluded_args}
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)

@@ -202,7 +202,7 @@ class MultiSnake(object):
             heads=self._heads[:, agent].unsqueeze(1),
             other_bodies=self._bodies[:, agents[agents != agent]],
             other_heads=self._heads[:, agents[agents != agent]]
-        )
+        ).float() / 255
 
     def _observe(self):
         return {f'agent_{i}': self._observe_agent(i) for i in range(self.num_snakes)}

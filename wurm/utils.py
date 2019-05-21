@@ -144,6 +144,10 @@ def env_consistency(envs: torch.Tensor):
     """Runs multiple checks for environment consistency and throws an exception if any fail"""
     snake_consistency(envs)
 
+    n = envs.shape[0]
+    if n == 0:
+        return
+
     # Environment contains one food instance
     contains_one_food = torch.all(food(envs).view(n, -1).sum(dim=-1) == 1)
     if not contains_one_food:
