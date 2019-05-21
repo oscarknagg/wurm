@@ -254,12 +254,13 @@ class MultiSnake(object):
         # Move head position by applying delta
         self.envs[active_envs, head_channel:head_channel + 1, :, :] += head_deltas.round()
 
-    def _decay_bodies(self, i: int, agent: str, food_consumption: dict):
+    def _decay_bodies(self, i: int, agent: str, active_envs: torch.Tensor, food_consumption: dict):
+        n = active_envs.sum()
         head_channel = self.head_channels[i]
         body_channel = self.body_channels[i]
-        _env = self.envs[:, [0, head_channel, body_channel], :, :]
+        _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
 
-        head_food_overlap = (head(_env) * food(_env)).view(self.num_envs, -1).sum(dim=-1)
+        head_food_overlap = (head(_env) * food(_env)).view(n, -1).sum(dim=-1)
         food_consumption[agent] = head_food_overlap
 
         # Decay the body sizes by 1, hence moving the body, apply ReLu to keep above 0
@@ -310,13 +311,13 @@ class MultiSnake(object):
             food_addition = self._get_food_addition(add_food_envs)
             self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
 
-    def _check_boundaries(self, i: int, agent: str):
+    def _check_boundaries(self, i: int, agent: str, active_envs: torch.Tensor):
         # Check for boundary, Done by performing a convolution with no padding
         # If the head is at the edge then it will be cut off and the sum of the head
         # channel will be 0
         head_channel = self.head_channels[i]
         body_channel = self.body_channels[i]
-        _env = self.envs[:, [0, head_channel, body_channel], :, :]
+        _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
         edge_collision = F.conv2d(
             head(_env),
             NO_CHANGE_FILTER.to(self.device),
@@ -390,14 +391,44 @@ class MultiSnake(object):
             body_channel = self.body_channels[i]
             snake_sizes[agent] = self.envs[:, body_channel:body_channel + 1, :].view(self.num_envs, -1).max(dim=1)[0]
 
+
+        # ##############
+        # # Boost step #
+        # ##############
+        # # Check orientations and move head positions of all snakes
+        # for i, (agent, act) in enumerate(actions.items()):
+        #     self._move_heads(i, agent, directions, boosts[agent])
+        #
+        # # Decay bodies of all snakes that haven't eaten food
+        # food_consumption = dict()
+        # for i, (agent, _) in enumerate(actions.items()):
+        #     self._decay_bodies(i, agent, boosts[agent], food_consumption)
+        #
+        # # Check for collisions with snakes and food
+        # for i, (agent, _) in enumerate(actions.items()):
+        #     self._check_collisions(i, agent, snake_sizes, food_consumption)
+        #
+        # # Check for edge collisions
+        # for i, (agent, _) in enumerate(actions.items()):
+        #     self._check_boundaries(i, agent, boosts[agent])
+        #
+        # # Clear dead snakes and create food at dead snakes
+        # for i, (agent, _) in enumerate(actions.items()):
+        #     self._handle_deaths(i, agent, boosts[agent])
+
+        ################
+        # Regular step #
+        ################
+        all_envs = torch.ones(self.num_envs).byte().to(self.device)
+
         # Check orientations and move head positions of all snakes
         for i, (agent, act) in enumerate(actions.items()):
-            self._move_heads(i, agent, directions, ~boosts[agent])
+            self._move_heads(i, agent, directions, all_envs)
 
         # Decay bodies of all snakes that haven't eaten food
         food_consumption = dict()
         for i, (agent, _) in enumerate(actions.items()):
-            self._decay_bodies(i, agent, food_consumption)
+            self._decay_bodies(i, agent, all_envs, food_consumption)
 
         # Check for collisions with snakes and food
         for i, (agent, _) in enumerate(actions.items()):
@@ -408,7 +439,7 @@ class MultiSnake(object):
 
         # Check for edge collisions
         for i, (agent, _) in enumerate(actions.items()):
-            self._check_boundaries(i, agent)
+            self._check_boundaries(i, agent, all_envs)
 
         # Clear dead snakes and create food at dead snakes
         for i, (agent, _) in enumerate(actions.items()):
