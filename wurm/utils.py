@@ -140,6 +140,13 @@ def snake_consistency(envs: torch.Tensor):
         print(envs[estimated_body_sizes != body_sizes][0])
         raise RuntimeError('An environment has a body with inconsistent values i.e. not range(n)')
 
+    # No food and head overlap
+    head_food_overlap = (head(envs) * food(envs)).view(n, -1).sum(dim=-1)
+    if not torch.all(head_food_overlap == 0):
+        print(torch.nonzero(head_food_overlap))
+        print(envs[torch.nonzero(head_food_overlap)[0]])
+        raise RuntimeError(f'A food and head pixel is overlapping in {int(head_food_overlap.sum().item())} env(s).')
+
 
 def env_consistency(envs: torch.Tensor):
     """Runs multiple checks for environment consistency and throws an exception if any fail"""
