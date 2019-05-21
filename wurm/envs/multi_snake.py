@@ -224,6 +224,32 @@ class MultiSnake(object):
     def _bodies(self) -> torch.Tensor:
         return self.envs[:, self.body_channels, :, :]
 
+    def _move_heads(self, i: int, agent: str, directions: Dict[str, torch.Tensor]):
+        # The sub-environment of just one agent
+        head_channel = self.head_channels[i]
+        body_channel = self.body_channels[i]
+        _env = self.envs[:, [0, head_channel, body_channel], :, :]
+
+        orientations = determine_orientations(_env)
+
+        # Check if this snake is trying to move backwards and change
+        # it's direction/action to just continue forward
+        # The test for this is if their orientation number {0, 1, 2, 3}
+        # is the same as their action
+        mask = orientations == directions[agent]
+        directions[agent].add_((mask * 2).long()).fmod_(4)
+
+        # Create head position deltas
+        head_deltas = F.conv2d(head(_env), ORIENTATION_FILTERS.to(self.device), padding=1)
+        # Select the head position delta corresponding to the correct action
+        actions_onehot = torch.Tensor(self.num_envs, 4).float().to(self.device)
+        actions_onehot.zero_()
+        actions_onehot.scatter_(1, directions[agent].unsqueeze(-1), 1)
+        head_deltas = torch.einsum('bchw,bc->bhw', [head_deltas, actions_onehot]).unsqueeze(1)
+
+        # Move head position by applying delta
+        self.envs[:, head_channel:head_channel + 1, :, :].add_(head_deltas).round_()
+
     def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[dict, dict, dict, dict]:
         if len(actions) != self.num_snakes:
             raise RuntimeError('Must have a Tensor of actions for each snake')
@@ -255,9 +281,6 @@ class MultiSnake(object):
             ) for i in range(self.num_snakes)
         ])
         info = dict()
-
-
-
         snake_sizes = dict()
         for i, (agent, act) in enumerate(actions.items()):
             body_channel = self.body_channels[i]
@@ -265,30 +288,7 @@ class MultiSnake(object):
 
         # Check orientations and move head positions of all snakes
         for i, (agent, act) in enumerate(actions.items()):
-            # The sub-environment of just one agent
-            head_channel = self.head_channels[i]
-            body_channel = self.body_channels[i]
-            _env = self.envs[:, [0, head_channel, body_channel], :, :]
-
-            orientations = determine_orientations(_env)
-
-            # Check if this snake is trying to move backwards and change
-            # it's direction/action to just continue forward
-            # The test for this is if their orientation number {0, 1, 2, 3}
-            # is the same as their action
-            mask = orientations == directions[agent]
-            directions[agent].add_((mask * 2).long()).fmod_(4)
-
-            # Create head position deltas
-            head_deltas = F.conv2d(head(_env), ORIENTATION_FILTERS.to(self.device), padding=1)
-            # Select the head position delta corresponding to the correct action
-            actions_onehot = torch.Tensor(self.num_envs, 4).float().to(self.device)
-            actions_onehot.zero_()
-            actions_onehot.scatter_(1, directions[agent].unsqueeze(-1), 1)
-            head_deltas = torch.einsum('bchw,bc->bhw', [head_deltas, actions_onehot]).unsqueeze(1)
-
-            # Move head position by applying delta
-            self.envs[:, head_channel:head_channel + 1, :, :].add_(head_deltas).round_()
+            self._move_heads(i, agent, directions)
 
         # Decay bodies of all snakes that haven't eaten food
         food_consumption = dict()
