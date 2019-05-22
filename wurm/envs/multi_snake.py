@@ -130,29 +130,15 @@ class MultiSnake(object):
         if self.verbose > 0:
             print(msg)
 
-    def _make_rgb(self,
-                  foods: torch.Tensor,
-                  heads: torch.Tensor,
-                  bodies: torch.Tensor,
-                  other_heads: torch.Tensor = None,
-                  other_bodies: torch.Tensor = None):
+    def _make_generic_rgb(self, colour_layers: Dict[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         img = torch.ones((self.num_envs, 3, self.size, self.size), dtype=torch.short, device=self.device) * 255
 
         # Convert to BHWC axes for easier indexing here
         img = img.permute((0, 2, 3, 1))
 
-        objects_to_colours = {
-            foods: self.food_colour,
-            bodies: self.self_body_colour,
-            other_bodies: self.other_body_colour,
-            heads: self.self_head_colour,
-            other_heads: self.other_head_colour,
-        }
-
-        for obj, colour in objects_to_colours.items():
-            if obj is not None:
-                locations = (obj > EPS).squeeze(1)
-                img[locations, :] = colour
+        for locations, colour in colour_layers.items():
+            # print(locations.shape)
+            img[locations, :] = colour
 
         img[:, :1, :, :] = self.edge_colour
         img[:, :, :1, :] = self.edge_colour
@@ -168,12 +154,14 @@ class MultiSnake(object):
         if self.viewer is None:
             self.viewer = rendering.SimpleImageViewer()
 
-        # Get RBG Tensor BCHW
-        img = self._make_rgb(
-            foods=self._food,
-            bodies=self._bodies.sum(dim=1 , keepdim=True),
-            heads=self._heads.sum(dim=1 , keepdim=True)
-        )
+        layers = {
+            (self._food > EPS).squeeze(1): self.food_colour,
+            (self._bodies.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_body_colour,
+            (self._heads.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_head_colour,
+        }
+
+        # Get RBG Tensor NCHW
+        img = self._make_generic_rgb(layers)
 
         # Convert to numpy
         img = img.cpu().numpy()
@@ -211,13 +199,21 @@ class MultiSnake(object):
 
     def _observe_agent(self, agent: int) -> torch.Tensor:
         agents = torch.arange(self.num_snakes)
-        return self._make_rgb(
-            foods=self._food,
-            bodies=self._bodies[:, agent].unsqueeze(1),
-            heads=self._heads[:, agent].unsqueeze(1),
-            other_bodies=self._bodies[:, agents[agents != agent]].sum(dim=1, keepdim=True),
-            other_heads=self._heads[:, agents[agents != agent]].sum(dim=1, keepdim=True)
-        ).float() / 255
+        layers = {
+            (self._food > EPS).squeeze(1): self.food_colour,
+            (self._bodies[:, agent].unsqueeze(1) > EPS).squeeze(1): self.self_body_colour,
+            (self._heads[:, agent].unsqueeze(1) > EPS).squeeze(1): self.self_head_colour,
+            (self._bodies[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_body_colour,
+            (self._heads[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_head_colour
+        }
+        return self._make_generic_rgb(layers).float() / 255
+        # return self._make_rgb(
+        #     foods=self._food,
+        #     bodies=self._bodies[:, agent].unsqueeze(1),
+        #     heads=self._heads[:, agent].unsqueeze(1),
+        #     other_bodies=self._bodies[:, agents[agents != agent]].sum(dim=1, keepdim=True),
+        #     other_heads=self._heads[:, agents[agents != agent]].sum(dim=1, keepdim=True)
+        # ).float() / 255
 
     def _observe(self):
         return {f'agent_{i}': self._observe_agent(i) for i in range(self.num_snakes)}
@@ -423,11 +419,14 @@ class MultiSnake(object):
                 torch.zeros((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
             ) for i in range(self.num_snakes)
         ])
-
         snake_sizes = dict()
         for i, (agent, act) in enumerate(actions.items()):
             body_channel = self.body_channels[i]
             snake_sizes[agent] = self.envs[:, body_channel:body_channel + 1, :].view(self.num_envs, -1).max(dim=1)[0]
+
+        self.boost_this_step = dict()
+        for i, (agent, act) in enumerate(actions.items()):
+            self.boost_this_step[agent] = (boosts[agent] & (snake_sizes[agent] >= 4))
 
         at_least_one_boost = torch.stack([v for k, v in boosts.items()]).sum() >= 1
         at_least_one_size_4 = torch.any(torch.stack([v for k, v in snake_sizes.items()]).sum() >= 4)
@@ -492,15 +491,6 @@ class MultiSnake(object):
             # Add food if there is none in the environment
             self._add_food()
 
-        # # Environment is finished if all snake are dead
-        # self.dones['__all__'] = torch.ones((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
-        # for agent, _ in actions.items():
-        #     self.dones['__all__'] = self.dones['__all__'] & self.dones[agent]
-        #
-        # self.env_dones = self.dones['__all__'].clone()
-        # for i in range(self.num_snakes):
-        #     self.snake_dones[:, i] = self.snake_dones[:, i] | self.dones[f'agent_{i}']
-
         snake_sizes = dict()
         for i, (agent, act) in enumerate(actions.items()):
             body_channel = self.body_channels[i]
@@ -508,7 +498,6 @@ class MultiSnake(object):
 
         # Apply rounding to stop numerical errors accumulating
         self.envs.round_()
-        # self.check_consistency()
 
         ################
         # Regular step #
