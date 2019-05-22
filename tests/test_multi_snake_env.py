@@ -8,8 +8,8 @@ from wurm.utils import head, body, food
 from config import DEFAULT_DEVICE
 
 
-print_envs = False
-render_envs = False
+print_envs = True
+render_envs = True
 render_sleep = 0.5
 size = 12
 torch.cuda.manual_seed(0)
@@ -337,6 +337,35 @@ class TestMultiSnakeEnv(unittest.TestCase):
             env.check_consistency()
 
             print_or_render(env)
+
+    def test_boost_leaves_food(self):
+        # Test boosting through a food
+        env = get_test_env(num_envs=1)
+        env.boost = True
+        env.boost_cost_prob = 1
+        env.envs[:, 0, 1, 5] = 11
+
+        all_actions = {
+            'agent_0': torch.tensor([4, 1, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        print_or_render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+
+            env.reset(dones['__all__'])
+
+            env.check_consistency()
+
+            print_or_render(env)
+
+        self.assertEqual(env.envs[0, 0, 4, 4].item(), 1)
 
     def test_cant_boost_until_size_4(self):
         # Create a size 3 snake and try boosting with it
