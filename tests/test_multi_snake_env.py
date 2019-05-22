@@ -417,3 +417,22 @@ class TestMultiSnakeEnv(unittest.TestCase):
             snake_sizes = env._bodies.view(1, 2, -1).max(dim=2)[0].long()
             self.assertTrue(torch.equal(snake_sizes, torch.tensor([[3, 4]]).to(DEFAULT_DEVICE)))
 
+    def test_many_snakes(self):
+        num_envs = 50
+        num_steps = 10
+        num_snakes = 4
+        env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=size, manual_setup=False, boost=True)
+        env.check_consistency()
+
+        all_actions = {
+            f'agent_{i}': torch.randint(8, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE) for i in range(num_snakes)
+        }
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            # env.render()
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+            observations, reward, done, info = env.step(actions)
+            env.reset(done['__all__'])
+            env.check_consistency()

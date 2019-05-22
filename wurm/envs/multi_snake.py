@@ -211,8 +211,8 @@ class MultiSnake(object):
             foods=self._food,
             bodies=self._bodies[:, agent].unsqueeze(1),
             heads=self._heads[:, agent].unsqueeze(1),
-            other_bodies=self._bodies[:, agents[agents != agent]],
-            other_heads=self._heads[:, agents[agents != agent]]
+            other_bodies=self._bodies[:, agents[agents != agent]].sum(dim=1, keepdim=True),
+            other_heads=self._heads[:, agents[agents != agent]].sum(dim=1, keepdim=True)
         ).float() / 255
 
     def _observe(self):
@@ -359,7 +359,7 @@ class MultiSnake(object):
             # Don't create food where there's already a snake
             other_snakes = torch.ones(self.num_snakes, dtype=torch.uint8, device=self.device)
             other_snakes[i] = 0
-            other_bodies = self._bodies[self.dones[agent], other_snakes, :, :] > EPS
+            other_bodies = self._bodies[self.dones[agent]][:, other_snakes, :, :].sum(dim=1) > EPS
             prob = (dead_snakes * torch.rand_like(dead_snakes) > (1 - self.food_on_death_prob))
             food_addition_mask = (
                     prob & ~other_bodies
