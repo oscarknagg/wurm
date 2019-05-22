@@ -231,7 +231,6 @@ class MultiSnake(object):
         return self.envs[:, self.body_channels, :, :]
 
     def _move_heads(self, i: int, agent: str, directions: Dict[str, torch.Tensor], active_envs: torch.Tensor):
-        n = active_envs.sum().item()
         # The sub-environment of just one agent
         head_channel = self.head_channels[i]
         body_channel = self.body_channels[i]
@@ -251,6 +250,7 @@ class MultiSnake(object):
         if self.verbose > 0:
             print(f'-Sanitize directions: {time()-t0}s')
 
+        t0 = time()
         # Create head position deltas
         head_deltas = F.conv2d(
             # head(_env).to(dtype=self.dtype),
@@ -264,6 +264,8 @@ class MultiSnake(object):
 
         # Move head position by applying delta
         self.envs[active_envs, head_channel:head_channel + 1, :, :] += head_deltas.round()
+        if self.verbose > 0:
+            print(f'-Head convs: {time()-t0}s')
 
     def _decay_bodies(self, i: int, agent: str, active_envs: torch.Tensor, food_consumption: dict):
         n = active_envs.sum().item()
@@ -370,6 +372,20 @@ class MultiSnake(object):
             self.envs[self.dones[agent], self.body_channels[i], :, :] = 0
             self.envs[self.dones[agent], self.head_channels[i], :, :] = 0
 
+    def _boost_costs(self, i: int, agent: str, active_envs: torch.Tensor):
+        boost_cost_env_mask = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
+        boost_cost_env_mask[active_envs] = 1
+        head_channel = self.head_channels[i]
+        body_channel = self.body_channels[i]
+        _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
+        tail_locations = body(_env) == 1
+        self.envs[boost_cost_env_mask, FOOD_CHANNEL] += tail_locations.squeeze(1).to(self.dtype)
+
+        # Decay bodies
+        self.envs[boost_cost_env_mask, body_channel:body_channel + 1, :, :] -= 1
+        self.envs[boost_cost_env_mask, body_channel:body_channel + 1, :, :] = \
+            self.envs[boost_cost_env_mask, body_channel:body_channel + 1, :, :].relu()
+
     def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[dict, dict, dict, dict]:
         if len(actions) != self.num_snakes:
             raise RuntimeError('Must have a Tensor of actions for each snake')
@@ -413,6 +429,8 @@ class MultiSnake(object):
 
         all_envs = torch.ones(self.num_envs, dtype=torch.uint8, device=self.device)
         if self.boost and at_least_one_boost and at_least_one_size_4:
+            if self.verbose > 0:
+                print('>>> Boost phase')
             ##############
             # Boost step #
             ##############
@@ -423,7 +441,6 @@ class MultiSnake(object):
                     self._move_heads(i, agent, directions, boosts[agent] & (snake_sizes[agent] >= 4))
 
             if self.verbose > 0:
-                print('>>> Boost phase')
                 print(f'Movement: {time() - t0}s')
 
             # Decay bodies of all snakes that haven't eaten food
@@ -464,7 +481,14 @@ class MultiSnake(object):
                 print(f'Deaths: {time() - t0}s')
 
             # Handle cost of boost
-            pass
+            t0 = time()
+            for i, (agent, _) in enumerate(actions.items()):
+                apply_cost = torch.rand(self.num_envs, device=self.device) < self.boost_cost_prob
+                if (boosts[agent] & (snake_sizes[agent] >= 4) & apply_cost).sum() >= 1:
+                    self._boost_costs(i, agent, boosts[agent] & (snake_sizes[agent] >= 4) & apply_cost)
+
+            if self.verbose > 0:
+                print(f'Boost cost: {time() - t0}s')
 
             # Add food if there is none in the environment
             self._add_food()
@@ -490,13 +514,14 @@ class MultiSnake(object):
         ################
         # Regular step #
         ################
+        if self.verbose > 0:
+            print('>>> Regular phase')
         # Check orientations and move head positions of all snakes
         t0 = time()
         for i, (agent, act) in enumerate(actions.items()):
             self._move_heads(i, agent, directions, all_envs)
 
         if self.verbose > 0:
-            print('>>> Regular phase')
             print(f'Movement: {time() - t0}s')
 
         # Decay bodies of all snakes that haven't eaten food

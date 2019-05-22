@@ -387,4 +387,33 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
             print_or_render(env)
 
+    def test_boost_cost(self):
+        env = get_test_env(num_envs=1)
+        env.boost = True
+        env.boost_cost_prob = 1
+        env.envs[:, 0, 1, 1] = 1
+
+        all_actions = {
+            'agent_0': torch.tensor([4, 1, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        print_or_render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+
+            env.reset(dones['__all__'])
+
+            env.check_consistency()
+
+            print_or_render(env)
+
+            # Check snake sizes. Expect agent_1: 3, agent_2: 4
+            snake_sizes = env._bodies.view(1, 2, -1).max(dim=2)[0].long()
+            self.assertTrue(torch.equal(snake_sizes, torch.tensor([[3, 4]]).to(DEFAULT_DEVICE)))
 
