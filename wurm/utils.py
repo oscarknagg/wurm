@@ -48,12 +48,12 @@ def determine_orientations(envs: torch.Tensor) -> torch.Tensor:
     snake_sizes.sub_(2)
     shift = snake_sizes[:, None, None, None].expand_as(bodies)
     necks = F.relu(bodies - shift)
-    necks.sub_(1.5 * (torch.ones_like(necks) * (necks > 0).float()))
+    necks.sub_(1.5 * (torch.ones_like(necks) * (necks > 0).to(dtype=envs.dtype)))
     necks.mul_(2)
 
     # Convolve with 4 predetermined filters one of which will be more activated
     # because it lines up with the orientation of the snake
-    responses = F.conv2d(necks, ORIENTATION_FILTERS.to(envs.device), padding=1)
+    responses = F.conv2d(necks, ORIENTATION_FILTERS.to(device=envs.device, dtype=envs.dtype), padding=1)
 
     # Find which filter
     responses = responses.view(n, 4, -1)

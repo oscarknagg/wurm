@@ -71,10 +71,11 @@ class TestMultiSnakeEnv(unittest.TestCase):
         print(f'Ran {num_envs * num_steps} actions in {t}s = {num_envs * num_steps / t} actions/s')
 
     def test_random_actions_with_boost(self):
-        num_envs = 100
+        num_envs = 1024*8
+        # num_envs = 100
         num_steps = 50
         # Create some environments and run random actions for N steps, checking for consistency at each step
-        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, boost=True, food_on_death_prob=0)
+        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, boost=True, verbose=True)
         env.check_consistency()
 
         all_actions = {
@@ -91,6 +92,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             observations, reward, done, info = env.step(actions)
             env.reset(done['__all__'])
             env.check_consistency()
+            print()
 
         t = time() - t0
         print(f'Ran {num_envs * num_steps} actions in {t}s = {num_envs * num_steps / t} actions/s')
@@ -102,11 +104,11 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env.envs[0, 0, 1, 1] = 1
 
         all_actions = {
-            'agent_0': torch.Tensor([1, 2, 1, 1, 0, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.Tensor([0, 1, 3, 2, 1, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_0': torch.tensor([1, 2, 1, 1, 0, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 3, 2, 1, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
         expected_head_positions = [
-            torch.Tensor([
+            torch.tensor([
                 [5, 4],
                 [4, 4],
                 [4, 3],
@@ -114,7 +116,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 [5, 2],
                 [5, 3]
             ]),
-            torch.Tensor([
+            torch.tensor([
                 [9, 7],
                 [9, 6],
                 [9, 5],
@@ -139,7 +141,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 body_channel = env.body_channels[i_agent]
                 _env = env.envs[:, [0, head_channel, body_channel], :, :]
 
-                head_position = torch.Tensor([
+                head_position = torch.tensor([
                     head(_env)[0, 0].flatten().argmax() // size, head(_env)[0, 0].flatten().argmax() % size
                 ])
                 self.assertTrue(torch.equal(head_position, expected_head_positions[i_agent][i]))
@@ -159,8 +161,8 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env.envs[0, 0, 4, 3] = 1
 
         all_actions = {
-            'agent_0': torch.Tensor([1, 2, 1, 1, 0, 3, 2, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.Tensor([0, 1, 3, 2, 1, 0, 0, 1]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_0': torch.tensor([1, 2, 1, 1, 0, 3, 2, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 3, 2, 1, 0, 0, 1]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         print_or_render(env)
@@ -189,8 +191,8 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env.envs[0, 0, 1, 1] = 1
 
         all_actions = {
-            'agent_0': torch.Tensor([1, 2, 3, 3, 3, 3, 3, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.Tensor([0, 1, 2, 2, 2, 2, 2, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_0': torch.tensor([1, 2, 3, 3, 3, 3, 3, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 2, 2, 2, 2, 2, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         print_or_render(env)
@@ -220,8 +222,8 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env.envs[0, 0, 9, 7] = 1
 
         all_actions = {
-            'agent_0': torch.Tensor([1, 2, 1, 1, 0, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.Tensor([0, 1, 3, 2, 1, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_0': torch.tensor([1, 2, 1, 1, 0, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 3, 2, 1, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         print_or_render(env)
@@ -245,8 +247,8 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 assert False
 
         # Check snake sizes. Expect agent_1: 4, agent_2: 5
-        snake_sizes = env._bodies.view(1, 2, -1).max(dim=2)[0]
-        self.assertTrue(torch.equal(snake_sizes, torch.Tensor([[4, 5]]).to(DEFAULT_DEVICE)))
+        snake_sizes = env._bodies.view(1, 2, -1).max(dim=2)[0].long()
+        self.assertTrue(torch.equal(snake_sizes, torch.tensor([[4, 5]]).to(DEFAULT_DEVICE)))
 
         # Check food has been removed
         self.assertEqual(env.envs[0, 0, 9, 7].item(), 0)
@@ -267,8 +269,8 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env.envs[:, 0, 1, 1] = 1
 
         all_actions = {
-            'agent_0': torch.Tensor([1, 2, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.Tensor([0, 1, 2, 2, 2, 2, 2, 2, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_0': torch.tensor([1, 2, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 2, 2, 2, 2, 2, 2, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         print_or_render(env)
@@ -306,15 +308,15 @@ class TestMultiSnakeEnv(unittest.TestCase):
         self.assertTrue(torch.allclose(obs_1[0, :, 4, 5]*255, env.other_body_colour.float()))
         self.assertTrue(torch.allclose(obs_1[0, :, 8, 8]*255, env.self_body_colour.float()))
 
-    def test_boost(self):
+    def test_boost_through_food(self):
         # Test boosting through a food
         env = get_test_env(num_envs=1)
         env.boost = True
         env.envs[:, 0, 6, 5] = 1
 
         all_actions = {
-            'agent_0': torch.Tensor([4, 1, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.Tensor([0, 1, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_0': torch.tensor([4, 1, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         print_or_render(env)
@@ -331,3 +333,58 @@ class TestMultiSnakeEnv(unittest.TestCase):
             env.check_consistency()
 
             print_or_render(env)
+
+    def test_cant_boost_until_size_4(self):
+        # Create a size 3 snake and try boosting with it
+        env = MultiSnake(num_envs=1, num_snakes=2, size=size, manual_setup=True, boost=True)
+        env.envs[:, 0, 1, 1] = 1
+        # Snake 1
+        env.envs[:, 1, 5, 5] = 1
+        env.envs[:, 2, 5, 5] = 3
+        env.envs[:, 2, 4, 5] = 2
+        env.envs[:, 2, 4, 4] = 1
+        # Snake 2
+        env.envs[:, 3, 8, 7] = 1
+        env.envs[:, 4, 8, 7] = 3
+        env.envs[:, 4, 8, 8] = 2
+        env.envs[:, 4, 8, 9] = 1
+
+        expected_head_positions = torch.tensor([
+            [6, 5],
+            [6, 4],
+            [5, 4],
+        ])
+
+        all_actions = {
+            'agent_0': torch.tensor([4, 1, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        print_or_render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+
+            env.reset(dones['__all__'])
+
+            env.check_consistency()
+
+            for i_agent in range(env.num_snakes):
+                head_channel = env.head_channels[i_agent]
+                body_channel = env.body_channels[i_agent]
+                _env = env.envs[:, [0, head_channel, body_channel], :, :]
+
+                head_position = torch.tensor([
+                    head(_env)[0, 0].flatten().argmax() // size, head(_env)[0, 0].flatten().argmax() % size
+                ])
+
+                if i_agent == 0:
+                    self.assertTrue(torch.equal(expected_head_positions[i], head_position))
+
+            print_or_render(env)
+
+
