@@ -50,7 +50,9 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_envs = 100
         num_steps = 50
         # Create some environments and run random actions for N steps, checking for consistency at each step
-        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, food_on_death_prob=0.5)
+        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, verbose=True,
+                         render_args={'num_rows': 5, 'num_cols': 5, 'size': 128}
+                         )
         env.check_consistency()
 
         all_actions = {
@@ -66,16 +68,19 @@ class TestMultiSnakeEnv(unittest.TestCase):
             observations, reward, done, info = env.step(actions)
             env.reset(done['__all__'])
             env.check_consistency()
+            print()
 
         t = time() - t0
         print(f'Ran {num_envs * num_steps} actions in {t}s = {num_envs * num_steps / t} actions/s')
 
     def test_random_actions_with_boost(self):
-        num_envs = 1024*8
-        # num_envs = 100
+        # num_envs = 1024*8
+        num_envs = 100
         num_steps = 50
         # Create some environments and run random actions for N steps, checking for consistency at each step
-        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, boost=True, verbose=True)
+        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, boost=True, verbose=True,
+                         render_args={'num_rows': 5, 'num_cols': 5, 'size': 128}
+                         )
         env.check_consistency()
 
         all_actions = {
@@ -85,7 +90,6 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
         t0 = time()
         for i in range(all_actions['agent_0'].shape[0]):
-            # env.render()
             actions = {
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }

@@ -34,6 +34,7 @@ parser.add_argument('--num-envs', type=int)
 parser.add_argument('--num-agents', type=int)
 parser.add_argument('--size', type=int)
 parser.add_argument('--agent', type=str)
+parser.add_argument('--boost', type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--train', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--observation', default='default', type=str)
 parser.add_argument('--coord-conv', default=True, type=lambda x: x.lower()[0] == 't')
@@ -56,7 +57,7 @@ parser.add_argument('--r', default=None, type=int, help='Repeat number')
 args = parser.parse_args()
 
 excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
-                 'render_window_size', 'render_rows', 'render_cols', 'save_video']
+                 'render_window_size', 'render_rows', 'render_cols', 'save_video', 'env']
 if args.r is None:
     excluded_args += ['r', ]
 if args.total_steps == float('inf'):
@@ -96,17 +97,21 @@ else:
     reload = False
 
 in_channels = 3
+if args.boost:
+    num_actions = 8  # each direction with/without boost
+else:
+    num_actions = 4
 
 # Create agent
 if agent_type == 'relational':
-    model = agents.RelationalAgent(num_actions=4, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
+    model = agents.RelationalAgent(num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                                    num_relational=2, num_attention_heads=2, relational_dim=32, num_feedforward=1,
                                    feedforward_dim=64, residual=True).to(args.device)
 elif agent_type == 'convolutional':
-    model = agents.ConvAgent(num_actions=4, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
+    model = agents.ConvAgent(num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                              num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(args.device)
 elif agent_type == 'random':
-    model = agents.RandomAgent(num_actions=4, device=args.device)
+    model = agents.RandomAgent(num_actions=num_actions, device=args.device)
 else:
     raise ValueError('Unrecognised agent')
 
@@ -135,7 +140,7 @@ render_args = {
 }
 if args.env == 'snake':
     env = MultiSnake(num_envs=args.num_envs, num_snakes=args.num_agents,
-                     size=args.size, device=args.device, render_args=render_args)
+                     size=args.size, device=args.device, render_args=render_args, boost=args.boost)
 else:
     raise ValueError('Unrecognised environment')
 
@@ -226,7 +231,7 @@ for i_step in count(1):
         entropy_loss = - trajectories.entropies.mean()
 
         optimizer.zero_grad()
-        loss = value_loss + policy_loss #+  args.entropy * entropy_loss
+        loss = value_loss + policy_loss + args.entropy * entropy_loss
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
         optimizer.step()
@@ -244,7 +249,7 @@ for i_step in count(1):
         # If there is just one env save each episode to a different file
         # Otherwise save the whole video at the end
         if args.num_envs == 1:
-            if done:
+            if done['__all__']:
                 # Save video and make a new recorder
                 recorder.close()
                 recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/{num_episodes}.mp4')
@@ -252,13 +257,15 @@ for i_step in count(1):
     currently_alive = ~torch.stack([v for k, v in done.items() if k.startswith('agent_')]).t()
     instantaneous_reward = torch.stack([r for a, r in reward.items()])
     living_reward_rate = instantaneous_reward[currently_alive.t()].mean().item()
+    living_reward_rate = 0 if np.isnan(living_reward_rate) else living_reward_rate
     instantaneous_entropy = torch.stack([r for a, r in entropies.items()])
     living_entropy = instantaneous_entropy[currently_alive.t()].mean().item()
+    living_entropy = 0 if np.isnan(living_entropy) else living_entropy
     instantaneous_edge = torch.stack([v for k, v in info.items() if k.startswith('edge_collision_')]).float().mean().item()
     ewm_tracker(
         reward_rate=living_reward_rate,
         entropy=living_entropy,
-        edge_collisions=instantaneous_edge
+        edge_collisions=instantaneous_edge,
     )
     logs = {
         't': t,
@@ -266,40 +273,49 @@ for i_step in count(1):
         'episodes': num_episodes,
         'reward_rate': living_reward_rate,
         'policy_entropy': living_entropy,
-        'edge_collisions': instantaneous_edge
+        'edge_collisions': instantaneous_edge,
     }
-
     if args.env == 'snake':
         instantaneous_self = torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
         instanteous_sizes = env._bodies.view(env.num_envs, env.num_snakes, -1).max(dim=-1)[0]
-        living_sizes = instanteous_sizes[currently_alive]
+        living_sizes = instanteous_sizes[currently_alive].mean().item()
+        living_sizes = 0 if np.isnan(living_sizes) else living_sizes
         instantaneous_snake_collision = \
             torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
+        instaneous_boosts = torch.stack([v for k, v in info.items() if k.startswith('boost_')])
+        living_boosts = instaneous_boosts[currently_alive.t()].float().mean().item()
+        living_boosts = 0 if np.isnan(living_boosts) else living_boosts
         ewm_tracker(
             snake_collisions=instantaneous_self,
-            avg_size=living_sizes.mean().item()
+            avg_size=living_sizes,
+            boost_rate=living_boosts
         )
         logs.update({
-            'avg_size': living_sizes.mean().item(),
-            'snake_collisions': instantaneous_snake_collision
+            'avg_size': living_sizes,
+            'snake_collisions': instantaneous_snake_collision,
+            'boost_rate': living_boosts
         })
 
-    # if args.agent != 'random' and args.train:
-    #     logs.update({
-    #         'value_loss': value_loss,
-    #         'policy_loss': policy_loss,
-    #         'entropy_loss': entropy_loss,
-    #     })
+    if args.agent != 'random' and args.train and i_step > args.update_steps:
+        logs.update({
+            'value_loss': value_loss,
+            'policy_loss': policy_loss,
+            'entropy_loss': entropy_loss,
+        })
 
     if i_step % PRINT_INTERVAL == 0:
+        # pprint(info)
         log_string = '[{:02d}:{:02d}:{:02d}]\t'.format(int((t // 3600)), int((t // 60) % 60), int(t % 60))
         log_string += 'Steps {:.2f}e6\t'.format(num_steps / 1e6)
-        log_string += 'Reward rate: {:.3e}\t'.format(ewm_tracker['reward_rate'])
+        log_string += 'Reward: {:.3e}\t'.format(ewm_tracker['reward_rate'])
         log_string += 'Entropy: {:.3e}\t'.format(ewm_tracker['entropy'])
         log_string += 'Edge Collision: {:.3e}\t'.format(ewm_tracker['edge_collisions'])
         if args.env == 'snake':
             log_string += 'Avg. size: {:.3f}\t'.format(ewm_tracker['avg_size'])
             log_string += 'Snake Collision: {:.3e}\t'.format(ewm_tracker['snake_collisions'])
+            log_string += 'Boost: {:.3e}\t'.format(ewm_tracker['boost_rate'])
+
+        # log_string += 'Done: {:.3e}\t'.format(ewm_tracker['done_rate'])
 
         print(log_string)
 
