@@ -64,7 +64,7 @@ class MultiSnake(object):
                  dtype: torch.dtype = torch.float,
                  manual_setup: bool = False,
                  food_on_death_prob: float = 0.5,
-                 boost: bool = False,
+                 boost: bool = True,
                  boost_cost_prob: float = 0.5,
                  verbose: int = 0,
                  render_args: dict = None):
@@ -125,6 +125,10 @@ class MultiSnake(object):
         self.info = {}
         self.rewards = {}
         self.dones = {}
+
+    def _log(self, msg: str):
+        if self.verbose > 0:
+            print(msg)
 
     def _make_rgb(self,
                   foods: torch.Tensor,
@@ -237,8 +241,7 @@ class MultiSnake(object):
         _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
         t0 = time()
         orientations = determine_orientations(_env)
-        if self.verbose > 0:
-            print(f'-Orientations: {time()-t0}s')
+        self._log(f'-Orientations: {1000*(time()-t0)}ms')
 
         # Check if this snake is trying to move backwards and change
         # it's direction/action to just continue forward
@@ -247,8 +250,7 @@ class MultiSnake(object):
         t0 = time()
         mask = orientations == directions[agent][active_envs]
         directions[agent][active_envs] = (directions[agent][active_envs] + (mask * 2).long()).fmod(4)
-        if self.verbose > 0:
-            print(f'-Sanitize directions: {time()-t0}s')
+        self._log(f'-Sanitize directions: {1000*(time()-t0)}ms')
 
         t0 = time()
         # Create head position deltas
@@ -264,8 +266,7 @@ class MultiSnake(object):
 
         # Move head position by applying delta
         self.envs[active_envs, head_channel:head_channel + 1, :, :] += head_deltas.round()
-        if self.verbose > 0:
-            print(f'-Head convs: {time()-t0}s')
+        self._log(f'-Head convs: {1000*(time()-t0)}ms')
 
     def _decay_bodies(self, i: int, agent: str, active_envs: torch.Tensor, food_consumption: dict):
         n = active_envs.sum().item()
@@ -386,6 +387,9 @@ class MultiSnake(object):
         self.envs[boost_cost_env_mask, body_channel:body_channel + 1, :, :] = \
             self.envs[boost_cost_env_mask, body_channel:body_channel + 1, :, :].relu()
 
+        # Reward penalty
+        self.rewards[agent][active_envs] -= 1
+
     def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[dict, dict, dict, dict]:
         if len(actions) != self.num_snakes:
             raise RuntimeError('Must have a Tensor of actions for each snake')
@@ -398,11 +402,14 @@ class MultiSnake(object):
             if act.shape[0] != self.num_envs:
                 raise RuntimeError('Must have the same number of actions as environments.')
 
+        # Clear info
+        self.info = {}
         directions = dict()
         boosts = dict()
         for i, (agent, act) in enumerate(actions.items()):
             directions[agent] = act.fmod(4)
             boosts[agent] = act > 3
+            self.info[f'boost_{i}'] = boosts[agent].clone()
 
         self.rewards = OrderedDict([
             (
@@ -417,8 +424,6 @@ class MultiSnake(object):
             ) for i in range(self.num_snakes)
         ])
 
-        # Clear info
-        self.info = {}
         snake_sizes = dict()
         for i, (agent, act) in enumerate(actions.items()):
             body_channel = self.body_channels[i]
@@ -440,8 +445,7 @@ class MultiSnake(object):
                 if (boosts[agent] & (snake_sizes[agent] >= 4)).sum() >= 1:
                     self._move_heads(i, agent, directions, boosts[agent] & (snake_sizes[agent] >= 4))
 
-            if self.verbose > 0:
-                print(f'Movement: {time() - t0}s')
+            self._log(f'Movement: {1000*(time() - t0)}ms')
 
             # Decay bodies of all snakes that haven't eaten food
             t0 = time()
@@ -450,8 +454,7 @@ class MultiSnake(object):
                 if (boosts[agent] & (snake_sizes[agent] >= 4)).sum() >= 1:
                     self._decay_bodies(i, agent, boosts[agent] & (snake_sizes[agent] >= 4), food_consumption)
 
-            if self.verbose > 0:
-                print(f'Growth/decay: {time() - t0}s')
+            self._log(f'Growth/decay: {1000*(time() - t0)}ms')
 
             # Check for collisions with snakes and food
             t0 = time()
@@ -459,8 +462,7 @@ class MultiSnake(object):
                 if (boosts[agent] & (snake_sizes[agent] >= 4)).sum() >= 1:
                     self._check_collisions(i, agent, all_envs, snake_sizes, food_consumption)
 
-            if self.verbose > 0:
-                print(f'Snake collision: {time() - t0}s')
+            self._log(f'Snake collision: {1000*(time() - t0)}ms')
 
             # Check for edge collisions
             t0 = time()
@@ -468,8 +470,7 @@ class MultiSnake(object):
                 if (boosts[agent] & (snake_sizes[agent] >= 4)).sum() >= 1:
                     self._check_boundaries(i, agent, boosts[agent] & (snake_sizes[agent] >= 4))
 
-            if self.verbose > 0:
-                print(f'Edge collision: {time() - t0}s')
+            self._log(f'Edge collision: {1000*(time() - t0)}ms')
 
             # Clear dead snakes and create food at dead snakes
             t0 = time()
@@ -477,8 +478,7 @@ class MultiSnake(object):
                 if (boosts[agent] & (snake_sizes[agent] >= 4)).sum() >= 1:
                     self._handle_deaths(i, agent)
 
-            if self.verbose > 0:
-                print(f'Deaths: {time() - t0}s')
+            self._log(f'Deaths: {1000 * (time() - t0)}ms')
 
             # Handle cost of boost
             t0 = time()
@@ -487,20 +487,19 @@ class MultiSnake(object):
                 if (boosts[agent] & (snake_sizes[agent] >= 4) & apply_cost).sum() >= 1:
                     self._boost_costs(i, agent, boosts[agent] & (snake_sizes[agent] >= 4) & apply_cost)
 
-            if self.verbose > 0:
-                print(f'Boost cost: {time() - t0}s')
+            self._log(f'Boost cost: {1000 * (time() - t0)}ms')
 
             # Add food if there is none in the environment
             self._add_food()
 
-        # Environment is finished if all snake are dead
-        self.dones['__all__'] = torch.ones((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
-        for agent, _ in actions.items():
-            self.dones['__all__'] = self.dones['__all__'] & self.dones[agent]
-
-        self.env_dones = self.dones['__all__'].clone()
-        for i in range(self.num_snakes):
-            self.snake_dones[:, i] = self.snake_dones[:, i] | self.dones[f'agent_{i}']
+        # # Environment is finished if all snake are dead
+        # self.dones['__all__'] = torch.ones((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
+        # for agent, _ in actions.items():
+        #     self.dones['__all__'] = self.dones['__all__'] & self.dones[agent]
+        #
+        # self.env_dones = self.dones['__all__'].clone()
+        # for i in range(self.num_snakes):
+        #     self.snake_dones[:, i] = self.snake_dones[:, i] | self.dones[f'agent_{i}']
 
         snake_sizes = dict()
         for i, (agent, act) in enumerate(actions.items()):
@@ -509,7 +508,7 @@ class MultiSnake(object):
 
         # Apply rounding to stop numerical errors accumulating
         self.envs.round_()
-        self.check_consistency()
+        # self.check_consistency()
 
         ################
         # Regular step #
@@ -521,8 +520,7 @@ class MultiSnake(object):
         for i, (agent, act) in enumerate(actions.items()):
             self._move_heads(i, agent, directions, all_envs)
 
-        if self.verbose > 0:
-            print(f'Movement: {time() - t0}s')
+        self._log(f'Movement: {1000 * (time() - t0)}ms')
 
         # Decay bodies of all snakes that haven't eaten food
         t0 = time()
@@ -530,32 +528,28 @@ class MultiSnake(object):
         for i, (agent, _) in enumerate(actions.items()):
             self._decay_bodies(i, agent, all_envs, food_consumption)
 
-        if self.verbose > 0:
-            print(f'Growth/decay: {time() - t0}s')
+        self._log(f'Growth/decay: {1000*(time() - t0)}ms')
 
         # Check for collisions with snakes and food
         t0 = time()
         for i, (agent, _) in enumerate(actions.items()):
             self._check_collisions(i, agent, all_envs, snake_sizes, food_consumption)
 
-        if self.verbose > 0:
-            print(f'Snake collision: {time() - t0}s')
+        self._log(f'Snake collision: {1000*(time() - t0)}ms')
 
         # Check for edge collisions
         t0 = time()
         for i, (agent, _) in enumerate(actions.items()):
             self._check_boundaries(i, agent, all_envs)
 
-        if self.verbose > 0:
-            print(f'Edge collision: {time() - t0}s')
+        self._log(f'Edge collision: {1000*(time() - t0)}ms')
 
         # Clear dead snakes and create food at dead snakes
         t0 = time()
         for i, (agent, _) in enumerate(actions.items()):
             self._handle_deaths(i, agent)
 
-        if self.verbose > 0:
-            print(f'Deaths: {time() - t0}s')
+        self._log(f'Deaths: {1000 * (time() - t0)}ms')
 
         # Add food if there is none in the environment
         self._add_food()
@@ -566,7 +560,7 @@ class MultiSnake(object):
         # Environment is finished if all snake are dead
         self.dones['__all__'] = torch.ones((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
         for agent, _ in actions.items():
-            self.dones['__all__'] = self.dones['__all__'] & self.dones[agent]
+            self.dones['__all__'] &= self.dones[agent]
 
         self.env_dones = self.dones['__all__'].clone()
         for i in range(self.num_snakes):
@@ -654,11 +648,12 @@ class MultiSnake(object):
             done = self.env_dones
 
         done = done.view((done.shape[0]))
+        num_done = int(done.sum().item())
 
         t0 = time()
         # Create environments
         if done.sum() > 0:
-            new_envs = self._create_envs(int(done.sum().item()))
+            new_envs = self._create_envs(num_done)
             self.envs[done.byte(), :, :, :] = new_envs
 
         # Reset done counters
@@ -666,7 +661,7 @@ class MultiSnake(object):
         self.env_dones[done] = 0
 
         if self.verbose:
-            print(f'Resetting {done.sum().item()} envs: {time() - t0}s')
+            print(f'Resetting {num_done} envs: {1000*(time() - t0)}ms')
 
         return self._observe()
 
