@@ -127,6 +127,13 @@ class MultiSnake(object):
         self.rewards = {}
         self.dones = {}
 
+        self.boost_this_step = OrderedDict([
+            (
+                f'agent_{i}',
+                torch.zeros((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
+            ) for i in range(self.num_snakes)
+        ])
+
     def _log(self, msg: str):
         if self.verbose > 0:
             print(msg)
@@ -155,11 +162,21 @@ class MultiSnake(object):
         if self.viewer is None:
             self.viewer = rendering.SimpleImageViewer()
 
+        boosts = torch.stack([v for k, v in self.boost_this_step.items()]).t()
+
+        # Regular snakes
         layers = {
-            (self._food > EPS).squeeze(1): self.food_colour,
-            (self._bodies.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_colour/2,
-            (self._heads.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_colour,
+            self._food.gt(EPS).squeeze(1): self.food_colour,
+            self._bodies.sum(dim=1, keepdim=True).gt(EPS).squeeze(1): self.self_colour/2,
+            self._heads.sum(dim=1, keepdim=True).gt(EPS).squeeze(1): self.self_colour,
         }
+
+        # Boosted snakes
+        if self._bodies[boosts].shape[0] > 0:
+            layers.update({
+                self._bodies[boosts].sum(dim=0, keepdim=True).gt(EPS): self.self_boost_colour/ 2,
+                self._heads[boosts].sum(dim=0, keepdim=True).gt(EPS): self.self_boost_colour,
+            })
 
         # Get RBG Tensor NCHW
         img = self._make_generic_rgb(layers)
@@ -208,13 +225,6 @@ class MultiSnake(object):
             (self._heads[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_colour
         }
         return self._make_generic_rgb(layers).float() / 255
-        # return self._make_rgb(
-        #     foods=self._food,
-        #     bodies=self._bodies[:, agent].unsqueeze(1),
-        #     heads=self._heads[:, agent].unsqueeze(1),
-        #     other_bodies=self._bodies[:, agents[agents != agent]].sum(dim=1, keepdim=True),
-        #     other_heads=self._heads[:, agents[agents != agent]].sum(dim=1, keepdim=True)
-        # ).float() / 255
 
     def _observe(self):
         return {f'agent_{i}': self._observe_agent(i) for i in range(self.num_snakes)}
