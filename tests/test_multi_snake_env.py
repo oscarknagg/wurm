@@ -2,6 +2,7 @@ import unittest
 import pytest
 import torch
 from time import sleep, time
+import numpy as np
 
 from wurm.envs import MultiSnake
 from wurm.utils import head, body, food
@@ -12,8 +13,8 @@ print_envs = True
 render_envs = True
 render_sleep = 0.5
 size = 12
-torch.cuda.manual_seed(0)
-torch.random.manual_seed(1)
+torch.cuda.manual_seed(42)
+torch.random.manual_seed(42)
 
 
 def get_test_env(num_envs=1):
@@ -304,13 +305,12 @@ class TestMultiSnakeEnv(unittest.TestCase):
         obs_0 = env._observe_agent(0)
         obs_1 = env._observe_agent(1)
 
-        # print(obs_0)
-
         # Check that own agent appears green and other appears blue
-        self.assertTrue(torch.allclose(obs_0[0, :, 4, 5]*255, env.self_body_colour.float()))
-        self.assertTrue(torch.allclose(obs_0[0, :, 8, 8]*255, env.other_body_colour.float()))
-        self.assertTrue(torch.allclose(obs_1[0, :, 4, 5]*255, env.other_body_colour.float()))
-        self.assertTrue(torch.allclose(obs_1[0, :, 8, 8]*255, env.self_body_colour.float()))
+        self.assertTrue(torch.allclose(obs_0[0, :, 4, 5]*255, env.self_colour.float()/2))
+        self.assertTrue(torch.allclose(obs_0[0, :, 8, 8]*255, env.other_colour.float()/2))
+
+        self.assertTrue(torch.allclose(obs_1[0, :, 4, 5]*255, env.other_colour.float()/2))
+        self.assertTrue(torch.allclose(obs_1[0, :, 8, 8]*255, env.self_colour.float()/2))
 
     def test_boost_through_food(self):
         # Test boosting through a food
@@ -469,3 +469,33 @@ class TestMultiSnakeEnv(unittest.TestCase):
             observations, reward, done, info = env.step(actions)
             env.reset(done['__all__'])
             env.check_consistency()
+
+    def test_boost_rendering(self):
+        # Test boosting through a food
+        env = get_test_env(num_envs=1)
+        env.boost = True
+        env.envs[:, 0, 1, 5] = 11
+        print('=====')
+        print(env.self_colour/2)
+        print(env.self_colour)
+        all_actions = {
+            'agent_0': torch.tensor([4, 1, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        print_or_render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+
+            env.reset(dones['__all__'])
+
+            env.check_consistency()
+
+            print_or_render(env)
+            print(env.boost_this_step)
+

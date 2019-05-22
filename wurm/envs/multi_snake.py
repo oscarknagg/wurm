@@ -114,11 +114,12 @@ class MultiSnake(object):
         # Rendering parameters
         self.viewer = None
         # Own snake appears green
-        self.self_body_colour = torch.tensor((0, 255 * 0.5, 0), dtype=torch.short, device=self.device)
-        self.self_head_colour = torch.tensor((0, 255, 0), dtype=torch.short, device=self.device)
+        self.self_colour = torch.tensor((0, 192, 0), dtype=torch.short, device=self.device)
+        self.self_boost_colour = torch.tensor((0, 255, 0), dtype=torch.short, device=self.device)
         # Other snakes appear blue
-        self.other_body_colour = torch.tensor((0, 0, 255 * 0.5), dtype=torch.short, device=self.device)
-        self.other_head_colour = torch.tensor((0, 0, 255), dtype=torch.short, device=self.device)
+        self.other_colour = torch.tensor((0, 0, 192), dtype=torch.short, device=self.device)
+        self.other_boost_colour = torch.tensor((0, 0, 255), dtype=torch.short, device=self.device)
+        # Boost has different head colour
         self.food_colour = torch.tensor((255, 0, 0), dtype=torch.short, device=self.device)
         self.edge_colour = torch.tensor((0, 0, 0), dtype=torch.short, device=self.device)
 
@@ -156,8 +157,8 @@ class MultiSnake(object):
 
         layers = {
             (self._food > EPS).squeeze(1): self.food_colour,
-            (self._bodies.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_body_colour,
-            (self._heads.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_head_colour,
+            (self._bodies.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_colour/2,
+            (self._heads.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_colour,
         }
 
         # Get RBG Tensor NCHW
@@ -201,10 +202,10 @@ class MultiSnake(object):
         agents = torch.arange(self.num_snakes)
         layers = {
             (self._food > EPS).squeeze(1): self.food_colour,
-            (self._bodies[:, agent].unsqueeze(1) > EPS).squeeze(1): self.self_body_colour,
-            (self._heads[:, agent].unsqueeze(1) > EPS).squeeze(1): self.self_head_colour,
-            (self._bodies[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_body_colour,
-            (self._heads[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_head_colour
+            (self._bodies[:, agent].unsqueeze(1) > EPS).squeeze(1): self.self_colour/2,
+            (self._heads[:, agent].unsqueeze(1) > EPS).squeeze(1): self.self_colour,
+            (self._bodies[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_colour/2,
+            (self._heads[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_colour
         }
         return self._make_generic_rgb(layers).float() / 255
         # return self._make_rgb(
