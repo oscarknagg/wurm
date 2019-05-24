@@ -245,7 +245,7 @@ class MultiSnake(object):
             (self._bodies[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_colour/2,
             (self._heads[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_colour
         }
-        return self._make_generic_rgb(layers).float() / 255
+        return self._make_generic_rgb(layers).to(dtype=self.dtype) / 255
 
     def _observe(self):
         return {f'agent_{i}': self._observe_agent(i) for i in range(self.num_snakes)}

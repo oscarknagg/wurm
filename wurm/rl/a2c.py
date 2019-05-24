@@ -18,10 +18,12 @@ class A2C(object):
     def __init__(self,
                  gamma: float,
                  value_loss_fn: Callable = F.smooth_l1_loss,
-                 normalise_returns: bool = True):
+                 normalise_returns: bool = True,
+                 dtype: torch.dtype = torch.float):
         self.gamma = gamma
         self.normalise_returns = normalise_returns
         self.value_loss_fn = value_loss_fn
+        self.dtype = dtype
 
     def loss(self,
              bootstrap_values: torch.Tensor,
@@ -39,10 +41,10 @@ class A2C(object):
             log_probs: Log probabilities of actions taken during trajectory. Shape: (num_envs, num_steps)
             dones: Done masks for trajectory states. Shape: (num_envs, num_steps)
         """
-        R = bootstrap_values * (~dones[-1]).float()
+        R = bootstrap_values * (~dones[-1]).to(self.dtype)
         returns = []
         for r, d in zip(reversed(rewards), reversed(dones)):
-            R = r + self.gamma * R * (~d).float()
+            R = r + self.gamma * R * (~d).to(self.dtype)
             returns.insert(0, R)
 
         returns = torch.stack(returns)
