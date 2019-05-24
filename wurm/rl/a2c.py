@@ -16,11 +16,9 @@ class A2C(object):
         normalise_returns: Whether or not to normalise target returns
     """
     def __init__(self,
-                 actor_critic: nn.Module,
                  gamma: float,
                  value_loss_fn: Callable = F.smooth_l1_loss,
                  normalise_returns: bool = True):
-        self.actor_critic = actor_critic
         self.gamma = gamma
         self.normalise_returns = normalise_returns
         self.value_loss_fn = value_loss_fn

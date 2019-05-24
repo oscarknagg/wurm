@@ -21,7 +21,6 @@ from wurm.rl import A2C, TrajectoryStore
 from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
 
-RENDER = False
 LOG_INTERVAL = 1
 PRINT_INTERVAL = 100
 MAX_GRAD_NORM = 0.5
@@ -54,10 +53,13 @@ parser.add_argument('--save-logs', default=True, type=lambda x: x.lower()[0] == 
 parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--r', default=None, type=int, help='Repeat number')
+parser.add_argument('--norm-returns', default=True, type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--boost-cost', type=float, default=0.5)
 args = parser.parse_args()
 
 excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
-                 'render_window_size', 'render_rows', 'render_cols', 'save_video', 'env']
+                 'render_window_size', 'render_rows', 'render_cols', 'save_video', 'env', 'coord_conv',
+                 'norm_returns']
 if args.r is None:
     excluded_args += ['r', ]
 if args.total_steps == float('inf'):
@@ -107,7 +109,7 @@ if agent_type == 'relational':
     model = agents.RelationalAgent(num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                                    num_relational=2, num_attention_heads=2, relational_dim=32, num_feedforward=1,
                                    feedforward_dim=64, residual=True).to(args.device)
-elif agent_type == 'convolutional':
+elif agent_type == 'conv':
     model = agents.ConvAgent(num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                              num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(args.device)
 elif agent_type == 'random':
@@ -140,7 +142,8 @@ render_args = {
 }
 if args.env == 'snake':
     env = MultiSnake(num_envs=args.num_envs, num_snakes=args.num_agents,
-                     size=args.size, device=args.device, render_args=render_args, boost=args.boost)
+                     size=args.size, device=args.device, render_args=render_args, boost=args.boost,
+                     boost_cost_prob=args.boost_cost)
 else:
     raise ValueError('Unrecognised environment')
 
@@ -157,7 +160,7 @@ if args.save_video:
     os.makedirs(PATH + f'/videos/{save_file}', exist_ok=True)
     recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/0.mp4')
 
-a2c = A2C(model, gamma=args.gamma)
+a2c = A2C(gamma=args.gamma, normalise_returns=args.norm_returns)
 
 
 ############################
@@ -166,6 +169,7 @@ a2c = A2C(model, gamma=args.gamma)
 t0 = time()
 observations = env.reset()
 for i_step in count(1):
+    t_i = time()
     if args.render:
         env.render()
         sleep(1. / FPS)
@@ -245,6 +249,10 @@ for i_step in count(1):
     num_episodes += done['__all__'].sum().item()
     num_steps += args.num_envs
 
+    ewm_tracker(
+        fps=args.num_envs/(time()-t_i)
+    )
+
     if args.save_video:
         # If there is just one env save each episode to a different file
         # Otherwise save the whole video at the end
@@ -282,7 +290,7 @@ for i_step in count(1):
         living_sizes = 0 if np.isnan(living_sizes) else living_sizes
         instantaneous_snake_collision = \
             torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
-        instaneous_boosts = torch.stack([v for k, v in info.items() if k.startswith('boost_')])
+        instaneous_boosts = torch.stack([v for k, v in env.boost_this_step.items()])
         living_boosts = instaneous_boosts[currently_alive.t()].float().mean().item()
         living_boosts = 0 if np.isnan(living_boosts) else living_boosts
         ewm_tracker(
@@ -307,15 +315,15 @@ for i_step in count(1):
         # pprint(info)
         log_string = '[{:02d}:{:02d}:{:02d}]\t'.format(int((t // 3600)), int((t // 60) % 60), int(t % 60))
         log_string += 'Steps {:.2f}e6\t'.format(num_steps / 1e6)
-        log_string += 'Reward: {:.3e}\t'.format(ewm_tracker['reward_rate'])
-        log_string += 'Entropy: {:.3e}\t'.format(ewm_tracker['entropy'])
-        log_string += 'Edge Collision: {:.3e}\t'.format(ewm_tracker['edge_collisions'])
+        log_string += 'Reward: {:.2e}\t'.format(ewm_tracker['reward_rate'])
+        log_string += 'Entropy: {:.2e}\t'.format(ewm_tracker['entropy'])
+        log_string += 'Edge: {:.2e}\t'.format(ewm_tracker['edge_collisions'])
         if args.env == 'snake':
-            log_string += 'Avg. size: {:.3f}\t'.format(ewm_tracker['avg_size'])
-            log_string += 'Snake Collision: {:.3e}\t'.format(ewm_tracker['snake_collisions'])
-            log_string += 'Boost: {:.3e}\t'.format(ewm_tracker['boost_rate'])
+            log_string += 'Size: {:.3}\t'.format(ewm_tracker['avg_size'])
+            log_string += 'Collision: {:.2e}\t'.format(ewm_tracker['snake_collisions'])
+            log_string += 'Boost: {:.2e}\t'.format(ewm_tracker['boost_rate'])
 
-        # log_string += 'Done: {:.3e}\t'.format(ewm_tracker['done_rate'])
+        log_string += 'FPS: {:.2e}\t'.format(ewm_tracker['fps'])
 
         print(log_string)
 
