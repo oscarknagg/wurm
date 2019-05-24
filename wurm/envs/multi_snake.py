@@ -94,7 +94,8 @@ class MultiSnake(object):
         self.envs = torch.zeros((num_envs, 1 + 2 * num_snakes, size, size), dtype=self.dtype, device=self.device).requires_grad_(False)
         self.head_channels = [1 + 2*i for i in range(self.num_snakes)]
         self.body_channels = [2 + 2*i for i in range(self.num_snakes)]
-        self.snake_dones = torch.zeros((num_envs, num_snakes), dtype=torch.uint8, device=self.device)
+        self.dones = {f'agent_{i}': torch.zeros(num_envs, dtype=torch.uint8, device=self.device) for i in range(self.num_snakes)}
+        self.dones.update({'__all__': torch.zeros(num_envs, dtype=torch.uint8, device=self.device)})
         self.t = 0
         self.viewer = 0
 
@@ -102,9 +103,6 @@ class MultiSnake(object):
             # Create environments
             self.envs = self._create_envs(self.num_envs)
             self.envs.requires_grad_(False)
-
-        self.env_dones = torch.zeros(num_envs, dtype=torch.uint8, device=self.device)
-        self.dead = torch.zeros((num_envs, num_snakes), dtype=torch.uint8, device=self.device)
 
         # Environment dynamics parameters
         self.respawn_mode = ['all_snakes', 'any_snake'][0]
@@ -135,7 +133,6 @@ class MultiSnake(object):
         ).to(dtype=torch.short, device=self.device) + torch.tensor(base_colours, dtype=torch.short, device=self.device)
         self.info = {}
         self.rewards = {}
-        self.dones = {}
 
         self.boost_this_step = OrderedDict([
             (
@@ -453,12 +450,7 @@ class MultiSnake(object):
                 torch.zeros((self.num_envs,), dtype=self.dtype, device=self.device).requires_grad_(False)
             ) for i in range(self.num_snakes)
         ])
-        self.dones = OrderedDict([
-            (
-                f'agent_{i}',
-                torch.zeros((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
-            ) for i in range(self.num_snakes)
-        ])
+
         snake_sizes = dict()
         for i, (agent, act) in enumerate(actions.items()):
             body_channel = self.body_channels[i]
@@ -588,15 +580,11 @@ class MultiSnake(object):
         self.envs.round_()
 
         # Environment is finished if all snake are dead
-        self.dones['__all__'] = torch.ones((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
+        self.dones['__all__'] = torch.ones(self.num_envs, dtype=torch.uint8, device=self.device)
         for agent, _ in actions.items():
             self.dones['__all__'] &= self.dones[agent]
 
-        self.env_dones = self.dones['__all__'].clone()
-        for i in range(self.num_snakes):
-            self.snake_dones[:, i] = self.snake_dones[:, i] | self.dones[f'agent_{i}']
-
-        return self._observe(), self.rewards, self.dones, self.info
+        return self._observe(), self.rewards, {k: v.clone() for k, v in self.dones.items()}, self.info
 
     def check_consistency(self):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
@@ -607,21 +595,21 @@ class MultiSnake(object):
             body_channel = self.body_channels[i]
 
             # Check dead snakes all 0
-            if self.snake_dones[:, i].sum() > 0:
+            if self.dones[f'agent_{i}'].sum() > 0:
                 dead_envs = torch.cat([
-                    self.envs[self.snake_dones[:, i], head_channel:head_channel+1:, :, :],
-                    self.envs[self.snake_dones[:, i], body_channel:body_channel + 1, :, :]
+                    self.envs[self.dones[f'agent_{i}'], head_channel:head_channel+1:, :, :],
+                    self.envs[self.dones[f'agent_{i}'], body_channel:body_channel + 1, :, :]
                 ], dim=1)
                 dead_all_zeros = dead_envs.sum() == 0
                 if not dead_all_zeros:
                     raise RuntimeError('Dead snake contains non-zero elements.')
 
             # Check living envs
-            if (~self.snake_dones[:, i]).sum() > 0:
+            if (~self.dones[f'agent_{i}']).sum() > 0:
                 living_envs = torch.cat([
-                    self.envs[~self.snake_dones[:, i], 0:1, :, :],
-                    self.envs[~self.snake_dones[:, i], head_channel:head_channel + 1, :, :],
-                    self.envs[~self.snake_dones[:, i], body_channel:body_channel + 1, :, :]
+                    self.envs[~self.dones[f'agent_{i}'], 0:1, :, :],
+                    self.envs[~self.dones[f'agent_{i}'], head_channel:head_channel + 1, :, :],
+                    self.envs[~self.dones[f'agent_{i}'], body_channel:body_channel + 1, :, :]
                 ], dim=1)
                 try:
                     snake_consistency(living_envs)
@@ -675,7 +663,7 @@ class MultiSnake(object):
                 reset
         """
         if done is None:
-            done = self.env_dones
+            done = self.dones['__all__']
 
         done = done.view((done.shape[0]))
         num_done = int(done.sum().item())
@@ -686,9 +674,10 @@ class MultiSnake(object):
             new_envs = self._create_envs(num_done)
             self.envs[done.byte(), :, :, :] = new_envs
 
-        # Reset done counters
-        self.snake_dones[done] = 0
-        self.env_dones[done] = 0
+        # Reset done trackers
+        self.dones['__all__'][done] = 0
+        for i in range(self.num_snakes):
+            self.dones[f'agent_{i}'][done] = 0
 
         if self.verbose:
             print(f'Resetting {num_done} envs: {1000*(time() - t0)}ms')
