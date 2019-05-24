@@ -9,7 +9,11 @@ EPS = 1e-8
 class A2C(object):
     """Class that encapsulates the advantage actor-critic algorithm.
 
-
+    Args:
+        actor_critic: Module that outputs
+        gamma: Discount value
+        value_loss_fn: Loss function between values and returns i.e. Huber, MSE
+        normalise_returns: Whether or not to normalise target returns
     """
     def __init__(self,
                  actor_critic: nn.Module,
@@ -27,9 +31,16 @@ class A2C(object):
              values: torch.Tensor,
              log_probs: torch.Tensor,
              dones: torch.Tensor):
-        # Only take whats absolutely necessary for A2C
-        # Leave states behind
-        # Leave entropy calculation to another piece of code
+        """Calculate A2C loss.
+
+        Args:
+            bootstrap_values: Vector containing estimated value of final states each trajectory.
+                Shape (num_envs, 1)
+            rewards: Rewards for trajectories. Shape: (num_envs, num_steps)
+            values: Values for trajectory states: Shape (num_envs, num_steps)
+            log_probs: Log probabilities of actions taken during trajectory. Shape: (num_envs, num_steps)
+            dones: Done masks for trajectory states. Shape: (num_envs, num_steps)
+        """
         R = bootstrap_values * (~dones[-1]).float()
         returns = []
         for r, d in zip(reversed(rewards), reversed(dones)):
