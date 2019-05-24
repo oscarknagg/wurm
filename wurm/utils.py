@@ -48,12 +48,12 @@ def determine_orientations(envs: torch.Tensor) -> torch.Tensor:
     snake_sizes.sub_(2)
     shift = snake_sizes[:, None, None, None].expand_as(bodies)
     necks = F.relu(bodies - shift)
-    necks.sub_(1.5 * (torch.ones_like(necks) * (necks > 0).float()))
+    necks.sub_(1.5 * (torch.ones_like(necks) * (necks > 0).to(dtype=envs.dtype)))
     necks.mul_(2)
 
     # Convolve with 4 predetermined filters one of which will be more activated
     # because it lines up with the orientation of the snake
-    responses = F.conv2d(necks, ORIENTATION_FILTERS.to(envs.device), padding=1)
+    responses = F.conv2d(necks, ORIENTATION_FILTERS.to(device=envs.device, dtype=envs.dtype), padding=1)
 
     # Find which filter
     responses = responses.view(n, 4, -1)
@@ -107,20 +107,22 @@ def get_test_env(size: int, orientation: str = 'up') -> torch.Tensor:
     return env
 
 
-def env_consistency(envs: torch.Tensor):
-    """Runs multiple checks for environment consistency and throws an exception if any fail"""
+def snake_consistency(envs: torch.Tensor):
+    """Checks for consistency of a 3 channel single-snake env."""
     n = envs.shape[0]
     if n == 0:
         return
 
     one_head_per_snake = torch.all(head(envs).view(n, -1).sum(dim=-1) == 1)
     if not one_head_per_snake:
+        print('Snake head sums: ')
+        print(head(envs).view(n, -1).sum(dim=-1))
         raise RuntimeError('An environment has multiple num_heads for a single snake.')
 
     # Environment contains a snake
-    envs_contain_snake = torch.all(body(envs).view(n, -1).sum(dim=-1) > 0)
-    if not envs_contain_snake:
-        raise RuntimeError('An environment doesn\'t contain a snake.')
+    envs_contain_snake = body(envs).view(n, -1).sum(dim=-1) > 0
+    if not torch.all(envs_contain_snake):
+        raise RuntimeError(f'{(~envs_contain_snake).sum()} environments don\'t contain a snake.')
 
     # Head is at end of body
     body_value_at_head_locations = (head(envs) * body(envs))
@@ -135,7 +137,28 @@ def env_consistency(envs: torch.Tensor):
     estimated_body_sizes = (torch.sqrt(8 * body_totals + 1) - 1) / 2
     consistent_body_size = torch.equal(estimated_body_sizes, body_sizes)
     if not consistent_body_size:
+        print(envs[estimated_body_sizes != body_sizes][0])
         raise RuntimeError('An environment has a body with inconsistent values i.e. not range(n)')
+
+    # No snakes of length less than 3 (size 6)
+    if not torch.all(body_totals >= 6):
+        raise RuntimeError('A snake has size of less than 3.')
+
+    # No food and head overlap
+    head_food_overlap = (head(envs) * food(envs)).view(n, -1).sum(dim=-1)
+    if not torch.all(head_food_overlap == 0):
+        print(torch.nonzero(head_food_overlap))
+        print(envs[torch.nonzero(head_food_overlap)[0]])
+        raise RuntimeError(f'A food and head pixel is overlapping in {int(head_food_overlap.sum().item())} env(s).')
+
+
+def env_consistency(envs: torch.Tensor):
+    """Runs multiple checks for environment consistency and throws an exception if any fail"""
+    snake_consistency(envs)
+
+    n = envs.shape[0]
+    if n == 0:
+        return
 
     # Environment contains one food instance
     contains_one_food = torch.all(food(envs).view(n, -1).sum(dim=-1) == 1)

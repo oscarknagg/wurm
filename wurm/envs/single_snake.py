@@ -14,7 +14,7 @@ from wurm.utils import determine_orientations, head, food, body, drop_duplicates
 Spec = namedtuple('Spec', ['reward_threshold'])
 
 
-class SingleSnakeEnvironments(object):
+class SingleSnake(object):
     """Batched snake environment.
 
     The dynamics of this environment aim to emulate that of the mobile phone game "Snake".
