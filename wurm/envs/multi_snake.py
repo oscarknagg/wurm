@@ -155,7 +155,6 @@ class MultiSnake(object):
         img = img.permute((0, 2, 3, 1))
 
         for locations, colour in colour_layers.items():
-            # print(locations.shape)
             img[locations, :] = colour
 
         img[:, :1, :, :] = self.edge_colour
@@ -172,20 +171,28 @@ class MultiSnake(object):
         if self.viewer is None:
             self.viewer = rendering.SimpleImageViewer()
 
-        boosts = torch.stack([v for k, v in self.boost_this_step.items()]).t()
-
         # Regular snakes
         layers = {
             self._food.gt(EPS).squeeze(1): self.food_colour,
         }
 
-        for i, (agent, has_boosted) in enumerate(self.boost_this_step.items()):
-            layers.update({
-                self._bodies[has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): (self.agent_colours[i].float()*(2/3)).short(),
-                self._heads[has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): (self.agent_colours[i].float()*(4/3)).short(),
-                self._bodies[~has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): self.agent_colours[i] / 2,
-                self._heads[~has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): self.agent_colours[i],
-            })
+        layers.update({
+            (self._bodies.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_colour/2,
+            (self._heads.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_colour,
+        })
+
+        # for i, (agent, has_boosted) in enumerate(self.boost_this_step.items()):
+        #     print(self._bodies[has_boosted, i:i+1].shape)
+        #     print(self._bodies[has_boosted, i].sum(dim=0, keepdim=True).gt(EPS).shape)
+        #     print(self._bodies[~has_boosted, i:i+1].shape)
+        #     print(self._bodies[~has_boosted, i].sum(dim=0, keepdim=True).gt(EPS).shape)
+        #     exit()
+        #     layers.update({
+        #         self._bodies[has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): (self.agent_colours[i].float()*(2/3)).short(),
+        #         self._heads[has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): (self.agent_colours[i].float()*(4/3)).short(),
+        #         self._bodies[~has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): self.agent_colours[i] / 2,
+        #         self._heads[~has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): self.agent_colours[i],
+        #     })
 
         # Get RBG Tensor NCHW
         img = self._make_generic_rgb(layers)
@@ -286,7 +293,9 @@ class MultiSnake(object):
 
     def _decay_bodies(self, i: int, agent: str, active_envs: torch.Tensor, food_consumption: dict):
         n = active_envs.sum().item()
-        body_decay_env_mask = torch.ones(self.num_envs, dtype=torch.uint8, device=self.device)
+        # Decay only active envs
+        body_decay_env_mask = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
+        body_decay_env_mask[active_envs] = 1
 
         head_channel = self.head_channels[i]
         body_channel = self.body_channels[i]
@@ -312,16 +321,19 @@ class MultiSnake(object):
         _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
 
         # Collision with body of any snake
-        body_collision = (head(_env) * self._bodies[active_envs]).view(n, -1).sum(dim=-1) > EPS
+        bodies = self._bodies[active_envs].sum(dim=1, keepdim=True)
+        body_collision = (head(_env) * bodies).view(n, -1).sum(dim=-1) > EPS
 
-        # Collision with head of other snake
         other_snakes = torch.ones(self.num_snakes, dtype=torch.uint8, device=self.device)
         other_snakes[i] = 0
         other_heads = self._heads[:, other_snakes, :, :]
         head_collision = (head(_env) * other_heads[active_envs]).view(n, -1).sum(dim=-1) > EPS
         snake_collision = body_collision | head_collision
 
-        self.info.update({f'snake_collision_{i}': snake_collision})
+        if f'snake_collision_{i}' not in self.info.keys():
+            self.info[f'snake_collision_{i}'] = torch.zeros((self.num_envs,), dtype=torch.uint8,
+                                                            device=self.device).requires_grad_(False)
+        self.info[f'snake_collision_{i}'][active_envs] |= snake_collision
         self.dones[agent][active_envs] |= snake_collision
 
         # Create a new head position in the body channel
@@ -329,7 +341,7 @@ class MultiSnake(object):
         self.envs[active_envs, body_channel:body_channel + 1, :, :] += \
             head(_env) * (
                     snake_sizes[agent][active_envs, None, None, None].expand((n, 1, self.size, self.size)) +
-                    food_consumption[agent][:, None, None, None].expand((n, 1, self.size, self.size)).to(self.dtype)
+                    food_consumption[agent][active_envs, None, None, None].expand((n, 1, self.size, self.size)).to(self.dtype)
             )
 
         food_removal = head(_env) * food(_env) * -1
@@ -360,7 +372,10 @@ class MultiSnake(object):
         self.dones[agent] |= edge_collision
         head_exists = self._heads[:, i].view(self.num_envs, -1).max(dim=-1)[0] > EPS
         edge_collision = edge_collision & head_exists
-        self.info.update({f'edge_collision_{i}': edge_collision})
+        if f'edge_collision_{i}' not in self.info.keys():
+            self.info[f'edge_collision_{i}'] = torch.zeros((self.num_envs,), dtype=torch.uint8,
+                                                            device=self.device).requires_grad_(False)
+        self.info[f'edge_collision_{i}'] |= edge_collision
 
     def _handle_deaths(self, i: int, agent: str):
         if self.dones[agent].sum() > 0:
@@ -421,11 +436,11 @@ class MultiSnake(object):
         # Clear info
         self.info = {}
         directions = dict()
-        boosts = dict()
+        boost_actions = dict()
         for i, (agent, act) in enumerate(actions.items()):
             directions[agent] = act.fmod(4)
-            boosts[agent] = act > 3
-            self.info[f'boost_{i}'] = boosts[agent].clone()
+            boost_actions[agent] = act > 3
+            self.info[f'boost_{i}'] = boost_actions[agent].clone()
 
         self.rewards = OrderedDict([
             (
@@ -446,9 +461,9 @@ class MultiSnake(object):
 
         self.boost_this_step = dict()
         for i, (agent, act) in enumerate(actions.items()):
-            self.boost_this_step[agent] = (boosts[agent] & (snake_sizes[agent] >= 4))
+            self.boost_this_step[agent] = (boost_actions[agent] & (snake_sizes[agent] >= 4))
 
-        at_least_one_boost = torch.stack([v for k, v in boosts.items()]).sum() >= 1
+        at_least_one_boost = torch.stack([v for k, v in boost_actions.items()]).sum() >= 1
         at_least_one_size_4 = torch.any(torch.stack([v for k, v in snake_sizes.items()]).sum() >= 4)
 
         all_envs = torch.ones(self.num_envs, dtype=torch.uint8, device=self.device)
@@ -461,8 +476,8 @@ class MultiSnake(object):
             # Check orientations and move head positions of all snakes
             t0 = time()
             for i, (agent, act) in enumerate(actions.items()):
-                if (boosts[agent] & (snake_sizes[agent] >= 4)).sum() >= 1:
-                    self._move_heads(i, agent, directions, boosts[agent] & (snake_sizes[agent] >= 4))
+                if self.boost_this_step[agent].sum() >= 1:
+                    self._move_heads(i, agent, directions, self.boost_this_step[agent])
 
             self._log(f'Movement: {1000*(time() - t0)}ms')
 
@@ -470,31 +485,32 @@ class MultiSnake(object):
             t0 = time()
             food_consumption = dict()
             for i, (agent, _) in enumerate(actions.items()):
-                if (boosts[agent] & (snake_sizes[agent] >= 4)).sum() >= 1:
-                    self._decay_bodies(i, agent, boosts[agent] & (snake_sizes[agent] >= 4), food_consumption)
+                if self.boost_this_step[agent].sum() >= 1:
+                    self._decay_bodies(i, agent, self.boost_this_step[agent], food_consumption)
 
             self._log(f'Growth/decay: {1000*(time() - t0)}ms')
 
             # Check for collisions with snakes and food
             t0 = time()
             for i, (agent, _) in enumerate(actions.items()):
-                if (boosts[agent] & (snake_sizes[agent] >= 4)).sum() >= 1:
-                    self._check_collisions(i, agent, all_envs, snake_sizes, food_consumption)
+                if self.boost_this_step[agent].sum() >= 1:
+                    self._check_collisions(i, agent, self.boost_this_step[agent], snake_sizes, food_consumption)
+                    # self._check_collisions(i, agent, all_envs, snake_sizes, food_consumption)
 
-            self._log(f'Snake collision: {1000*(time() - t0)}ms')
+            self._log(f'Collision: {1000*(time() - t0)}ms')
 
             # Check for edge collisions
             t0 = time()
             for i, (agent, _) in enumerate(actions.items()):
-                if (boosts[agent] & (snake_sizes[agent] >= 4)).sum() >= 1:
-                    self._check_boundaries(i, agent, boosts[agent] & (snake_sizes[agent] >= 4))
+                if self.boost_this_step[agent].sum() >= 1:
+                    self._check_boundaries(i, agent, self.boost_this_step[agent])
 
-            self._log(f'Edge collision: {1000*(time() - t0)}ms')
+            self._log(f'Edge check: {1000*(time() - t0)}ms')
 
             # Clear dead snakes and create food at dead snakes
             t0 = time()
             for i, (agent, _) in enumerate(actions.items()):
-                if (boosts[agent] & (snake_sizes[agent] >= 4)).sum() >= 1:
+                if self.boost_this_step[agent].sum() >= 1:
                     self._handle_deaths(i, agent)
 
             self._log(f'Deaths: {1000 * (time() - t0)}ms')
@@ -503,8 +519,8 @@ class MultiSnake(object):
             t0 = time()
             for i, (agent, _) in enumerate(actions.items()):
                 apply_cost = torch.rand(self.num_envs, device=self.device) < self.boost_cost_prob
-                if (boosts[agent] & (snake_sizes[agent] >= 4) & apply_cost).sum() >= 1:
-                    self._boost_costs(i, agent, boosts[agent] & (snake_sizes[agent] >= 4) & apply_cost)
+                if (self.boost_this_step[agent] & apply_cost).sum() >= 1:
+                    self._boost_costs(i, agent, self.boost_this_step[agent] & apply_cost)
 
             self._log(f'Boost cost: {1000 * (time() - t0)}ms')
 
@@ -544,14 +560,14 @@ class MultiSnake(object):
         for i, (agent, _) in enumerate(actions.items()):
             self._check_collisions(i, agent, all_envs, snake_sizes, food_consumption)
 
-        self._log(f'Snake collision: {1000*(time() - t0)}ms')
+        self._log(f'Collision: {1000*(time() - t0)}ms')
 
         # Check for edge collisions
         t0 = time()
         for i, (agent, _) in enumerate(actions.items()):
             self._check_boundaries(i, agent, all_envs)
 
-        self._log(f'Edge collision: {1000*(time() - t0)}ms')
+        self._log(f'Edge check: {1000*(time() - t0)}ms')
 
         # Clear dead snakes and create food at dead snakes
         t0 = time()
