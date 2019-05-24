@@ -120,9 +120,9 @@ def snake_consistency(envs: torch.Tensor):
         raise RuntimeError('An environment has multiple num_heads for a single snake.')
 
     # Environment contains a snake
-    envs_contain_snake = torch.all(body(envs).view(n, -1).sum(dim=-1) > 0)
-    if not envs_contain_snake:
-        raise RuntimeError('An environment doesn\'t contain a snake.')
+    envs_contain_snake = body(envs).view(n, -1).sum(dim=-1) > 0
+    if not torch.all(envs_contain_snake):
+        raise RuntimeError(f'{(~envs_contain_snake).sum()} environments don\'t contain a snake.')
 
     # Head is at end of body
     body_value_at_head_locations = (head(envs) * body(envs))
@@ -139,6 +139,10 @@ def snake_consistency(envs: torch.Tensor):
     if not consistent_body_size:
         print(envs[estimated_body_sizes != body_sizes][0])
         raise RuntimeError('An environment has a body with inconsistent values i.e. not range(n)')
+
+    # No snakes of length less than 3 (size 6)
+    if not torch.all(body_totals >= 6):
+        raise RuntimeError('A snake has size of less than 3.')
 
     # No food and head overlap
     head_food_overlap = (head(envs) * food(envs)).view(n, -1).sum(dim=-1)
