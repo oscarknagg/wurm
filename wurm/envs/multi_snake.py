@@ -6,7 +6,6 @@ from torch.nn import functional as F
 from gym.envs.classic_control import rendering
 import numpy as np
 from PIL import Image
-from torch.distributions import RelaxedOneHotCategorical
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
 from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
@@ -122,15 +121,11 @@ class MultiSnake(object):
         self.food_colour = torch.tensor((255, 0, 0), dtype=torch.short, device=self.device)
         self.edge_colour = torch.tensor((0, 0, 0), dtype=torch.short, device=self.device)
 
-        # Slightly different colours for each agent for human rendering
-        base_colours = [0, 0, 0]
-        spread = 191
-        temp = 0.66
-        colour_sampler = RelaxedOneHotCategorical(torch.tensor([temp]), torch.tensor([0.33, 0.34, 0.33]))
-        # colour_sampler = RelaxedOneHotCategorical(torch.tensor([temp]), torch.tensor([0.0, 0.5, 0.5]))
-        self.agent_colours = (
-            colour_sampler.sample((num_snakes,)) * spread
-        ).to(dtype=torch.short, device=self.device) + torch.tensor(base_colours, dtype=torch.short, device=self.device)
+        agent_colours = torch.rand(size=(num_snakes, 3), device=self.device)
+        agent_colours /= agent_colours.norm(2, dim=1, keepdim=True)
+        agent_colours *= 192
+        self.agent_colours = agent_colours.short()
+
         self.info = {}
         self.rewards = {}
 
@@ -162,6 +157,7 @@ class MultiSnake(object):
         for locations, colour in colour_layers.items():
             img[locations, :] = colour
 
+        # print()
         img[:, :1, :, :] = self.edge_colour
         img[:, :, :1, :] = self.edge_colour
         img[:, -1:, :, :] = self.edge_colour
@@ -181,23 +177,25 @@ class MultiSnake(object):
             self._food.gt(EPS).squeeze(1): self.food_colour,
         }
 
-        layers.update({
-            (self._bodies.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_colour/2,
-            (self._heads.sum(dim=1, keepdim=True) > EPS).squeeze(1): self.self_colour,
-        })
+        for i, (agent, has_boosted) in enumerate(self.boost_this_step.items()):
+            if has_boosted.sum() > 0:
+                boosted_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
+                boosted_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
+                regular_bodies[~has_boosted] = self._bodies[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
+                regular_heads[~has_boosted] = self._heads[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
+                layers.update({
+                    boosted_bodies: (self.agent_colours[i].float() * (2 / 3)).short(),
+                    boosted_heads: (self.agent_colours[i].float() * (4 / 3)).short(),
+                })
 
-        # for i, (agent, has_boosted) in enumerate(self.boost_this_step.items()):
-        #     print(self._bodies[has_boosted, i:i+1].shape)
-        #     print(self._bodies[has_boosted, i].sum(dim=0, keepdim=True).gt(EPS).shape)
-        #     print(self._bodies[~has_boosted, i:i+1].shape)
-        #     print(self._bodies[~has_boosted, i].sum(dim=0, keepdim=True).gt(EPS).shape)
-        #     exit()
-        #     layers.update({
-        #         self._bodies[has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): (self.agent_colours[i].float()*(2/3)).short(),
-        #         self._heads[has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): (self.agent_colours[i].float()*(4/3)).short(),
-        #         self._bodies[~has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): self.agent_colours[i] / 2,
-        #         self._heads[~has_boosted, i].sum(dim=0, keepdim=True).gt(EPS): self.agent_colours[i],
-        #     })
+            regular_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
+            regular_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
+            regular_bodies[~has_boosted] = self._bodies[~has_boosted, i:i+1].sum(dim=1).gt(EPS)
+            regular_heads[~has_boosted] = self._heads[~has_boosted, i:i+1].sum(dim=1).gt(EPS)
+            layers.update({
+                regular_bodies: (self.agent_colours[i].float() * (2 / 3)).short(),
+                regular_heads: (self.agent_colours[i].float() * (4 / 3)).short(),
+            })
 
         # Get RBG Tensor NCHW
         img = self._make_generic_rgb(layers)
