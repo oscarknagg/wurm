@@ -68,6 +68,7 @@ class MultiSnake(object):
                  boost_cost_prob: float = 0.5,
                  food_mechanics: str = 'only_one',
                  food_rate: float = None,
+                 respawn_mode: str = 'all',
                  verbose: int = 0,
                  render_args: dict = None):
         """Initialise the environments
@@ -106,7 +107,7 @@ class MultiSnake(object):
             self.envs.requires_grad_(False)
 
         # Environment dynamics parameters
-        self.respawn_mode = ['all_snakes', 'any_snake'][0]
+        self.respawn_mode = respawn_mode
         self.food_on_death_prob = food_on_death_prob
         self.boost = boost
         self.boost_cost_prob = boost_cost_prob
@@ -285,7 +286,6 @@ class MultiSnake(object):
         t0 = time()
         # Create head position deltas
         head_deltas = F.conv2d(
-            # head(_env).to(dtype=self.dtype),
             head(_env),
             ORIENTATION_FILTERS.to(dtype=self.dtype, device=self.device),
             padding=1
@@ -669,31 +669,68 @@ class MultiSnake(object):
             done: A 1D Tensor of length self.num_envs. A value of 1 means the corresponding environment needs to be
                 reset
         """
-        if done is None:
-            done = self.dones['__all__']
+        if self.respawn_mode == 'all':
+            t0 = time()
+            if done is None:
+                done = self.dones['__all__']
 
-        done = done.view((done.shape[0]))
-        num_done = int(done.sum().item())
+            done = done.view((done.shape[0]))
+            num_done = int(done.sum().item())
 
-        t0 = time()
-        # Create environments
-        if done.sum() > 0:
-            new_envs = self._create_envs(num_done)
-            self.envs[done.byte(), :, :, :] = new_envs
+            # Create environments
+            if done.sum() > 0:
+                new_envs = self._create_envs(num_done)
+                self.envs[done.byte(), :, :, :] = new_envs
 
-        # Reset done trackers
-        self.dones['__all__'][done] = 0
-        for i in range(self.num_snakes):
-            self.dones[f'agent_{i}'][done] = 0
+            # Reset done trackers
+            self.dones['__all__'][done] = 0
+            for i in range(self.num_snakes):
+                self.dones[f'agent_{i}'][done] = 0
 
-        if self.verbose:
-            print(f'Resetting {num_done} envs: {1000*(time() - t0)}ms')
+            if self.verbose:
+                print(f'Resetting {num_done} envs: {1000*(time() - t0)}ms')
+        elif self.respawn_mode == 'any':
+            t0 = time()
+            num_respawned = 0
+            for i in range(self.num_snakes):
+                if torch.any(self.dones[f'agent_{i}']):
+                    # Add snake
+                    successfully_respawned = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
+                    respawned_envs, respawns = self._add_snake(
+                        envs=self.envs[self.dones[f'agent_{i}']],
+                        snake_channel=i,
+                        exception_on_failure=False
+                    )
+                    self.envs[self.dones[f'agent_{i}']] = respawned_envs
+                    num_respawned += respawns.sum().item()
+                    successfully_respawned[self.dones[f'agent_{i}']] = respawns
+
+                    # Reset done trackers
+                    self.dones[f'agent_{i}'][successfully_respawned] = 0
+
+            if self.verbose:
+                print(f'Respawned {num_respawned} snakes: {1000*(time() - t0)}ms')
+
+        else:
+            raise RuntimeError('respawn_mode not recognised.')
 
         return self._observe()
 
-    def _add_snake(self, envs: torch.Tensor, snake_channel: int) -> torch.Tensor:
+    def _add_snake(self,
+                   envs: torch.Tensor,
+                   snake_channel: int,
+                   exception_on_failure: bool) -> (torch.Tensor, torch.Tensor):
+        """Adds a snake in a certain channel to environments.
+
+        Args:
+            envs: Tensor represening the environments.
+            snake_channel: Which snake to add
+            exception_on_failure: If True then raise an exception if there is no available spawning locations
+        """
         l = self.initial_snake_length - 1
         n = envs.shape[0]
+
+        successfully_spawned = torch.zeros(n, dtype=torch.uint8, device=self.device)
 
         occupied_locations = envs.sum(dim=1, keepdim=True) > EPS
         # Expand this because you can't put a snake right next to another snake
@@ -711,12 +748,17 @@ class MultiSnake(object):
         available_locations[:, :, -l:, :] = 0
         available_locations[:, :, :, -l:] = 0
 
-        # If there is no available locations for a snake raise an exception
         any_available_locations = available_locations.view(n, -1).max(dim=1)[0].byte()
-        if torch.any(~any_available_locations):
-            raise RuntimeError('There is no available locations to create snake!')
+        if exception_on_failure:
+            # If there is no available locations for a snake raise an exception
+            if torch.any(~any_available_locations):
+                raise RuntimeError('There is no available locations to create snake!')
+
+        successfully_spawned |= any_available_locations
 
         body_seed_indices = drop_duplicates(torch.nonzero(available_locations), 0)
+        # Body seeds is a tensor that contains all zeros except where a snake will be spawned
+        # Shape: (n, 1, self.size, self.size)
         body_seeds = torch.sparse_coo_tensor(
             body_seed_indices.t(), torch.ones(len(body_seed_indices)), available_locations.shape,
             device=self.device, dtype=self.dtype
@@ -744,7 +786,7 @@ class MultiSnake(object):
         snake_size_mask = snake_sizes[:, None, None].expand((n, self.size, self.size))
         envs[:, self.head_channels[snake_channel], :, :] = (bodies == snake_size_mask).to(dtype=self.dtype)
 
-        return envs
+        return envs, successfully_spawned
 
     def _create_envs(self, num_envs: int) -> torch.Tensor:
         """Vectorised environment creation. Creates self.num_envs environments simultaneously."""
@@ -754,7 +796,7 @@ class MultiSnake(object):
         envs = torch.zeros((num_envs, 1 + 2 * self.num_snakes, self.size, self.size), dtype=self.dtype, device=self.device)
 
         for i in range(self.num_snakes):
-            envs = self._add_snake(envs, i)
+            envs, _ = self._add_snake(envs, i, True)
 
             # Add food
         food_addition = self._get_food_addition(envs)
