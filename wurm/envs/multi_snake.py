@@ -76,7 +76,6 @@ class MultiSnake(object):
         Args:
             num_envs:
             size:
-            max_timesteps:
         """
         self.num_envs = num_envs
         self.num_snakes = num_snakes
@@ -115,6 +114,7 @@ class MultiSnake(object):
         self.boost_cost_prob = boost_cost_prob
         self.food_mechanics = food_mechanics
         self.food_rate = 3/(2 * (size - 2)) if food_rate is None else food_rate
+        self.max_food = 5
 
         # Rendering parameters
         self.viewer = None
@@ -362,6 +362,8 @@ class MultiSnake(object):
         elif self.food_mechanics == 'random_rate':
             # Add new food with a certain probability
             food_addition_env_indices = torch.rand((self.num_envs), device=self.device) < self.food_rate
+            # Apply a food cap
+            food_addition_env_indices &= (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < self.max_food)
         else:
             raise ValueError('food_mechanics not recognised')
 
@@ -371,7 +373,7 @@ class MultiSnake(object):
             self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
 
     def _check_boundaries(self, i: int, agent: str, active_envs: torch.Tensor):
-        n = active_envs.sum()
+        n = active_envs.sum().item()
         head_channel = self.head_channels[i]
         body_channel = self.body_channels[i]
         _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
