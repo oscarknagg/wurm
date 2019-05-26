@@ -186,8 +186,6 @@ class MultiSnake(object):
             if has_boosted.sum() > 0:
                 boosted_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
                 boosted_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
-                regular_bodies[~has_boosted] = self._bodies[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
-                regular_heads[~has_boosted] = self._heads[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
                 layers.update({
                     boosted_bodies: (self.agent_colours[i].float() * (2 / 3)).short(),
                     boosted_heads: (self.agent_colours[i].float() * (4 / 3)).short(),
