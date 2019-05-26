@@ -8,8 +8,8 @@ from config import DEFAULT_DEVICE
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--num-agents', type=int)
-parser.add_argument('--size', type=int)
+parser.add_argument('--num-agents', type=int, default=10)
+parser.add_argument('--size', type=int, default=36)
 args = parser.parse_args()
 
 num_envs = np.logspace(4, 12, 9, base=2).astype(int)
