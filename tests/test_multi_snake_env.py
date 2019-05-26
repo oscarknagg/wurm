@@ -9,12 +9,12 @@ from wurm.utils import head, body, food
 from config import DEFAULT_DEVICE
 
 
-print_envs = True
-render_envs = True
+print_envs = False
+render_envs = False
 render_sleep = 0.5
 size = 12
-torch.cuda.manual_seed(42)
-torch.random.manual_seed(42)
+torch.cuda.manual_seed(0)
+torch.random.manual_seed(0)
 
 
 def get_test_env(num_envs=1):
@@ -498,4 +498,3 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
             print_or_render(env)
             print(env.boost_this_step)
-

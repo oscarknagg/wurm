@@ -66,6 +66,8 @@ class MultiSnake(object):
                  food_on_death_prob: float = 0.5,
                  boost: bool = True,
                  boost_cost_prob: float = 0.5,
+                 food_mechanics: str = 'only_one',
+                 food_rate: float = None,
                  verbose: int = 0,
                  render_args: dict = None):
         """Initialise the environments
@@ -108,6 +110,8 @@ class MultiSnake(object):
         self.food_on_death_prob = food_on_death_prob
         self.boost = boost
         self.boost_cost_prob = boost_cost_prob
+        self.food_mechanics = food_mechanics
+        self.food_rate = 3/(2 * (size - 2)) if food_rate is None else food_rate
 
         # Rendering parameters
         self.viewer = None
@@ -352,8 +356,13 @@ class MultiSnake(object):
         self.envs[active_envs, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
 
     def _add_food(self):
-        # Add new food if necessary.
-        food_addition_env_indices = (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < EPS)
+        if self.food_mechanics == 'only_one':
+            # Add new food only if there is none in the environment
+            food_addition_env_indices = (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < EPS)
+        else:
+            # Add new food with a certain probability
+            food_addition_env_indices = torch.rand((self.num_envs), device=self.device) < self.food_rate
+
         if food_addition_env_indices.sum().item() > 0:
             add_food_envs = self.envs[food_addition_env_indices, :, :, :]
             food_addition = self._get_food_addition(add_food_envs)
