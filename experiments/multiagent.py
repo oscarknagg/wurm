@@ -18,6 +18,7 @@ from wurm.envs import SingleSnake, SimpleGridworld, MultiSnake
 from wurm import agents
 from wurm.utils import env_consistency, CSVLogger, ExponentialMovingAverageTracker
 from wurm.rl import A2C, TrajectoryStore
+from wurm.half import Adam16
 from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
 
@@ -56,12 +57,13 @@ parser.add_argument('--r', default=None, type=int, help='Repeat number')
 parser.add_argument('--norm-returns', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--boost-cost', type=float, default=0.5)
 parser.add_argument('--dtype', type=str, default='float')
+parser.add_argument('--model-dtype', type=str, default='half')
 
 args = parser.parse_args()
 
 excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
                  'render_window_size', 'render_rows', 'render_cols', 'save_video', 'env', 'coord_conv',
-                 'norm_returns', 'dtype']
+                 'norm_returns', 'dtype', 'model_dtype']
 if args.r is None:
     excluded_args += ['r', ]
 if args.total_steps == float('inf'):
@@ -77,6 +79,13 @@ if args.dtype == 'float':
     dtype = torch.float
 elif args.dtype == 'half':
     dtype = torch.half
+else:
+    raise RuntimeError
+
+if args.model_dtype == 'float':
+    model_dtype = torch.float
+elif args.model_dtype == 'half':
+    model_dtype = torch.half
 else:
     raise RuntimeError
 
@@ -117,10 +126,10 @@ else:
 if agent_type == 'relational':
     model = agents.RelationalAgent(num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                                    num_relational=2, num_attention_heads=2, relational_dim=32, num_feedforward=1,
-                                   feedforward_dim=64, residual=True).to(device=args.device, dtype=dtype)
+                                   feedforward_dim=64, residual=True).to(device=args.device, dtype=model_dtype)
 elif agent_type == 'conv':
     model = agents.ConvAgent(num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
-                             num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=dtype)
+                             num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=model_dtype)
 elif agent_type == 'random':
     model = agents.RandomAgent(num_actions=num_actions, device=args.device)
 else:
@@ -137,9 +146,12 @@ else:
 print(model)
 
 if args.agent != 'random' and args.train:
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
-eps = np.finfo(np.float32).eps.item()
-
+    if args.model_dtype == 'float':
+        optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    elif args.model_dtype == 'half':
+        optimizer = Adam16(model.parameters(), lr=args.lr)
+    else:
+        raise RuntimeError
 
 #################
 # Configure Env #
@@ -152,7 +164,7 @@ render_args = {
 if args.env == 'snake':
     env = MultiSnake(num_envs=args.num_envs, num_snakes=args.num_agents,
                      size=args.size, device=args.device, render_args=render_args, boost=args.boost,
-                     boost_cost_prob=args.boost_cost, dtype=dtype)
+                     boost_cost_prob=args.boost_cost, dtype=model_dtype)
 else:
     raise ValueError('Unrecognised environment')
 
@@ -169,7 +181,7 @@ if args.save_video:
     os.makedirs(PATH + f'/videos/{save_file}', exist_ok=True)
     recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/0.mp4')
 
-a2c = A2C(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=dtype)
+a2c = A2C(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=model_dtype)
 
 
 ############################
@@ -194,7 +206,7 @@ for i_step in count(1):
     probs = {}
     entropies = {}
     for agent, obs in observations.items():
-        probs_, value_ = model(obs)
+        probs_, value_ = model(obs.to(model_dtype))
         action_distribution = Categorical(probs_)
         actions[agent] = action_distribution.sample().clone().long()
         values[agent] = value_
@@ -231,11 +243,11 @@ for i_step in count(1):
     if args.agent != 'random' and args.train and i_step % args.update_steps == 0:
         with torch.no_grad():
             all_obs = torch.stack([v for k, v in observations.items()]).view(-1, in_channels, args.size, args.size)
-            _, bootstrap_values = model(all_obs)
+            _, bootstrap_values = model(all_obs.to(model_dtype))
 
         value_loss, policy_loss = a2c.loss(
             bootstrap_values,
-            trajectories.rewards,
+            trajectories.rewards.to(model_dtype),
             trajectories.values,
             trajectories.log_probs,
             trajectories.dones
