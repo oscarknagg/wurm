@@ -691,63 +691,74 @@ class MultiSnake(object):
 
         return self._observe()
 
-    def _create_envs(self, num_envs: int):
+    def _add_snake(self, envs: torch.Tensor, snake_channel: int) -> torch.Tensor:
+        l = self.initial_snake_length - 1
+        n = envs.shape[0]
+
+        occupied_locations = envs.sum(dim=1, keepdim=True) > EPS
+        # Expand this because you can't put a snake right next to another snake
+        occupied_locations = (F.conv2d(
+            occupied_locations.to(dtype=self.dtype),
+            torch.ones((1, 1, 3, 3), dtype=self.dtype, device=self.device),
+            padding=1
+        ) > EPS).byte()
+
+        available_locations = (envs.sum(dim=1, keepdim=True) < EPS) & ~occupied_locations
+
+        # Remove boundaries
+        available_locations[:, :, :l, :] = 0
+        available_locations[:, :, :, :l] = 0
+        available_locations[:, :, -l:, :] = 0
+        available_locations[:, :, :, -l:] = 0
+
+        # If there is no available locations for a snake raise an exception
+        any_available_locations = available_locations.view(n, -1).max(dim=1)[0].byte()
+        if torch.any(~any_available_locations):
+            raise RuntimeError('There is no available locations to create snake!')
+
+        body_seed_indices = drop_duplicates(torch.nonzero(available_locations), 0)
+        body_seeds = torch.sparse_coo_tensor(
+            body_seed_indices.t(), torch.ones(len(body_seed_indices)), available_locations.shape,
+            device=self.device, dtype=self.dtype
+        )
+
+        # Choose random starting directions
+        random_directions = torch.randint(4, (n,), device=self.device)
+        random_directions_onehot = torch.empty((n, 4), dtype=self.dtype, device=self.device)
+        random_directions_onehot.zero_()
+        random_directions_onehot.scatter_(1, random_directions.unsqueeze(-1), 1)
+
+        # Create bodies
+        bodies = torch.einsum('bchw,bc->bhw', [
+            F.conv2d(
+                body_seeds.to_dense(),
+                LENGTH_3_SNAKES.to(self.device).to(dtype=self.dtype),
+                padding=1
+            ),
+            random_directions_onehot
+        ])
+        envs[:, self.body_channels[snake_channel], :, :] = bodies
+
+        # Create num_heads at end of bodies
+        snake_sizes = envs[:, self.body_channels[snake_channel], :].view(n, -1).max(dim=1)[0]
+        snake_size_mask = snake_sizes[:, None, None].expand((n, self.size, self.size))
+        envs[:, self.head_channels[snake_channel], :, :] = (bodies == snake_size_mask).to(dtype=self.dtype)
+
+        return envs
+
+    def _create_envs(self, num_envs: int) -> torch.Tensor:
         """Vectorised environment creation. Creates self.num_envs environments simultaneously."""
         if self.initial_snake_length != 3:
             raise NotImplementedError('Only initial snake length = 3 has been implemented.')
 
         envs = torch.zeros((num_envs, 1 + 2 * self.num_snakes, self.size, self.size), dtype=self.dtype, device=self.device)
-        l = self.initial_snake_length-1
 
         for i in range(self.num_snakes):
-            occupied_locations = envs.sum(dim=1, keepdim=True) > EPS
-            # Expand this because you can't put a snake right next to another snake
-            occupied_locations = (F.conv2d(
-                occupied_locations.to(dtype=self.dtype),
-                torch.ones((1, 1, 3, 3), dtype=self.dtype,device=self.device),
-                padding=1
-            ) > EPS).byte()
+            envs = self._add_snake(envs, i)
 
-            available_locations = (envs.sum(dim=1, keepdim=True) < EPS) & ~occupied_locations
-
-            # Remove boundaries
-            available_locations[:, :, :l, :] = 0
-            available_locations[:, :, :, :l] = 0
-            available_locations[:, :, -l:, :] = 0
-            available_locations[:, :, :, -l:] = 0
-
-            # If there is no available locations for a snake raise an exception
-            any_available_locations = available_locations.view(num_envs, -1).max(dim=1)[0].byte()
-            if torch.any(~any_available_locations):
-                raise RuntimeError('There is no available locations to create snake!')
-
-            body_seed_indices = drop_duplicates(torch.nonzero(available_locations), 0)
-            body_seeds = torch.sparse_coo_tensor(
-                body_seed_indices.t(), torch.ones(len(body_seed_indices)), available_locations.shape,
-                device=self.device, dtype=self.dtype
-            )
-
-            # Choose random starting directions
-            random_directions = torch.randint(4, (num_envs,), device=self.device)
-            random_directions_onehot = torch.empty((num_envs, 4), dtype=self.dtype, device=self.device)
-            random_directions_onehot.zero_()
-            random_directions_onehot.scatter_(1, random_directions.unsqueeze(-1), 1)
-
-            # Create bodies
-            bodies = torch.einsum('bchw,bc->bhw', [
-                F.conv2d(
-                    body_seeds.to_dense(),
-                    LENGTH_3_SNAKES.to(self.device).to(dtype=self.dtype),
-                    padding=1
-                ),
-                random_directions_onehot
-            ])
-            envs[:, self.body_channels[i], :, :] = bodies
-
-            # Create num_heads at end of bodies
-            snake_sizes = envs[:, self.body_channels[i], :].view(num_envs, -1).max(dim=1)[0]
-            snake_size_mask = snake_sizes[:, None, None].expand((num_envs, self.size, self.size))
-            envs[:, self.head_channels[i], :, :] = (bodies == snake_size_mask).to(dtype=self.dtype)
+            # Add food
+        food_addition = self._get_food_addition(envs)
+        envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
 
         # Add food
         food_addition = self._get_food_addition(envs)
