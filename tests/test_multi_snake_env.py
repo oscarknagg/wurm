@@ -3,6 +3,7 @@ import pytest
 import torch
 from time import sleep, time
 import numpy as np
+from pprint import pprint
 
 from wurm.envs import MultiSnake
 from wurm.utils import head, body, food
@@ -80,7 +81,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_steps = 50
         # Create some environments and run random actions for N steps, checking for consistency at each step
         env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, boost=True, verbose=True,
-                         render_args={'num_rows': 5, 'num_cols': 5, 'size': 128}
+                         render_args={'num_rows': 5, 'num_cols': 5, 'size': 192},
                          )
         env.check_consistency()
 
@@ -498,3 +499,30 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
             print_or_render(env)
             print(env.boost_this_step)
+
+    def test_respawn_mode_any(self):
+        # Create an env where there is no room to respawn and
+        env = get_test_env()
+        env.respawn_mode = 'any'
+
+        # Add food to block respawn
+        for i in range(2, 9, 2):
+            for j in range(2, 9, 2):
+                env.envs[0, 0, i, j] = 1
+
+        all_actions = {
+            'agent_0': torch.tensor([1, 1, 1, 1, 2, 2, 2, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 0, 0, 0, 0, 0, 1]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        print_or_render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+            pprint(dones)
+            env.reset(dones['__all__'])
+            env.check_consistency()

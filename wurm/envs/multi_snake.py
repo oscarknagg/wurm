@@ -607,7 +607,7 @@ class MultiSnake(object):
                 ], dim=1)
                 dead_all_zeros = dead_envs.sum() == 0
                 if not dead_all_zeros:
-                    raise RuntimeError('Dead snake contains non-zero elements.')
+                    raise RuntimeError(f'Dead snake (agent_{i}) contains non-zero elements.')
 
             # Check living envs
             if (~self.dones[f'agent_{i}']).sum() > 0:
@@ -702,7 +702,6 @@ class MultiSnake(object):
                     self.envs[self.dones[f'agent_{i}']] = respawned_envs
                     num_respawned += respawns.sum().item()
                     successfully_respawned[self.dones[f'agent_{i}']] = respawns
-
                     # Reset done trackers
                     self.dones[f'agent_{i}'][successfully_respawned] = 0
 
@@ -779,8 +778,11 @@ class MultiSnake(object):
         ])
         envs[:, self.body_channels[snake_channel], :, :] = bodies
 
-        # Create num_heads at end of bodies
+        # Create heads at end of bodies
         snake_sizes = envs[:, self.body_channels[snake_channel], :].view(n, -1).max(dim=1)[0]
+        # Only create heads where there is a snake. This catches an edge case where there is no room
+        # for a snake to spawn and hence snake size == bodies everywhere (as bodies is all 0)
+        snake_sizes[snake_sizes == 0] = -1
         snake_size_mask = snake_sizes[:, None, None].expand((n, self.size, self.size))
         envs[:, self.head_channels[snake_channel], :, :] = (bodies == snake_size_mask).to(dtype=self.dtype)
 
