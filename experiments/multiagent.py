@@ -55,13 +55,16 @@ parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--r', default=None, type=int, help='Repeat number')
 parser.add_argument('--norm-returns', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--boost-cost', type=float, default=0.5)
+parser.add_argument('--food-mode', type='str', default='random_rate')
+parser.add_argument('--food-rate', type=float, default=None)
+parser.add_argument('--respawn-mode', type=str, default='any')
 parser.add_argument('--dtype', type=str, default='float')
 
 args = parser.parse_args()
 
 excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
                  'render_window_size', 'render_rows', 'render_cols', 'save_video', 'env', 'coord_conv',
-                 'norm_returns', 'dtype']
+                 'norm_returns', 'dtype', 'food_mode', 'respawn_mode']
 if args.r is None:
     excluded_args += ['r', ]
 if args.total_steps == float('inf'):
