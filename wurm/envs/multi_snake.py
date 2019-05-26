@@ -106,7 +106,9 @@ class MultiSnake(object):
             self.envs = self._create_envs(self.num_envs)
             self.envs.requires_grad_(False)
 
-        # Environment dynamics parameters
+        ###################################
+        # Environment dynamics parameters #
+        ###################################
         self.respawn_mode = respawn_mode
         self.food_on_death_prob = food_on_death_prob
         self.boost = boost
@@ -357,9 +359,11 @@ class MultiSnake(object):
         if self.food_mechanics == 'only_one':
             # Add new food only if there is none in the environment
             food_addition_env_indices = (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < EPS)
-        else:
+        elif self.food_mechanics == 'random_rate':
             # Add new food with a certain probability
             food_addition_env_indices = torch.rand((self.num_envs), device=self.device) < self.food_rate
+        else:
+            raise ValueError('food_mechanics not recognised')
 
         if food_addition_env_indices.sum().item() > 0:
             add_food_envs = self.envs[food_addition_env_indices, :, :, :]
@@ -667,27 +671,29 @@ class MultiSnake(object):
             done: A 1D Tensor of length self.num_envs. A value of 1 means the corresponding environment needs to be
                 reset
         """
-        if self.respawn_mode == 'all':
-            t0 = time()
-            if done is None:
-                done = self.dones['__all__']
+        # Reset envs that contain no snakes
+        t0 = time()
+        if done is None:
+            done = self.dones['__all__']
 
-            done = done.view((done.shape[0]))
-            num_done = int(done.sum().item())
+        done = done.view((done.shape[0]))
+        num_done = int(done.sum().item())
 
-            # Create environments
-            if done.sum() > 0:
-                new_envs = self._create_envs(num_done)
-                self.envs[done.byte(), :, :, :] = new_envs
+        # Create environments
+        if done.sum() > 0:
+            new_envs = self._create_envs(num_done)
+            self.envs[done.byte(), :, :, :] = new_envs
 
-            # Reset done trackers
-            self.dones['__all__'][done] = 0
-            for i in range(self.num_snakes):
-                self.dones[f'agent_{i}'][done] = 0
+        # Reset done trackers
+        self.dones['__all__'][done] = 0
+        for i in range(self.num_snakes):
+            self.dones[f'agent_{i}'][done] = 0
 
-            if self.verbose:
-                print(f'Resetting {num_done} envs: {1000*(time() - t0)}ms')
-        elif self.respawn_mode == 'any':
+        if self.verbose:
+            print(f'Resetting {num_done} envs: {1000 * (time() - t0)}ms')
+
+        # Optionally respawn snakes
+        if self.respawn_mode == 'any':
             t0 = time()
             num_respawned = 0
             for i in range(self.num_snakes):
@@ -706,10 +712,7 @@ class MultiSnake(object):
                     self.dones[f'agent_{i}'][successfully_respawned] = 0
 
             if self.verbose:
-                print(f'Respawned {num_respawned} snakes: {1000*(time() - t0)}ms')
-
-        else:
-            raise RuntimeError('respawn_mode not recognised.')
+                print(f'Respawned {num_respawned} snakes: {1000 * (time() - t0)}ms')
 
         return self._observe()
 
