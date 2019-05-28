@@ -427,11 +427,12 @@ class MultiSnake(object):
         elif self.food_mode == 'random_rate':
             # Have a maximum amount of available food
             food_addition_env_indices = (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < self.max_food)
+            n = food_addition_env_indices.sum().item()
 
             # Get empty locations
-            filled_locations = self.envs.sum(dim=1, keepdim=True) > EPS
+            filled_locations = self.envs[food_addition_env_indices].sum(dim=1, keepdim=True) > EPS
 
-            food_addition = torch.rand((self.num_envs, 1, self.size, self.size), device=self.device)
+            food_addition = torch.rand((n, 1, self.size, self.size), device=self.device)
             # Remove boundaries
             food_addition[:, :, :1, :] = 1
             food_addition[:, :, :, :1] = 1
@@ -442,7 +443,7 @@ class MultiSnake(object):
 
             food_addition &= ~filled_locations
 
-            self.envs[food_addition_env_indices,FOOD_CHANNEL:FOOD_CHANNEL + 1] += food_addition
+            self.envs[food_addition_env_indices,FOOD_CHANNEL:FOOD_CHANNEL + 1] += food_addition.float()
         else:
             raise ValueError('food_mechanics not recognised')
 
