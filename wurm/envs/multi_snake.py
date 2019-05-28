@@ -359,6 +359,44 @@ class MultiSnake(object):
         self.envs[active_envs, head_channel:head_channel + 1, :, :] += head_deltas.round()
         self._log(f'-Head convs: {1000*(time()-t0)}ms')
 
+    def _move_all_heads(self, directions: Dict[str, torch.Tensor], active_envs: torch.Tensor):
+        n = active_envs.sum()
+        t0 = time()
+        orientations = self.positions[active_envs, :, 0].long()
+        self._log(f'-Orientations: {1000 * (time() - t0)}ms')
+
+        directions = torch.stack([v for k, v in directions.items()]).t()
+
+        # Check if this snake is trying to move backwards and change
+        # it's direction/action to just continue forward
+        # The test for this is if their orientation number {0, 1, 2, 3}
+        # is the same as their action
+        t0 = time()
+        mask = orientations == directions[active_envs]
+        directions[active_envs] = (directions[active_envs] + (mask * 2).long()).fmod(4)
+        self._log(f'-Sanitize directions: {1000 * (time() - t0)}ms')
+
+        # Update tracked orientations
+        self.positions[active_envs, :, 0] = (directions[active_envs] + 2).fmod(4)
+
+        t0 = time()
+        # Create head position deltas
+        filters = ORIENTATION_FILTERS.to(dtype=self.dtype, device=self.device) \
+            .repeat((self.num_snakes, 1, 1, 1))
+        head_deltas = F.conv2d(
+            self._heads,
+            filters,
+            padding=1,
+            groups=self.num_snakes
+        )
+
+        head_deltas = head_deltas.view(n, self.num_snakes, 4, self.size, self.size)
+        directions_onehot = F.one_hot(directions[active_envs], 4).to(self.dtype)
+        # Dimensions are n_env, snake, direction, height, width
+        head_deltas = torch.einsum('nsdhw,nsd->nshw', [head_deltas, directions_onehot])
+        self.envs[:, self.head_channels, :, :] += head_deltas.round()
+        self._log(f'-Head convs: {1000 * (time() - t0)}ms')
+
     def _decay_bodies(self, i: int, agent: str, active_envs: torch.Tensor, food_consumption: dict):
         n = active_envs.sum().item()
         # Decay only active envs
@@ -625,9 +663,7 @@ class MultiSnake(object):
             print('>>> Regular phase')
         # Check orientations and move head positions of all snakes
         t0 = time()
-        for i, (agent, act) in enumerate(actions.items()):
-            self._move_heads(i, agent, directions, all_envs)
-
+        self._move_all_heads(directions, all_envs)
         self._log(f'Movement: {1000 * (time() - t0)}ms')
 
         # Decay bodies of all snakes that haven't eaten food
