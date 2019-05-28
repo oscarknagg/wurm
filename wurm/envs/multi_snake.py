@@ -419,6 +419,17 @@ class MultiSnake(object):
         self.envs[body_decay_env_mask, body_channel:body_channel + 1, :, :] = \
             self.envs[body_decay_env_mask, body_channel:body_channel + 1, :, :].relu()
 
+    def _decay_all_bodies(self, active_envs: torch.Tensor, food_consumption: Dict[str, torch.Tensor]):
+        n = active_envs.sum().item()
+        head_food_overlap = (food(self.envs) * self._heads).view(n, self.num_snakes, -1).sum(dim=-1).byte()
+
+        for i, overlap in enumerate(head_food_overlap.unbind(dim=1)):
+            food_consumption[f'agent_{i}'] = overlap
+
+        decay = ~head_food_overlap[:, :, None, None].expand_as(self.envs[:, self.body_channels])
+        self.envs[:, self.body_channels] -= decay.float()
+        self.envs[:, self.body_channels] = self.envs[:, self.body_channels].relu()
+
     def _check_collisions(self, i: int, agent: str, active_envs: torch.Tensor, snake_sizes: dict, food_consumption: dict):
         n = active_envs.sum().item()
         # Check if any snakes have collided with themselves or any other snakes
@@ -453,6 +464,38 @@ class MultiSnake(object):
         food_removal = head(_env) * food(_env) * -1
         self.rewards[agent][active_envs] -= (food_removal.view(n, -1).sum(dim=-1).to(self.dtype))
         self.envs[active_envs, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
+
+    def _check_all_collisions(self, active_envs: torch.Tensor, snake_sizes: dict, food_consumption: dict):
+        n = active_envs.sum().item()
+
+        snake_sizes = torch.stack([v for k, v in snake_sizes.items()]).t()
+        food_consumption = torch.stack([v for k, v in food_consumption.items()]).t()
+
+        # Create a new head position in the body channel
+        # Make this head +1 greater if the snake has just eaten food
+        self.envs[:, self.body_channels] += self._heads * (
+            snake_sizes[:, :, None, None].expand(n, self.num_snakes, self.size, self.size) +
+            food_consumption[:, :, None, None].expand(n, self.num_snakes, self.size, self.size).to(self.dtype)
+        )
+
+        # Collisions
+        collisions = (self._heads * self._bodies).view(n, self.num_snakes, -1).sum(dim=-1).gt(EPS)
+
+        for i, col in enumerate(collisions.unbind(dim=1)):
+            if f'snake_collision_{i}' not in self.info.keys():
+                self.info[f'snake_collision_{i}'] = torch.zeros((self.num_envs,), dtype=torch.uint8,
+                                                                device=self.device).requires_grad_(False)
+
+            self.info[f'snake_collision_{i}'][active_envs] |= col
+            self.dones[f'agent_{i}'][active_envs] |= col
+
+        food_head_overlap = self._heads * self._food
+        food_removal = food_head_overlap.view(n, self.num_snakes, -1).sum(dim=-1)
+
+        for i, f in enumerate(food_removal.unbind(dim=1)):
+            self.rewards[f'agent_{i}'] += f
+
+        self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL+1] -= food_head_overlap.sum(dim=1, keepdim=True).clamp(0, 1)
 
     def _add_food(self):
         if self.food_mode == 'only_one':
@@ -616,7 +659,6 @@ class MultiSnake(object):
             for i, (agent, _) in enumerate(actions.items()):
                 if self.boost_this_step[agent].sum() >= 1:
                     self._check_collisions(i, agent, self.boost_this_step[agent], snake_sizes, food_consumption)
-                    # self._check_collisions(i, agent, all_envs, snake_sizes, food_consumption)
 
             self._log(f'Collision: {1000*(time() - t0)}ms')
 
@@ -669,13 +711,12 @@ class MultiSnake(object):
         # Decay bodies of all snakes that haven't eaten food
         t0 = time()
         food_consumption = dict()
-        for i, (agent, _) in enumerate(actions.items()):
-            self._decay_bodies(i, agent, all_envs, food_consumption)
-
+        self._decay_all_bodies(all_envs, food_consumption)
         self._log(f'Growth/decay: {1000*(time() - t0)}ms')
 
         # Check for collisions with snakes and food
         t0 = time()
+        # self._check_all_collisions(all_envs, snake_sizes, food_consumption)
         for i, (agent, _) in enumerate(actions.items()):
             self._check_collisions(i, agent, all_envs, snake_sizes, food_consumption)
 
