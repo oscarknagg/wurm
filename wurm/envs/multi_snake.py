@@ -67,7 +67,7 @@ class MultiSnake(object):
                  boost: bool = True,
                  boost_cost_prob: float = 0.5,
                  food_mode: str = 'only_one',
-                 food_rate: float = None,
+                 food_rate: float = 5e-3,
                  respawn_mode: str = 'all',
                  verbose: int = 0,
                  render_args: dict = None):
@@ -118,8 +118,8 @@ class MultiSnake(object):
         self.boost = boost
         self.boost_cost_prob = boost_cost_prob
         self.food_mode = food_mode
-        self.food_rate = 3/(2 * (size - 2)) if food_rate is None else food_rate
-        self.max_food = 5
+        self.food_rate = food_rate
+        self.max_food = 10
         self.max_env_lifetime = 5000
 
         # Rendering parameters
@@ -420,18 +420,31 @@ class MultiSnake(object):
         if self.food_mode == 'only_one':
             # Add new food only if there is none in the environment
             food_addition_env_indices = (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < EPS)
+            if food_addition_env_indices.sum().item() > 0:
+                add_food_envs = self.envs[food_addition_env_indices, :, :, :]
+                food_addition = self._get_food_addition(add_food_envs)
+                self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
         elif self.food_mode == 'random_rate':
-            # Add new food with a certain probability
-            food_addition_env_indices = torch.rand((self.num_envs), device=self.device) < self.food_rate
-            # Apply a food cap
-            food_addition_env_indices &= (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < self.max_food)
+            # Have a maximum amount of available food
+            food_addition_env_indices = (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < self.max_food)
+
+            # Get empty locations
+            filled_locations = self.envs.sum(dim=1, keepdim=True) > EPS
+
+            food_addition = torch.rand((self.num_envs, 1, self.size, self.size), device=self.device)
+            # Remove boundaries
+            food_addition[:, :, :1, :] = 1
+            food_addition[:, :, :, :1] = 1
+            food_addition[:, :, -1:, :] = 1
+            food_addition[:, :, :, -1:] = 1
+            # Each pixel will independently spawn food at a certain rate
+            food_addition = food_addition.lt(self.food_rate)
+
+            food_addition &= ~filled_locations
+
+            self.envs[food_addition_env_indices,FOOD_CHANNEL:FOOD_CHANNEL + 1] += food_addition
         else:
             raise ValueError('food_mechanics not recognised')
-
-        if food_addition_env_indices.sum().item() > 0:
-            add_food_envs = self.envs[food_addition_env_indices, :, :, :]
-            food_addition = self._get_food_addition(add_food_envs)
-            self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
 
     def _check_boundaries(self, i: int, agent: str, active_envs: torch.Tensor):
         n = active_envs.sum().item()
