@@ -465,58 +465,44 @@ class MultiSnake(object):
         self.rewards[agent][active_envs] -= (food_removal.view(n, -1).sum(dim=-1).to(self.dtype))
         self.envs[active_envs, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
 
-    # def _check_all_collisions(self, active_envs: torch.Tensor, snake_sizes: dict, food_consumption: dict):
-    #     n = active_envs.sum().item()
-    #
-    #     snake_sizes = torch.stack([v for k, v in snake_sizes.items()]).t()
-    #     food_consumption = torch.stack([v for k, v in food_consumption.items()]).t()
-    #
-    #     # Create a new head position in the body channel
-    #     # Make this head +1 greater if the snake has just eaten food
-    #     self.envs[:, self.body_channels] += self._heads * (
-    #         snake_sizes[:, :, None, None].expand(n, self.num_snakes, self.size, self.size) +
-    #         food_consumption[:, :, None, None].expand(n, self.num_snakes, self.size, self.size).to(self.dtype)
-    #     )
-    #
-    #     head_positions = self._heads.view(n, self.num_snakes, -1).argmax(dim=-1)
-    #     head_positions = torch.cat([
-    #         head_positions // self.size,
-    #         head_positions % self.size
-    #     ]).t()
-    #     print(head_positions.t())
-    #     print(head_positions.shape)
-    #     exit()
-    #
-    #     # Collisions
-    #     head_body_overlap = self._heads * self._bodies
-    #     # collisions = (self._heads * self._bodies).view(n, self.num_snakes, -1).sum(dim=-1).gt(EPS)
-    #     # print(collisions.shape)
-    #     print(self._heads.shape)
-    #     print(self._bodies.shape)
-    #     print(self._bodies.sum(dim=1, keepdim=True).shape)
-    #     other_snakes = torch.ones(n, device=self.device)-torch.eye(n, device=self.device)
-    #     collisions = torch.einsum('nshw,ab,nshw->nshw', [self._heads, other_snakes, self._bodies.sum(dim=1, keepdim=True).expand_as(self._heads)])
-    #     collisions = collisions.view(n, self.num_snakes, -1).sum(dim=-1).gt(EPS)
-    #     print('collisions', collisions)
-    #     # collisions = torch.einsum('nshw,ab,nshw->ns', [self._heads, torch.eye(n, device=self.device), self._bodies]).gt(EPS)
-    #     # print(collisions.shape)
-    #     # exit()
-    #     print(collisions.shape)
-    #     for i, col in enumerate(collisions.unbind(dim=1)):
-    #         if f'snake_collision_{i}' not in self.info.keys():
-    #             self.info[f'snake_collision_{i}'] = torch.zeros((self.num_envs,), dtype=torch.uint8,
-    #                                                             device=self.device).requires_grad_(False)
-    #
-    #         self.info[f'snake_collision_{i}'][active_envs] |= col
-    #         self.dones[f'agent_{i}'][active_envs] |= col
-    #
-    #     food_head_overlap = self._heads * self._food
-    #     food_removal = food_head_overlap.view(n, self.num_snakes, -1).sum(dim=-1)
-    #
-    #     for i, f in enumerate(food_removal.unbind(dim=1)):
-    #         self.rewards[f'agent_{i}'] += f
-    #
-    #     self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL+1] -= food_head_overlap.sum(dim=1, keepdim=True).clamp(0, 1)
+    def _check_all_collisions(self, active_envs: torch.Tensor, snake_sizes: dict, food_consumption: dict):
+        n = active_envs.sum().item()
+
+        snake_sizes = torch.stack([v for k, v in snake_sizes.items()]).t()
+        food_consumption = torch.stack([v for k, v in food_consumption.items()]).t()
+
+        # This produces a batch of matrices corresponding to snake snake collisions
+        # Shape: (num_envs, num_snakes, num_snakes)
+        body_collisions = torch.einsum('nhxy,nbxy->nhb', [self._heads, self._bodies])
+        body_collisions = body_collisions.tril().sum(dim=-1).gt(EPS)
+        # Shape: (num_envs, num_snakes, num_snakes)
+        head_collisions = torch.einsum('naxy,nbxy->nab', [self._heads, self._heads])
+        head_collisions = head_collisions.tril(diagonal=-1).sum(dim=-1).gt(EPS)
+
+        collisions = body_collisions | head_collisions
+
+        # Create a new head position in the body channel
+        # Make this head +1 greater if the snake has just eaten food
+        self.envs[:, self.body_channels] += self._heads * (
+                snake_sizes[:, :, None, None].expand(n, self.num_snakes, self.size, self.size) +
+                food_consumption[:, :, None, None].expand(n, self.num_snakes, self.size, self.size).to(self.dtype)
+        )
+
+        for i, col in enumerate(collisions.unbind(dim=1)):
+            if f'snake_collision_{i}' not in self.info.keys():
+                self.info[f'snake_collision_{i}'] = torch.zeros((self.num_envs,), dtype=torch.uint8,
+                                                                device=self.device).requires_grad_(False)
+
+            self.info[f'snake_collision_{i}'][active_envs] |= col
+            self.dones[f'agent_{i}'][active_envs] |= col
+
+        food_head_overlap = self._heads * self._food
+        food_removal = food_head_overlap.view(n, self.num_snakes, -1).sum(dim=-1)
+
+        for i, f in enumerate(food_removal.unbind(dim=1)):
+            self.rewards[f'agent_{i}'] += f
+
+        self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL+1] -= food_head_overlap.sum(dim=1, keepdim=True).clamp(0, 1)
 
     def _add_food(self):
         if self.food_mode == 'only_one':
@@ -752,10 +738,7 @@ class MultiSnake(object):
 
         # Check for collisions with snakes and food
         t0 = time()
-        # self._check_all_collisions(all_envs, snake_sizes, food_consumption)
-        for i, (agent, _) in enumerate(actions.items()):
-            self._check_collisions(i, agent, all_envs, snake_sizes, food_consumption)
-
+        self._check_all_collisions(all_envs, snake_sizes, food_consumption)
         self._log(f'Collision: {1000*(time() - t0)}ms')
 
         # Check for edge collisions
