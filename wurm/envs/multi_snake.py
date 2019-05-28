@@ -1,4 +1,4 @@
-from time import time
+from time import time, sleep
 from typing import Dict, Tuple
 from collections import namedtuple, OrderedDict
 import torch
@@ -82,10 +82,13 @@ class MultiSnake(object):
         self.size = size
         self.initial_snake_length = initial_snake_length
         self.on_death = on_death
-        self.observation_mode = observation_mode
         self.device = device
         self.verbose = verbose
         self.dtype = dtype
+        self.observation_mode = observation_mode
+        if observation_mode.startswith('partial_'):
+            self.observation_width = int(observation_mode.split('_')[1])
+            self.observation_size = 2*int(observation_mode.split('_')[1]) + 1
 
         if render_args is None:
             self.render_args = {'num_rows': 1, 'num_cols': 1, 'size': 256}
@@ -177,10 +180,7 @@ class MultiSnake(object):
 
         return img
 
-    def render(self, mode: str = 'human'):
-        if self.viewer is None:
-            self.viewer = rendering.SimpleImageViewer()
-
+    def _get_env_images(self):
         # Regular snakes
         layers = {
             self._food.gt(EPS).squeeze(1): self.food_colour,
@@ -188,8 +188,10 @@ class MultiSnake(object):
 
         for i, (agent, has_boosted) in enumerate(self.boost_this_step.items()):
             if has_boosted.sum() > 0:
-                boosted_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
-                boosted_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
+                boosted_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
+                                             device=self.device)
+                boosted_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
+                                            device=self.device)
                 layers.update({
                     boosted_bodies: (self.agent_colours[i].float() * (2 / 3)).short(),
                     boosted_heads: (self.agent_colours[i].float() * (4 / 3)).short(),
@@ -197,8 +199,8 @@ class MultiSnake(object):
 
             regular_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
             regular_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
-            regular_bodies[~has_boosted] = self._bodies[~has_boosted, i:i+1].sum(dim=1).gt(EPS)
-            regular_heads[~has_boosted] = self._heads[~has_boosted, i:i+1].sum(dim=1).gt(EPS)
+            regular_bodies[~has_boosted] = self._bodies[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
+            regular_heads[~has_boosted] = self._heads[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
             layers.update({
                 regular_bodies: (self.agent_colours[i].float() * (2 / 3)).short(),
                 regular_heads: (self.agent_colours[i].float() * (4 / 3)).short(),
@@ -206,6 +208,14 @@ class MultiSnake(object):
 
         # Get RBG Tensor NCHW
         img = self._make_generic_rgb(layers)
+
+        return img
+
+    def render(self, mode: str = 'human'):
+        if self.viewer is None:
+            self.viewer = rendering.SimpleImageViewer()
+
+        img = self._get_env_images()
 
         # Convert to numpy
         img = img.cpu().numpy()
@@ -252,8 +262,57 @@ class MultiSnake(object):
         }
         return self._make_generic_rgb(layers).to(dtype=self.dtype) / 255
 
-    def _observe(self):
-        return {f'agent_{i}': self._observe_agent(i) for i in range(self.num_snakes)}
+    def _observe(self, mode: str = None) -> Dict[str, torch.Tensor]:
+        if mode is None:
+            mode = self.observation_mode
+
+        if mode == 'full':
+            return {f'agent_{i}': self._observe_agent(i) for i in range(self.num_snakes)}
+        elif mode.startswith('partial_'):
+            # Get full batch of images
+            img = self._get_env_images()
+
+            # Normalise to 0-1
+            img = img.float() / 255
+
+            # Crop bits for each agent
+            # Pad envs so we ge tthe correct size observation even when the head of the snake
+            # is close to the edge of the environment
+            print('observation_size', self.observation_size)
+            padding = [self.observation_width, self.observation_width, ] * 2
+            padded_img = F.pad(img, padding)
+
+            filter = torch.ones((1, 1, self.observation_size, self.observation_size)).to(self.device)
+            dict_observations = {}
+            for i in range(self.num_snakes):
+                head_channel = self.head_channels[i]
+                heads = self.envs[:, head_channel:head_channel+1, :, :]
+                padded_heads = F.pad(heads, padding)
+                head_area_indices = F.conv2d(
+                    padded_heads,
+                    filter,
+                    padding=self.observation_width
+                ).round()
+
+                observations = padded_img[
+                    head_area_indices.expand_as(padded_img).byte()
+                ]
+                # print(observations.shape)
+                observations = observations.reshape(
+                    self.num_envs, 3, self.observation_size, self.observation_size)
+
+                import matplotlib.pyplot as plt
+
+                temp = observations[0].permute(1, 2, 0).cpu().numpy()
+                # print(temp.shape)
+                plt.imshow(temp)
+                plt.show()
+
+                dict_observations[f'agent_{i}'] = 0
+
+            return dict_observations
+        else:
+            raise ValueError('Unrecognised observation mode.')
 
     @property
     def _food(self) -> torch.Tensor:
@@ -600,7 +659,12 @@ class MultiSnake(object):
         # or if its past the maximum episode length
         self.dones['__all__'] |= self.env_lifetimes > self.max_env_lifetime
 
-        return self._observe(), self.rewards, {k: v.clone() for k, v in self.dones.items()}, self.info
+        # Get observations
+        t0 = time()
+        observations = self._observe()
+        self._log(f'Observations: {1000 * (time() - t0)}ms')
+
+        return observations, self.rewards, {k: v.clone() for k, v in self.dones.items()}, self.info
 
     def check_consistency(self):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
@@ -811,10 +875,6 @@ class MultiSnake(object):
             envs, _ = self._add_snake(envs, i, True)
 
             # Add food
-        food_addition = self._get_food_addition(envs)
-        envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
-
-        # Add food
         food_addition = self._get_food_addition(envs)
         envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
 

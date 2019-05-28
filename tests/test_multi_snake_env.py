@@ -526,3 +526,13 @@ class TestMultiSnakeEnv(unittest.TestCase):
             pprint(dones)
             env.reset(dones['__all__'])
             env.check_consistency()
+
+    def test_partial_observations(self):
+        num_envs = 8
+        num_snakes = 4
+        observation_mode = 'partial_3'
+        env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=size, manual_setup=False, boost=True,
+                         observation_mode=observation_mode)
+        env.check_consistency()
+
+        observations = env._observe(observation_mode)
