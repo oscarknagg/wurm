@@ -33,9 +33,9 @@ parser.add_argument('--num-envs', type=int)
 parser.add_argument('--num-agents', type=int)
 parser.add_argument('--size', type=int)
 parser.add_argument('--agent', type=str)
-parser.add_argument('--boost', type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--observation', type=str)
+parser.add_argument('--boost', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--train', default=True, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--observation', default='default', type=str)
 parser.add_argument('--coord-conv', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--render', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--render-window-size', default=256, type=int)
@@ -54,7 +54,8 @@ parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] =
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--r', default=None, type=int, help='Repeat number')
 parser.add_argument('--norm-returns', default=True, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--boost-cost', type=float, default=0.5)
+parser.add_argument('--boost-cost', type=float, default=0.25)
+parser.add_argument('--food-on-death', type=float, default=0.33)
 parser.add_argument('--food-mode', type=str, default='random_rate')
 parser.add_argument('--food-rate', type=float, default=None)
 parser.add_argument('--respawn-mode', type=str, default='any')
@@ -75,6 +76,12 @@ argsdict = {k: v for k, v in args.__dict__.items() if k not in excluded_args}
 argstring = 'multi-' + '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
 
+if args.observation == 'full':
+    observation_size = args.size
+elif args.observation.startswith('partial_'):
+    observation_size = 2*int(args.observation.split('_')[1]) + 1
+else:
+    raise RuntimeError
 
 if args.dtype == 'float':
     dtype = torch.float
@@ -153,10 +160,10 @@ render_args = {
     'num_cols': args.render_cols,
 }
 if args.env == 'snake':
-    env = MultiSnake(num_envs=args.num_envs, num_snakes=args.num_agents,
+    env = MultiSnake(num_envs=args.num_envs, num_snakes=args.num_agents, food_on_death_prob=args.food_on_death,
                      size=args.size, device=args.device, render_args=render_args, boost=args.boost,
                      boost_cost_prob=args.boost_cost, dtype=dtype, food_rate=args.food_rate,
-                     respawn_mode=args.respawn_mode, food_mode=args.food_mode)
+                     respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_mode=observation_type)
 else:
     raise ValueError('Unrecognised environment')
 
@@ -234,7 +241,8 @@ for i_step in count(1):
     ##########################
     if args.agent != 'random' and args.train and i_step % args.update_steps == 0:
         with torch.no_grad():
-            all_obs = torch.stack([v for k, v in observations.items()]).view(-1, in_channels, args.size, args.size)
+            all_obs = torch.stack([v for k, v in observations.items()]).view(
+                -1, in_channels, observation_size, observation_size)
             _, bootstrap_values = model(all_obs)
 
         value_loss, policy_loss = a2c.loss(

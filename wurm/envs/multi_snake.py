@@ -59,7 +59,7 @@ class MultiSnake(object):
                  size: int,
                  initial_snake_length: int = 3,
                  on_death: str = 'restart',
-                 observation_mode: str = 'one_channel',
+                 observation_mode: str = 'full',
                  device: str = DEFAULT_DEVICE,
                  dtype: torch.dtype = torch.float,
                  manual_setup: bool = False,
@@ -102,11 +102,12 @@ class MultiSnake(object):
         self.dones.update({'__all__': torch.zeros(num_envs, dtype=torch.uint8, device=self.device)})
         self.env_lifetimes = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.snake_lifetimes = torch.zeros((num_envs, num_snakes), dtype=torch.long, device=device)
+        self.positions = torch.zeros((num_envs, num_snakes, 3), dtype=torch.long, device=self.device, requires_grad=False)
         self.viewer = 0
 
         if not manual_setup:
             # Create environments
-            self.envs = self._create_envs(self.num_envs)
+            self.envs, self.positions = self._create_envs(self.num_envs)
             self.envs.requires_grad_(False)
 
         ###################################
@@ -169,7 +170,6 @@ class MultiSnake(object):
         for locations, colour in colour_layers.items():
             img[locations, :] = colour
 
-        # print()
         img[:, :1, :, :] = self.edge_colour
         img[:, :, :1, :] = self.edge_colour
         img[:, -1:, :, :] = self.edge_colour
@@ -278,13 +278,13 @@ class MultiSnake(object):
             # Crop bits for each agent
             # Pad envs so we ge tthe correct size observation even when the head of the snake
             # is close to the edge of the environment
-            print('observation_size', self.observation_size)
             padding = [self.observation_width, self.observation_width, ] * 2
             padded_img = F.pad(img, padding)
 
             filter = torch.ones((1, 1, self.observation_size, self.observation_size)).to(self.device)
             dict_observations = {}
             for i in range(self.num_snakes):
+                n_living = (~self.dones[f'agent_{i}']).sum().item()
                 head_channel = self.head_channels[i]
                 heads = self.envs[:, head_channel:head_channel+1, :, :]
                 padded_heads = F.pad(heads, padding)
@@ -294,21 +294,18 @@ class MultiSnake(object):
                     padding=self.observation_width
                 ).round()
 
-                observations = padded_img[
+                living_observations = padded_img[
                     head_area_indices.expand_as(padded_img).byte()
                 ]
-                # print(observations.shape)
-                observations = observations.reshape(
-                    self.num_envs, 3, self.observation_size, self.observation_size)
+                living_observations = living_observations.reshape(
+                    n_living, 3, self.observation_size, self.observation_size)
 
-                import matplotlib.pyplot as plt
+                observations = torch.zeros((self.num_envs, 3, self.observation_size, self.observation_size),
+                                           dtype=self.dtype, device=self.device)
 
-                temp = observations[0].permute(1, 2, 0).cpu().numpy()
-                # print(temp.shape)
-                plt.imshow(temp)
-                plt.show()
+                observations[~self.dones[f'agent_{i}']] = living_observations
 
-                dict_observations[f'agent_{i}'] = 0
+                dict_observations[f'agent_{i}'] = observations.clone()
 
             return dict_observations
         else:
@@ -332,7 +329,7 @@ class MultiSnake(object):
         body_channel = self.body_channels[i]
         _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
         t0 = time()
-        orientations = determine_orientations(_env)
+        orientations = self.positions[active_envs, i, 0].long()
         self._log(f'-Orientations: {1000*(time()-t0)}ms')
 
         # Check if this snake is trying to move backwards and change
@@ -343,6 +340,9 @@ class MultiSnake(object):
         mask = orientations == directions[agent][active_envs]
         directions[agent][active_envs] = (directions[agent][active_envs] + (mask * 2).long()).fmod(4)
         self._log(f'-Sanitize directions: {1000*(time()-t0)}ms')
+
+        # Update tracked orientations
+        self.positions[active_envs, i, 0] = (directions[agent][active_envs] + 2).fmod(4)
 
         t0 = time()
         # Create head position deltas
@@ -753,8 +753,9 @@ class MultiSnake(object):
 
         # Create environments
         if done.sum() > 0:
-            new_envs = self._create_envs(num_done)
+            new_envs, new_positions = self._create_envs(num_done)
             self.envs[done.byte(), :, :, :] = new_envs
+            self.positions[done] = new_positions
 
         # Reset done trackers
         self.dones['__all__'][done] = 0
@@ -773,7 +774,7 @@ class MultiSnake(object):
                 if torch.any(self.dones[f'agent_{i}']):
                     # Add snake
                     successfully_respawned = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
-                    respawned_envs, respawns = self._add_snake(
+                    respawned_envs, respawns, new_positions = self._add_snake(
                         envs=self.envs[self.dones[f'agent_{i}']],
                         snake_channel=i,
                         exception_on_failure=False
@@ -792,7 +793,7 @@ class MultiSnake(object):
     def _add_snake(self,
                    envs: torch.Tensor,
                    snake_channel: int,
-                   exception_on_failure: bool) -> (torch.Tensor, torch.Tensor):
+                   exception_on_failure: bool) -> (torch.Tensor, torch.Tensor, torch.Tensor):
         """Adds a snake in a certain channel to environments.
 
         Args:
@@ -862,20 +863,33 @@ class MultiSnake(object):
         snake_size_mask = snake_sizes[:, None, None].expand((n, self.size, self.size))
         envs[:, self.head_channels[snake_channel], :, :] = (bodies == snake_size_mask).to(dtype=self.dtype)
 
-        return envs, successfully_spawned
+        # Start tracking head positions and orientations
+        new_positions = torch.zeros((n, 3), dtype=torch.long, device=self.device)
+        new_positions[:, 0] = random_directions
+        heads = envs[:, self.head_channels[snake_channel], :, :]
+        locations = torch.nonzero(heads)[:, 1:]
+        dones = ~heads.view(n, -1).sum(dim=1).gt(EPS)
+        new_positions[~dones, 1:] = \
+            torch.nonzero(envs[:, self.head_channels[snake_channel], :, :])[:, 1:]
 
-    def _create_envs(self, num_envs: int) -> torch.Tensor:
+        return envs, successfully_spawned, new_positions
+
+    def _create_envs(self, num_envs: int) -> (torch.Tensor, torch.Tensor):
         """Vectorised environment creation. Creates self.num_envs environments simultaneously."""
         if self.initial_snake_length != 3:
             raise NotImplementedError('Only initial snake length = 3 has been implemented.')
 
         envs = torch.zeros((num_envs, 1 + 2 * self.num_snakes, self.size, self.size), dtype=self.dtype, device=self.device)
 
+        new_positions = []
         for i in range(self.num_snakes):
-            envs, _ = self._add_snake(envs, i, True)
+            envs, _, _new_positions = self._add_snake(envs, i, True)
+            new_positions.append(_new_positions)
 
-            # Add food
+        new_positions = torch.stack(new_positions, dim=1)
+
+        # Add food
         food_addition = self._get_food_addition(envs)
         envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
 
-        return envs.round()
+        return envs.round(), new_positions

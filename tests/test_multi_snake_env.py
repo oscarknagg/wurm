@@ -4,9 +4,10 @@ import torch
 from time import sleep, time
 import numpy as np
 from pprint import pprint
+import matplotlib.pyplot as plt
 
 from wurm.envs import MultiSnake
-from wurm.utils import head, body, food
+from wurm.utils import head, body, food, determine_orientations
 from config import DEFAULT_DEVICE
 
 
@@ -14,8 +15,7 @@ print_envs = False
 render_envs = False
 render_sleep = 0.5
 size = 12
-torch.cuda.manual_seed(0)
-torch.random.manual_seed(0)
+torch.random.manual_seed(3)
 
 
 def get_test_env(num_envs=1):
@@ -33,6 +33,9 @@ def get_test_env(num_envs=1):
     env.envs[:, 4, 8, 8] = 3
     env.envs[:, 4, 8, 9] = 2
     env.envs[:, 4, 9, 9] = 1
+
+    env.positions[0, 0, 0] = determine_orientations(env.envs[:, [0, 1, 2], :, :])
+    env.positions[0, 1, 0] = determine_orientations(env.envs[:, [0, 3, 4], :, :])
 
     return env
 
@@ -53,7 +56,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_steps = 50
         # Create some environments and run random actions for N steps, checking for consistency at each step
         env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, verbose=True,
-                         render_args={'num_rows': 5, 'num_cols': 5, 'size': 128}
+                         render_args={'num_rows': 5, 'num_cols': 5, 'size': 128},
                          )
         env.check_consistency()
 
@@ -383,6 +386,10 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env.envs[:, 4, 8, 8] = 2
         env.envs[:, 4, 8, 9] = 1
 
+        # Get orientations manually
+        env.positions[0, 0, 0] = determine_orientations(env.envs[:, [0, 1, 2], :, :])
+        env.positions[0, 1, 0] = determine_orientations(env.envs[:, [0, 3, 4], :, :])
+
         expected_head_positions = torch.tensor([
             [6, 5],
             [6, 4],
@@ -501,7 +508,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             print(env.boost_this_step)
 
     def test_respawn_mode_any(self):
-        # Create an env where there is no room to respawn and
+        # Create an env where there is no room to respawn and see if we get an exception
         env = get_test_env()
         env.respawn_mode = 'any'
 
@@ -536,3 +543,15 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env.check_consistency()
 
         observations = env._observe(observation_mode)
+
+        if render_envs:
+            fig, axes = plt.subplots(2, 2)
+            i = 0
+            for k, v in observations.items():
+                axes[i // 2, i %2].imshow(v[0].permute(1, 2, 0).cpu().numpy())
+                i += 1
+
+            plt.show()
+
+            env.render()
+            sleep(5)
