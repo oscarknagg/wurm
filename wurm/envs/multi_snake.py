@@ -66,7 +66,7 @@ class MultiSnake(object):
                  food_on_death_prob: float = 0.5,
                  boost: bool = True,
                  boost_cost_prob: float = 0.5,
-                 food_mechanics: str = 'only_one',
+                 food_mode: str = 'only_one',
                  food_rate: float = None,
                  respawn_mode: str = 'all',
                  verbose: int = 0,
@@ -97,7 +97,8 @@ class MultiSnake(object):
         self.body_channels = [2 + 2*i for i in range(self.num_snakes)]
         self.dones = {f'agent_{i}': torch.zeros(num_envs, dtype=torch.uint8, device=self.device) for i in range(self.num_snakes)}
         self.dones.update({'__all__': torch.zeros(num_envs, dtype=torch.uint8, device=self.device)})
-        self.t = 0
+        self.env_lifetimes = torch.zeros(num_envs, dtype=torch.long, device=device)
+        self.snake_lifetimes = torch.zeros((num_envs, num_snakes), dtype=torch.long, device=device)
         self.viewer = 0
 
         if not manual_setup:
@@ -112,9 +113,10 @@ class MultiSnake(object):
         self.food_on_death_prob = food_on_death_prob
         self.boost = boost
         self.boost_cost_prob = boost_cost_prob
-        self.food_mechanics = food_mechanics
+        self.food_mode = food_mode
         self.food_rate = 3/(2 * (size - 2)) if food_rate is None else food_rate
         self.max_food = 5
+        self.max_env_lifetime = 5000
 
         # Rendering parameters
         self.viewer = None
@@ -356,10 +358,10 @@ class MultiSnake(object):
         self.envs[active_envs, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
 
     def _add_food(self):
-        if self.food_mechanics == 'only_one':
+        if self.food_mode == 'only_one':
             # Add new food only if there is none in the environment
             food_addition_env_indices = (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < EPS)
-        elif self.food_mechanics == 'random_rate':
+        elif self.food_mode == 'random_rate':
             # Add new food with a certain probability
             food_addition_env_indices = torch.rand((self.num_envs), device=self.device) < self.food_rate
             # Apply a food cap
@@ -595,6 +597,9 @@ class MultiSnake(object):
         for agent, _ in actions.items():
             self.dones['__all__'] &= self.dones[agent]
 
+        # or if its past the maximum episode length
+        self.dones['__all__'] |= self.env_lifetimes > self.max_env_lifetime
+
         return self._observe(), self.rewards, {k: v.clone() for k, v in self.dones.items()}, self.info
 
     def check_consistency(self):
@@ -628,10 +633,11 @@ class MultiSnake(object):
                     print(f'agent_{i}')
                     raise e
 
-            # Environment contains one food instance
-            contains_one_food = torch.all(food(self.envs).view(n, -1).sum(dim=-1) >= 1)
-            if not contains_one_food:
-                raise RuntimeError('An environment doesn\'t contain at least one food instance')
+            if self.food_mode == 'only_one':
+                # Environment contains one food instance
+                contains_one_food = torch.all(food(self.envs).view(n, -1).sum(dim=-1) >= 1)
+                if not contains_one_food:
+                    raise RuntimeError('An environment doesn\'t contain at least one food instance')
 
         # Check no overlapping snakes
         # Sum of bodies in each square of each env should be no more than 1
@@ -688,6 +694,7 @@ class MultiSnake(object):
 
         # Reset done trackers
         self.dones['__all__'][done] = 0
+        self.env_lifetimes[done] = 0
         for i in range(self.num_snakes):
             self.dones[f'agent_{i}'][done] = 0
 
