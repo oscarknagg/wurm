@@ -59,7 +59,7 @@ class ConvAgent(nn.Module):
         self.initial_conv_blocks = nn.Sequential(*initial_convs)
 
         residual_convs = [ConvBlock(self.conv_channels, self.conv_channels, residual=True), ]
-        for _ in range(self.num_initial_convs - 1):
+        for _ in range(self.num_residual_convs - 1):
             residual_convs.append(ConvBlock(self.conv_channels, self.conv_channels, residual=True))
 
         self.residual_conv_blocks = nn.Sequential(*residual_convs)
