@@ -104,6 +104,12 @@ class MultiSnake(object):
         self.snake_lifetimes = torch.zeros((num_envs, num_snakes), dtype=torch.long, device=device)
         self.positions = torch.zeros((num_envs, num_snakes, 3), dtype=torch.long, device=self.device, requires_grad=False)
         self.viewer = 0
+        self.boost_this_step = OrderedDict([
+            (
+                f'agent_{i}',
+                torch.zeros((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
+            ) for i in range(self.num_snakes)
+        ])
 
         if not manual_setup:
             # Create environments
@@ -134,20 +140,16 @@ class MultiSnake(object):
         self.food_colour = torch.tensor((255, 0, 0), dtype=torch.short, device=self.device)
         self.edge_colour = torch.tensor((0, 0, 0), dtype=torch.short, device=self.device)
 
-        agent_colours = torch.rand(size=(num_snakes, 3), device=self.device)
-        agent_colours /= agent_colours.norm(2, dim=1, keepdim=True)
-        agent_colours *= 192
-        self.agent_colours = agent_colours.short()
+        self.agent_colours = torch.tensor([
+            [13, 92, 167],  # Blue ish
+            [86, 163, 49],  # Green
+            [133, 83, 109],  # Red-ish
+            [135, 135, 4],   # Yellow ish
+        ], device=self.device, dtype=torch.short)
+        self.num_colours = self.agent_colours.shape[0]
 
         self.info = {}
         self.rewards = {}
-
-        self.boost_this_step = OrderedDict([
-            (
-                f'agent_{i}',
-                torch.zeros((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
-            ) for i in range(self.num_snakes)
-        ])
 
         self.edge_locations_mask = torch.zeros(
             (1, 1, self.size, self.size), dtype=self.dtype, device=self.device)
@@ -196,8 +198,8 @@ class MultiSnake(object):
                 boosted_bodies[has_boosted] = self._bodies[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
                 boosted_heads[has_boosted] = self._heads[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
                 layers.update({
-                    boosted_bodies: (self.agent_colours[i].float() * (2 / 3)).short(),
-                    boosted_heads: (self.agent_colours[i].float() * (4 / 3)).short(),
+                    boosted_bodies: (self.agent_colours[i % self.num_colours].float() * (2 / 3)).short(),
+                    boosted_heads: (self.agent_colours[i % self.num_colours].float() * (4 / 3)).short(),
                 })
 
             regular_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
@@ -205,8 +207,8 @@ class MultiSnake(object):
             regular_bodies[~has_boosted] = self._bodies[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
             regular_heads[~has_boosted] = self._heads[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
             layers.update({
-                regular_bodies: (self.agent_colours[i].float() * (2 / 3)).short(),
-                regular_heads: (self.agent_colours[i].float() * (4 / 3)).short(),
+                regular_bodies: (self.agent_colours[i % self.num_colours].float() * (2 / 3)).short(),
+                regular_heads: (self.agent_colours[i % self.num_colours].float() * (4 / 3)).short(),
             })
 
         # Get RBG Tensor NCHW
