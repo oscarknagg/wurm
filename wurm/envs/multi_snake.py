@@ -505,9 +505,10 @@ class MultiSnake(object):
         # This produces a batch of matrices corresponding to snake snake collisions
         # Shape: (num_envs, num_snakes, num_snakes)
         body_collisions = torch.einsum('nhxy,nbxy->nhb', [self._heads, self._bodies])
-        body_collisions = body_collisions.tril().sum(dim=-1).gt(EPS)
+        body_collisions = body_collisions.sum(dim=-1).gt(EPS)
         # Shape: (num_envs, num_snakes, num_snakes)
         head_collisions = torch.einsum('naxy,nbxy->nab', [self._heads, self._heads])
+        # Use .tril() here to make sure only collisions with _other_ heads count
         head_collisions = head_collisions.tril(diagonal=-1).sum(dim=-1).gt(EPS)
 
         collisions = body_collisions | head_collisions
