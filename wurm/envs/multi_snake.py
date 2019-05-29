@@ -67,7 +67,7 @@ class MultiSnake(object):
                  boost: bool = True,
                  boost_cost_prob: float = 0.5,
                  food_mode: str = 'only_one',
-                 food_rate: float = 5e-3,
+                 food_rate: float = 5e-4,
                  respawn_mode: str = 'all',
                  verbose: int = 0,
                  render_args: dict = None):
@@ -192,6 +192,9 @@ class MultiSnake(object):
                                              device=self.device)
                 boosted_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
                                             device=self.device)
+
+                boosted_bodies[has_boosted] = self._bodies[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
+                boosted_heads[has_boosted] = self._heads[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
                 layers.update({
                     boosted_bodies: (self.agent_colours[i].float() * (2 / 3)).short(),
                     boosted_heads: (self.agent_colours[i].float() * (4 / 3)).short(),
@@ -276,11 +279,35 @@ class MultiSnake(object):
             img = img.float() / 255
 
             # Crop bits for each agent
-            # Pad envs so we ge tthe correct size observation even when the head of the snake
+            # Pad envs so we ge the correct size observation even when the head of the snake
             # is close to the edge of the environment
             padding = [self.observation_width, self.observation_width, ] * 2
             padded_img = F.pad(img, padding)
 
+            # padded_heads = F.pad(self._heads, padding)
+            # print(padded_heads.shape)
+            # filter = torch.ones((self.num_snakes, 1, self.observation_size, self.observation_size)).to(self.device)
+            # head_area_indices = F.conv2d(
+            #     padded_heads,
+            #     filter,
+            #     padding=self.observation_width,
+            #     groups=self.num_snakes
+            # ).round()
+            # print(head_area_indices.shape)
+            #
+            # living_observations = padded_img[
+            #     head_area_indices.expand_as(padded_img).byte()
+            # ]
+            # living_observations = living_observations.reshape(
+            #     n_living, 3, self.observation_size, self.observation_size)
+            #
+            # observations = torch.zeros((self.num_envs, 3, self.observation_size, self.observation_size),
+            #                            dtype=self.dtype, device=self.device)
+            #
+            # observations[~self.dones[f'agent_{i}']] = living_observations
+            #
+            #
+            # print()
             filter = torch.ones((1, 1, self.observation_size, self.observation_size)).to(self.device)
             dict_observations = {}
             for i in range(self.num_snakes):
@@ -293,6 +320,8 @@ class MultiSnake(object):
                     filter,
                     padding=self.observation_width
                 ).round()
+                # print(head_area_indices.shape)
+                # exit()
 
                 living_observations = padded_img[
                     head_area_indices.expand_as(padded_img).byte()
@@ -708,9 +737,6 @@ class MultiSnake(object):
                     self._boost_costs(i, agent, self.boost_this_step[agent] & apply_cost)
 
             self._log(f'Boost cost: {1000 * (time() - t0)}ms')
-
-            # Add food if there is none in the environment
-            self._add_food()
 
         snake_sizes = dict()
         for i, (agent, act) in enumerate(actions.items()):
