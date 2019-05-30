@@ -207,8 +207,8 @@ class MultiSnake(object):
             regular_bodies[~has_boosted] = self._bodies[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
             regular_heads[~has_boosted] = self._heads[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
             layers.update({
-                regular_bodies: (self.agent_colours[i % self.num_colours].float() * (2 / 3)).short(),
-                regular_heads: (self.agent_colours[i % self.num_colours].float() * (4 / 3)).short(),
+                regular_bodies: self.agent_colours[i % self.num_colours] / 2,
+                regular_heads: self.agent_colours[i % self.num_colours],
             })
 
         # Get RBG Tensor NCHW
@@ -284,34 +284,11 @@ class MultiSnake(object):
             # Pad envs so we ge the correct size observation even when the head of the snake
             # is close to the edge of the environment
             padding = [self.observation_width, self.observation_width, ] * 2
+            padded_size = self.size + 2*self.observation_width
             padded_img = F.pad(img, padding)
 
-            # padded_heads = F.pad(self._heads, padding)
-            # print(padded_heads.shape)
-            # filter = torch.ones((self.num_snakes, 1, self.observation_size, self.observation_size)).to(self.device)
-            # head_area_indices = F.conv2d(
-            #     padded_heads,
-            #     filter,
-            #     padding=self.observation_width,
-            #     groups=self.num_snakes
-            # ).round()
-            # print(head_area_indices.shape)
-            #
-            # living_observations = padded_img[
-            #     head_area_indices.expand_as(padded_img).byte()
-            # ]
-            # living_observations = living_observations.reshape(
-            #     n_living, 3, self.observation_size, self.observation_size)
-            #
-            # observations = torch.zeros((self.num_envs, 3, self.observation_size, self.observation_size),
-            #                            dtype=self.dtype, device=self.device)
-            #
-            # observations[~self.dones[f'agent_{i}']] = living_observations
-            #
-            #
-            # print()
-            filter = torch.ones((1, 1, self.observation_size, self.observation_size)).to(self.device)
             dict_observations = {}
+            filter = torch.ones((1, 1, self.observation_size, self.observation_size)).to(self.device)
             for i in range(self.num_snakes):
                 n_living = (~self.dones[f'agent_{i}']).sum().item()
                 head_channel = self.head_channels[i]
@@ -322,8 +299,6 @@ class MultiSnake(object):
                     filter,
                     padding=self.observation_width
                 ).round()
-                # print(head_area_indices.shape)
-                # exit()
 
                 living_observations = padded_img[
                     head_area_indices.expand_as(padded_img).byte()
