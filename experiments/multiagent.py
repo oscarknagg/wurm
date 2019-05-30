@@ -164,7 +164,7 @@ render_args = {
     'num_cols': args.render_cols,
 }
 if args.env == 'snake':
-    env = MultiSnake(num_envs=args.num_envs, num_snakes=args.num_agents, food_on_death_prob=args.food_on_death,
+    env = MultiSnake(num_envs=args.n_envs, num_snakes=args.n_agents, food_on_death_prob=args.food_on_death,
                      size=args.size, device=args.device, render_args=render_args, boost=args.boost,
                      boost_cost_prob=args.boost_cost, dtype=dtype, food_rate=args.food_rate,
                      respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_mode=observation_type)
@@ -289,16 +289,16 @@ for i_step in count(1):
     ###########
     t = time() - t0
     num_episodes += done['__all__'].sum().item()
-    num_steps += args.num_envs
+    num_steps += args.n_envs
 
     ewm_tracker(
-        fps=args.num_envs/(time()-t_i)
+        fps=args.n_envs/(time()-t_i)
     )
 
     if args.save_video:
         # If there is just one env save each episode to a different file
         # Otherwise save the whole video at the end
-        if args.num_envs == 1:
+        if args.n_envs == 1:
             if done['__all__']:
                 # Save video and make a new recorder
                 recorder.close()
