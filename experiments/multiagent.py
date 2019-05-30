@@ -22,6 +22,7 @@ from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
 
 LOG_INTERVAL = 1
+MODEL_INTERVAL = 10
 PRINT_INTERVAL = 100
 MAX_GRAD_NORM = 0.5
 FPS = 10
@@ -29,11 +30,13 @@ FPS = 10
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--env', type=str)
-parser.add_argument('--num-envs', type=int)
-parser.add_argument('--num-agents', type=int)
+parser.add_argument('--n-envs', type=int)
+parser.add_argument('--n-agents', type=int)
 parser.add_argument('--size', type=int)
 parser.add_argument('--agent', type=str)
 parser.add_argument('--observation', type=str)
+# parser.add_argument('--n-species', type=int, default=1)
+parser.add_argument('--warm-start', default=0, type=int)
 parser.add_argument('--boost', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--train', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--coord-conv', default=True, type=lambda x: x.lower()[0] == 't')
@@ -52,7 +55,6 @@ parser.add_argument('--save-model', default=True, type=lambda x: x.lower()[0] ==
 parser.add_argument('--save-logs', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--device', default='cuda', type=str)
-parser.add_argument('--r', default=None, type=int, help='Repeat number')
 parser.add_argument('--norm-returns', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--boost-cost', type=float, default=0.25)
 parser.add_argument('--food-on-death', type=float, default=0.33)
@@ -60,12 +62,14 @@ parser.add_argument('--food-mode', type=str, default='random_rate')
 parser.add_argument('--food-rate', type=float, default=None)
 parser.add_argument('--respawn-mode', type=str, default='any')
 parser.add_argument('--dtype', type=str, default='float')
+parser.add_argument('--r', default=None, type=int, help='Repeat number')
 
 args = parser.parse_args()
 
 excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
                  'render_window_size', 'render_rows', 'render_cols', 'save_video', 'env', 'coord_conv',
-                 'norm_returns', 'dtype', 'food_mode', 'respawn_mode', 'boost']
+                 'norm_returns', 'dtype', 'food_mode', 'respawn_mode', 'boost', 'warm_start']
+included_args = ['n_envs', 'n_agents', 'n_species', 'lr', 'gamma', 'update_steps', 'food_rate', 'boost_cost', 'entropy']
 if args.r is None:
     excluded_args += ['r', ]
 if args.total_steps == float('inf'):
@@ -187,7 +191,24 @@ a2c = A2C(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=dtype)
 # Run agent in environment #
 ############################
 t0 = time()
-observations = env.reset()
+if args.warm_start:
+    # Run all agents for warm_start steps before training
+    observations = env.reset()
+    for i in range(args.warm_start):
+        actions = {}
+        for agent, obs in observations.items():
+            probs_, value_ = model(obs)
+            action_distribution = Categorical(probs_)
+            actions[agent] = action_distribution.sample().clone().long()
+
+        observations, reward, done, info = env.step(actions)
+
+        env.reset(done['__all__'])
+        env.check_consistency()
+
+if not args.warm_start:
+    observations = env.reset()
+
 for i_step in count(1):
     t_i = time()
     if args.render:
@@ -348,11 +369,12 @@ for i_step in count(1):
 
         print(log_string)
 
-    if i_step % LOG_INTERVAL == 0:
+    if i_step % MODEL_INTERVAL:
         if args.save_model:
             os.makedirs(f'{PATH}/models/', exist_ok=True)
             torch.save(model.state_dict(), f'{PATH}/models/{save_file}.pt')
 
+    if i_step % LOG_INTERVAL == 0:
         if args.save_logs:
             logger.write(logs)
 
