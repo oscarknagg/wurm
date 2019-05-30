@@ -15,7 +15,7 @@ print_envs = False
 render_envs = False
 render_sleep = 0.5
 size = 12
-torch.random.manual_seed(3)
+torch.random.manual_seed(0)
 
 
 def get_test_env(num_envs=1):
@@ -82,15 +82,18 @@ class TestMultiSnakeEnv(unittest.TestCase):
         # num_envs = 1024*8
         num_envs = 100
         num_steps = 50
+        num_snakes = 4
         # Create some environments and run random actions for N steps, checking for consistency at each step
-        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, boost=True, verbose=True,
-                         render_args={'num_rows': 5, 'num_cols': 5, 'size': 192},
+        env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=16, manual_setup=False, boost=True, verbose=True,
+                         render_args={'num_rows': 2, 'num_cols': 2, 'size': 256},
+                         respawn_mode='any', food_mode='random_rate',
+                         observation_mode='partial_5'
                          )
         env.check_consistency()
 
         all_actions = {
-            'agent_0': torch.randint(8, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.randint(8, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE),
+            f'agent_{i}': torch.randint(8, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE) for i in
+            range(num_snakes)
         }
 
         t0 = time()
