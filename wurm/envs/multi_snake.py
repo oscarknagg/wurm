@@ -95,14 +95,14 @@ class MultiSnake(object):
         else:
             self.render_args = render_args
 
-        self.envs = torch.zeros((num_envs, 1 + 2 * num_snakes, size, size), dtype=self.dtype, device=self.device).requires_grad_(False)
-        self.head_channels = [1 + 2*i for i in range(self.num_snakes)]
-        self.body_channels = [2 + 2*i for i in range(self.num_snakes)]
+        self.foods = torch.zeros((num_envs, 1, size, size), dtype=self.dtype, device=self.device).requires_grad_(False)
+        self.heads = torch.zeros((num_envs*num_snakes, 1, size, size), dtype=self.dtype, device=self.device).requires_grad_(False)
+        self.bodies = torch.zeros((num_envs*num_snakes, 1, size, size), dtype=self.dtype, device=self.device).requires_grad_(False)
         self.dones = {f'agent_{i}': torch.zeros(num_envs, dtype=torch.uint8, device=self.device) for i in range(self.num_snakes)}
         self.dones.update({'__all__': torch.zeros(num_envs, dtype=torch.uint8, device=self.device)})
         self.env_lifetimes = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.snake_lifetimes = torch.zeros((num_envs, num_snakes), dtype=torch.long, device=device)
-        self.positions = torch.zeros((num_envs, num_snakes, 3), dtype=torch.long, device=self.device, requires_grad=False)
+        self.orientations = torch.zeros((num_envs*num_snakes), dtype=torch.long, device=self.device, requires_grad=False)
         self.viewer = 0
         self.boost_this_step = OrderedDict([
             (
@@ -113,7 +113,7 @@ class MultiSnake(object):
 
         if not manual_setup:
             # Create environments
-            self.envs, self.positions = self._create_envs(self.num_envs)
+            self.envs, self.orientations = self._create_envs(self.num_envs)
             self.envs.requires_grad_(False)
 
         ###################################
@@ -159,6 +159,9 @@ class MultiSnake(object):
         self.edge_locations_mask[:, :, -1:, :] = 1
         self.edge_locations_mask[:, :, :, -1:] = 1
 
+    def get_subenv(self, i: int) -> torch.Tensor:
+        return torch.cat([self.foods, self.heads[i:i+1], self.bodies[i:i+1]], dim=1)
+
     def _log(self, msg: str):
         if self.verbose > 0:
             print(msg)
@@ -185,31 +188,36 @@ class MultiSnake(object):
     def _get_env_images(self):
         # Regular snakes
         layers = {
-            self._food.gt(EPS).squeeze(1): self.food_colour,
+            self.foods.gt(EPS).squeeze(1): self.food_colour,
         }
 
-        for i, (agent, has_boosted) in enumerate(self.boost_this_step.items()):
-            if has_boosted.sum() > 0:
-                boosted_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
-                                             device=self.device)
-                boosted_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
-                                            device=self.device)
+        layers.update({
+            self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1).gt(EPS): self.agent_colours[0] / 2,
+            self.heads.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1).gt(EPS): self.agent_colours[0]
+        })
 
-                boosted_bodies[has_boosted] = self._bodies[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
-                boosted_heads[has_boosted] = self._heads[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
-                layers.update({
-                    boosted_bodies: (self.agent_colours[i % self.num_colours].float() * (2 / 3)).short(),
-                    boosted_heads: (self.agent_colours[i % self.num_colours].float() * (4 / 3)).short(),
-                })
-
-            regular_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
-            regular_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
-            regular_bodies[~has_boosted] = self._bodies[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
-            regular_heads[~has_boosted] = self._heads[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
-            layers.update({
-                regular_bodies: self.agent_colours[i % self.num_colours] / 2,
-                regular_heads: self.agent_colours[i % self.num_colours],
-            })
+        # for i, (agent, has_boosted) in enumerate(self.boost_this_step.items()):
+        #     if has_boosted.sum() > 0:
+        #         boosted_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
+        #                                      device=self.device)
+        #         boosted_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
+        #                                     device=self.device)
+        #
+        #         boosted_bodies[has_boosted] = self._bodies[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
+        #         boosted_heads[has_boosted] = self._heads[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
+        #         layers.update({
+        #             boosted_bodies: (self.agent_colours[i % self.num_colours].float() * (2 / 3)).short(),
+        #             boosted_heads: (self.agent_colours[i % self.num_colours].float() * (4 / 3)).short(),
+        #         })
+        #
+        #     regular_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
+        #     regular_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
+        #     regular_bodies[~has_boosted] = self._bodies[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
+        #     regular_heads[~has_boosted] = self._heads[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
+        #     layers.update({
+        #         regular_bodies: self.agent_colours[i % self.num_colours] / 2,
+        #         regular_heads: self.agent_colours[i % self.num_colours],
+        #     })
 
         # Get RBG Tensor NCHW
         img = self._make_generic_rgb(layers)
@@ -317,222 +325,47 @@ class MultiSnake(object):
         else:
             raise ValueError('Unrecognised observation mode.')
 
-    @property
-    def _food(self) -> torch.Tensor:
-        return self.envs[:, 0:1, :, :]
+    def santize_movements(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
+        mask = orientations == movements
+        print(orientations, movements)
+        movements = (movements + (mask * 2).long()).fmod(4)
+        return movements
 
-    @property
-    def _heads(self) -> torch.Tensor:
-        return self.envs[:, self.head_channels, :, :]
-
-    @property
-    def _bodies(self) -> torch.Tensor:
-        return self.envs[:, self.body_channels, :, :]
-
-    def _move_heads(self, i: int, agent: str, directions: Dict[str, torch.Tensor], active_envs: torch.Tensor):
-        # The sub-environment of just one agent
-        head_channel = self.head_channels[i]
-        body_channel = self.body_channels[i]
-        _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
-        t0 = time()
-        orientations = self.positions[active_envs, i, 0].long()
-        self._log(f'-Orientations: {1000*(time()-t0)}ms')
-
-        # Check if this snake is trying to move backwards and change
-        # it's direction/action to just continue forward
-        # The test for this is if their orientation number {0, 1, 2, 3}
-        # is the same as their action
-        t0 = time()
-        mask = orientations == directions[agent][active_envs]
-        directions[agent][active_envs] = (directions[agent][active_envs] + (mask * 2).long()).fmod(4)
-        self._log(f'-Sanitize directions: {1000*(time()-t0)}ms')
-
-        # Update tracked orientations
-        self.positions[active_envs, i, 0] = (directions[agent][active_envs] + 2).fmod(4)
-
-        t0 = time()
+    def _move_heads(self, heads: torch.Tensor, directions: torch.Tensor) -> torch.Tensor:
+        """Takes in heads and directions, returns updated heads"""
         # Create head position deltas
+        filters = ORIENTATION_FILTERS.to(dtype=self.dtype, device=self.device)
         head_deltas = F.conv2d(
-            head(_env),
-            ORIENTATION_FILTERS.to(dtype=self.dtype, device=self.device),
+            heads,
+            filters,
             padding=1
         )
-        # Select the head position delta corresponding to the correct action
-        directions_onehot = F.one_hot(directions[agent][active_envs], 4).to(self.dtype)
+        directions_onehot = F.one_hot(directions, 4).to(self.dtype)
         head_deltas = torch.einsum('bchw,bc->bhw', [head_deltas, directions_onehot]).unsqueeze(1)
+        heads += head_deltas
+        return heads
 
-        # Move head position by applying delta
-        self.envs[active_envs, head_channel:head_channel + 1, :, :] += head_deltas.round()
-        self._log(f'-Head convs: {1000*(time()-t0)}ms')
+    def _update_orientations(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
+        orientations = (movements + 2).fmod(4)
+        return orientations
 
-    def _move_all_heads(self, directions: Dict[str, torch.Tensor], active_envs: torch.Tensor):
-        n = active_envs.sum()
-        if n == 0:
-            return
+    def _get_food_overlap(self, heads: torch.Tensor, foods: torch.Tensor) -> torch.Tensor:
+        return heads * foods
 
-        t0 = time()
-        orientations = self.positions[active_envs, :, 0].long()
-        self._log(f'-Orientations: {1000 * (time() - t0)}ms')
+    def _decay_bodies(self, bodies: torch.Tensor) -> torch.Tensor:
+        return (bodies-1).relu()
 
-        directions = torch.stack([v for k, v in directions.items()]).t()
-
-        # Check if this snake is trying to move backwards and change
-        # it's direction/action to just continue forward
-        # The test for this is if their orientation number {0, 1, 2, 3}
-        # is the same as their action
-        t0 = time()
-        mask = orientations == directions[active_envs]
-        directions[active_envs] = (directions[active_envs] + (mask * 2).long()).fmod(4)
-        self._log(f'-Sanitize directions: {1000 * (time() - t0)}ms')
-
-        # Update tracked orientations
-        self.positions[active_envs, :, 0] = (directions[active_envs] + 2).fmod(4)
-
-        t0 = time()
-        # Create head position deltas
-        filters = ORIENTATION_FILTERS.to(dtype=self.dtype, device=self.device) \
-            .repeat((self.num_snakes, 1, 1, 1))
-        head_deltas = F.conv2d(
-            self._heads[active_envs],
-            filters,
-            padding=1,
-            groups=self.num_snakes
-        )
-
-        head_deltas = head_deltas.view(n, self.num_snakes, 4, self.size, self.size)
-        directions_onehot = F.one_hot(directions[active_envs], 4).to(self.dtype)
-        # Dimensions are n_env, snake, direction, height, width
-        head_deltas = torch.einsum('nsdhw,nsd->nshw', [head_deltas, directions_onehot])
-
-        if n == self.num_envs:
-            self.envs[:, self.head_channels, :, :] += head_deltas.round()
-        else:
-            head_channel_mask = torch.zeros(1 + 2 * self.num_snakes, dtype=torch.uint8, device=self.device)
-            head_channel_mask[self.head_channels] = 1
-            mask = active_envs.unsqueeze(1) * head_channel_mask.repeat(self.num_envs, 1)
-            self.envs[mask, :, :] += head_deltas.round().view(n * self.num_snakes, self.size, self.size)
-
-        self._log(f'-Head convs: {1000 * (time() - t0)}ms')
-
-    def _decay_bodies(self, i: int, agent: str, active_envs: torch.Tensor, food_consumption: dict):
-        n = active_envs.sum().item()
-        # Decay only active envs
-        body_decay_env_mask = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
-        body_decay_env_mask[active_envs] = 1
-
-        head_channel = self.head_channels[i]
-        body_channel = self.body_channels[i]
-        _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
-
-        head_food_overlap = (head(_env) * food(_env)).view(n, -1).sum(dim=-1)
-
-        # Decay the body sizes by 1, hence moving the body, apply ReLu to keep above 0
-        # Only do this for environments which haven't just eaten food
-        body_decay_env_mask[active_envs] = ~head_food_overlap.byte()
-
-        food_consumption[agent] = ~body_decay_env_mask
-
-        self.envs[body_decay_env_mask, body_channel:body_channel + 1, :, :] -= 1
-        self.envs[body_decay_env_mask, body_channel:body_channel + 1, :, :] = \
-            self.envs[body_decay_env_mask, body_channel:body_channel + 1, :, :].relu()
-
-    def _decay_all_bodies(self, active_envs: torch.Tensor, food_consumption: Dict[str, torch.Tensor]):
-        n = active_envs.sum().item()
-        head_food_overlap = (food(self.envs) * self._heads).view(n, self.num_snakes, -1).sum(dim=-1).byte()
-
-        for i, overlap in enumerate(head_food_overlap.unbind(dim=1)):
-            food_consumption[f'agent_{i}'] = overlap
-
-        decay = ~head_food_overlap[:, :, None, None].expand_as(self.envs[:, self.body_channels])
-        self.envs[:, self.body_channels] -= decay.float()
-        self.envs[:, self.body_channels] = self.envs[:, self.body_channels].relu()
-
-    def _check_collisions(self, i: int, agent: str, active_envs: torch.Tensor, snake_sizes: dict, food_consumption: dict):
-        n = active_envs.sum().item()
-        # Check if any snakes have collided with themselves or any other snakes
-        head_channel = self.head_channels[i]
-        body_channel = self.body_channels[i]
-        _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
-
-        # Collision with body of any snake
-        bodies = self._bodies[active_envs].sum(dim=1, keepdim=True)
-        body_collision = (head(_env) * bodies).view(n, -1).sum(dim=-1) > EPS
-
-        other_snakes = torch.ones(self.num_snakes, dtype=torch.uint8, device=self.device)
-        other_snakes[i] = 0
-        other_heads = self._heads[:, other_snakes, :, :]
-        head_collision = (head(_env) * other_heads[active_envs]).view(n, -1).sum(dim=-1) > EPS
-        snake_collision = body_collision | head_collision
-
-        if f'snake_collision_{i}' not in self.info.keys():
-            self.info[f'snake_collision_{i}'] = torch.zeros((self.num_envs,), dtype=torch.uint8,
-                                                            device=self.device).requires_grad_(False)
-        self.info[f'snake_collision_{i}'][active_envs] |= snake_collision
-        self.dones[agent][active_envs] |= snake_collision
-
-        # Create a new head position in the body channel
-        # Make this head +1 greater if the snake has just eaten food
-        self.envs[active_envs, body_channel:body_channel + 1, :, :] += \
-            head(_env) * (
-                    snake_sizes[agent][active_envs, None, None, None].expand((n, 1, self.size, self.size)) +
-                    food_consumption[agent][active_envs, None, None, None].expand((n, 1, self.size, self.size)).to(self.dtype)
-            )
-
-        food_removal = head(_env) * food(_env) * -1
-        self.rewards[agent][active_envs] -= (food_removal.view(n, -1).sum(dim=-1).to(self.dtype))
-        self.envs[active_envs, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_removal
-
-    def _check_all_collisions(self, active_envs: torch.Tensor, snake_sizes: dict, food_consumption: dict):
-        n = active_envs.sum().item()
-
-        snake_sizes = torch.stack([v for k, v in snake_sizes.items()]).t()
-        food_consumption = torch.stack([v for k, v in food_consumption.items()]).t()
-
-        if n == 0:
-            return
-
-        # This produces a batch of matrices corresponding to snake snake collisions
-        # Shape: (num_envs, num_snakes, num_snakes)
-        body_collisions = torch.einsum('nhxy,nbxy->nhb', [self._heads, self._bodies])
-        body_collisions = body_collisions.sum(dim=-1).gt(EPS)
-        # Shape: (num_envs, num_snakes, num_snakes)
-        head_collisions = torch.einsum('naxy,nbxy->nab', [self._heads, self._heads])
-        # Use .tril() here to make sure only collisions with _other_ heads count
-        head_collisions = head_collisions.tril(diagonal=-1).sum(dim=-1).gt(EPS)
-
-        collisions = body_collisions | head_collisions
-
-        # Create a new head position in the body channel
-        # Make this head +1 greater if the snake has just eaten food
-        self.envs[:, self.body_channels] += self._heads * (
-                snake_sizes[:, :, None, None].expand(n, self.num_snakes, self.size, self.size) +
-                food_consumption[:, :, None, None].expand(n, self.num_snakes, self.size, self.size).to(self.dtype)
-        )
-
-        for i, col in enumerate(collisions.unbind(dim=1)):
-            if f'snake_collision_{i}' not in self.info.keys():
-                self.info[f'snake_collision_{i}'] = torch.zeros((self.num_envs,), dtype=torch.uint8,
-                                                                device=self.device).requires_grad_(False)
-
-            self.info[f'snake_collision_{i}'][active_envs] |= col
-            self.dones[f'agent_{i}'][active_envs] |= col
-
-        food_head_overlap = self._heads * self._food
-        food_removal = food_head_overlap.view(n, self.num_snakes, -1).sum(dim=-1)
-
-        for i, f in enumerate(food_removal.unbind(dim=1)):
-            self.rewards[f'agent_{i}'] += f
-
-        self.envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1] -= food_head_overlap.sum(dim=1, keepdim=True).clamp(0, 1)
+    def _check_collisions(self, heads: torch.Tensor, pathing: torch.Tensor) -> torch.Tensor:
+        pass
 
     def _add_food(self):
         if self.food_mode == 'only_one':
             # Add new food only if there is none in the environment
-            food_addition_env_indices = (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < EPS)
+            food_addition_env_indices = self.foods.view(self.num_envs, -1).sum(dim=-1) < EPS
             if food_addition_env_indices.sum().item() > 0:
                 add_food_envs = self.envs[food_addition_env_indices, :, :, :]
                 food_addition = self._get_food_addition(add_food_envs)
-                self.envs[food_addition_env_indices, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
+                self.foods[food_addition_env_indices] += food_addition
         elif self.food_mode == 'random_rate':
             # Have a maximum amount of available food
             food_addition_env_indices = (food(self.envs).view(self.num_envs, -1).sum(dim=-1) < self.max_food)
@@ -556,52 +389,8 @@ class MultiSnake(object):
         else:
             raise ValueError('food_mechanics not recognised')
 
-    def _check_boundaries(self, i: int, agent: str, active_envs: torch.Tensor):
-        n = active_envs.sum().item()
-        head_channel = self.head_channels[i]
-        body_channel = self.body_channels[i]
-        _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
-        edge_collision = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
-
-        heads = head(_env)
-        edge_collision[active_envs] |= (heads * self.edge_locations_mask.expand_as(heads)).view(n, -1).sum(dim=-1) > EPS
-
-        self.dones[agent] |= edge_collision
-        head_exists = self._heads[:, i].view(self.num_envs, -1).max(dim=-1)[0] > EPS
-        edge_collision = edge_collision & head_exists
-        if f'edge_collision_{i}' not in self.info.keys():
-            self.info[f'edge_collision_{i}'] = torch.zeros((self.num_envs,), dtype=torch.uint8,
-                                                            device=self.device).requires_grad_(False)
-        self.info[f'edge_collision_{i}'] |= edge_collision
-
-    def _check_all_boundaries(self, active_envs: torch.Tensor):
-        n = active_envs.sum().item()
-        if n == 0:
-            return
-        elif n == self.num_envs:
-            edge_collision = (self._heads * self.edge_locations_mask.expand_as(self._heads)).view(n, self.num_snakes, -1).sum(dim=-1) > EPS
-            for i, edge in enumerate(edge_collision.unbind(dim=1)):
-                self.dones[f'agent_{i}'] |= edge
-                head_exists = self._heads[:, i].view(n, -1).max(dim=-1)[0] > EPS
-                edge = edge & head_exists
-                if f'edge_collision_{i}' not in self.info.keys():
-                    self.info[f'edge_collision_{i}'] = torch.zeros((self.num_envs,), dtype=torch.uint8,
-                                                                   device=self.device).requires_grad_(False)
-                self.info[f'edge_collision_{i}'] |= edge
-        else:
-            edge_collision = (
-                self._heads[active_envs] *
-                self.edge_locations_mask.expand_as(self._heads[active_envs])
-            ).view(n, self.num_snakes, -1).sum(dim=-1).gt(EPS)
-
-            for i, edge in enumerate(edge_collision.unbind(dim=1)):
-                self.dones[f'agent_{i}'][active_envs] |= edge
-                head_exists = self._heads[active_envs, i].view(n, -1).max(dim=-1)[0] > EPS
-                edge = edge & head_exists
-                if f'edge_collision_{i}' not in self.info.keys():
-                    self.info[f'edge_collision_{i}'] = torch.zeros((self.num_envs,), dtype=torch.uint8,
-                                                                   device=self.device).requires_grad_(False)
-                self.info[f'edge_collision_{i}'][active_envs] |= edge
+    def _check_edges(self, heads: torch.Tensor) -> torch.Tensor:
+        pass
 
     def _handle_deaths(self, i: int, agent: str):
         if self.dones[agent].sum() > 0:
@@ -661,10 +450,10 @@ class MultiSnake(object):
 
         # Clear info
         self.info = {}
-        directions = dict()
+        move_directions = dict()
         boost_actions = dict()
         for i, (agent, act) in enumerate(actions.items()):
-            directions[agent] = act.fmod(4)
+            move_directions[agent] = act.fmod(4)
             boost_actions[agent] = act > 3
             self.info[f'boost_{i}'] = boost_actions[agent].clone()
 
@@ -675,124 +464,133 @@ class MultiSnake(object):
             ) for i in range(self.num_snakes)
         ])
 
-        snake_sizes = dict()
-        for i, (agent, act) in enumerate(actions.items()):
-            body_channel = self.body_channels[i]
-            snake_sizes[agent] = self.envs[:, body_channel:body_channel + 1, :].view(self.num_envs, -1).max(dim=1)[0]
+        snake_sizes = self.bodies.view(self.num_envs*self.num_snakes, -1).max(dim=-1)[0]
 
-        self.boost_this_step = dict()
-        for i, (agent, act) in enumerate(actions.items()):
-            self.boost_this_step[agent] = (boost_actions[agent] & (snake_sizes[agent] >= 4))
-
-        at_least_one_boost = torch.stack([v for k, v in boost_actions.items()]).sum() >= 1
-        at_least_one_size_4 = torch.any(torch.stack([v for k, v in snake_sizes.items()]).sum() >= 4)
+        # self.boost_this_step = dict()
+        # for i, (agent, act) in enumerate(actions.items()):
+        #     self.boost_this_step[agent] = (boost_actions[agent] & (snake_sizes[agent] >= 4))
+        #
+        # at_least_one_boost = torch.stack([v for k, v in boost_actions.items()]).sum() >= 1
+        # at_least_one_size_4 = torch.any(torch.stack([v for k, v in snake_sizes.items()]).sum() >= 4)
 
         all_envs = torch.ones(self.num_envs, dtype=torch.uint8, device=self.device)
-        if self.boost and at_least_one_boost and at_least_one_size_4:
-            if self.verbose > 0:
-                print('>>> Boost phase')
-            ##############
-            # Boost step #
-            ##############
-            any_boosted = torch.stack([v for k, v in self.boost_this_step.items()]).t().any(dim=1)
-
-            # Check orientations and move head positions of all snakes
-            t0 = time()
-            for i, (agent, act) in enumerate(actions.items()):
-                if self.boost_this_step[agent].sum() >= 1:
-                    self._move_heads(i, agent, directions, self.boost_this_step[agent])
-
-            self._log(f'Movement: {1000*(time() - t0)}ms')
-
-            # Decay bodies of all snakes that haven't eaten food
-            t0 = time()
-            food_consumption = {
-                f'agent_{i}':
-                torch.zeros((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
-                for i in range(self.num_snakes)
-            }
-            for i, (agent, _) in enumerate(actions.items()):
-                if self.boost_this_step[agent].sum() >= 1:
-                    self._decay_bodies(i, agent, self.boost_this_step[agent], food_consumption)
-
-            self._log(f'Growth/decay: {1000*(time() - t0)}ms')
-
-            # Check for collisions with snakes and food
-            t0 = time()
-            for i, (agent, _) in enumerate(actions.items()):
-                if self.boost_this_step[agent].sum() >= 1:
-                    self._check_collisions(i, agent, self.boost_this_step[agent], snake_sizes, food_consumption)
-            self._log(f'Collision: {1000*(time() - t0)}ms')
-
-            # Check for edge collisions
-            t0 = time()
-            self._check_all_boundaries(any_boosted)
-            self._log(f'Edge check: {1000*(time() - t0)}ms')
-
-            # Clear dead snakes and create food at dead snakes
-            t0 = time()
-            for i, (agent, _) in enumerate(actions.items()):
-                if self.boost_this_step[agent].sum() >= 1:
-                    self._handle_deaths(i, agent)
-
-            self._log(f'Deaths: {1000 * (time() - t0)}ms')
-
-            # Handle cost of boost
-            t0 = time()
-            for i, (agent, _) in enumerate(actions.items()):
-                apply_cost = torch.rand(self.num_envs, device=self.device) < self.boost_cost_prob
-                if (self.boost_this_step[agent] & apply_cost).sum() >= 1:
-                    self._boost_costs(i, agent, self.boost_this_step[agent] & apply_cost)
-
-            self._log(f'Boost cost: {1000 * (time() - t0)}ms')
-
-        snake_sizes = dict()
-        for i, (agent, act) in enumerate(actions.items()):
-            body_channel = self.body_channels[i]
-            snake_sizes[agent] = self.envs[:, body_channel:body_channel + 1, :].view(self.num_envs, -1).max(dim=1)[0]
-
-        # Apply rounding to stop numerical errors accumulating
-        self.envs.round_()
+        # if self.boost and at_least_one_boost and at_least_one_size_4:
+        #     if self.verbose > 0:
+        #         print('>>> Boost phase')
+        #     ##############
+        #     # Boost step #
+        #     ##############
+        #     any_boosted = torch.stack([v for k, v in self.boost_this_step.items()]).t().any(dim=1)
+        #
+        #     # Check orientations and move head positions of all snakes
+        #     t0 = time()
+        #     for i, (agent, act) in enumerate(actions.items()):
+        #         if self.boost_this_step[agent].sum() >= 1:
+        #             self._move_heads(i, agent, directions, self.boost_this_step[agent])
+        #
+        #     self._log(f'Movement: {1000*(time() - t0)}ms')
+        #
+        #     # Decay bodies of all snakes that haven't eaten food
+        #     t0 = time()
+        #     food_consumption = {
+        #         f'agent_{i}':
+        #         torch.zeros((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
+        #         for i in range(self.num_snakes)
+        #     }
+        #     for i, (agent, _) in enumerate(actions.items()):
+        #         if self.boost_this_step[agent].sum() >= 1:
+        #             self._decay_bodies(i, agent, self.boost_this_step[agent], food_consumption)
+        #
+        #     self._log(f'Growth/decay: {1000*(time() - t0)}ms')
+        #
+        #     # Check for collisions with snakes and food
+        #     t0 = time()
+        #     for i, (agent, _) in enumerate(actions.items()):
+        #         if self.boost_this_step[agent].sum() >= 1:
+        #             self._check_collisions(i, agent, self.boost_this_step[agent], snake_sizes, food_consumption)
+        #     self._log(f'Collision: {1000*(time() - t0)}ms')
+        #
+        #     # Check for edge collisions
+        #     t0 = time()
+        #     self._check_all_boundaries(any_boosted)
+        #     self._log(f'Edge check: {1000*(time() - t0)}ms')
+        #
+        #     # Clear dead snakes and create food at dead snakes
+        #     t0 = time()
+        #     for i, (agent, _) in enumerate(actions.items()):
+        #         if self.boost_this_step[agent].sum() >= 1:
+        #             self._handle_deaths(i, agent)
+        #
+        #     self._log(f'Deaths: {1000 * (time() - t0)}ms')
+        #
+        #     # Handle cost of boost
+        #     t0 = time()
+        #     for i, (agent, _) in enumerate(actions.items()):
+        #         apply_cost = torch.rand(self.num_envs, device=self.device) < self.boost_cost_prob
+        #         if (self.boost_this_step[agent] & apply_cost).sum() >= 1:
+        #             self._boost_costs(i, agent, self.boost_this_step[agent] & apply_cost)
+        #
+        #     self._log(f'Boost cost: {1000 * (time() - t0)}ms')
+        #
+        # snake_sizes = dict()
+        # for i, (agent, act) in enumerate(actions.items()):
+        #     body_channel = self.body_channels[i]
+        #     snake_sizes[agent] = self.envs[:, body_channel:body_channel + 1, :].view(self.num_envs, -1).max(dim=1)[0]
+        #
+        # # Apply rounding to stop numerical errors accumulating
+        # self.envs.round_()
 
         ################
         # Regular step #
         ################
-        if self.verbose > 0:
-            print('>>> Regular phase')
+
+        self._log('>>> Regular phase')
         # Check orientations and move head positions of all snakes
         t0 = time()
-        self._move_all_heads(directions, all_envs)
+        move_directions = torch.stack([v for k, v in move_directions.items()]).flatten()
+        move_directions = self.santize_movements(movements=move_directions, orientations=self.orientations)
+        self.heads = self._move_heads(self.heads, move_directions)
+        self.orientations = self._update_orientations(movements=move_directions, orientations=self.orientations)
         self._log(f'Movement: {1000 * (time() - t0)}ms')
+
+        # Get food overlap
+        food_overlap = self._get_food_overlap(self.heads, self.foods.repeat_interleave(self.num_snakes, 0))
 
         # Decay bodies of all snakes that haven't eaten food
         t0 = time()
-        food_consumption = dict()
-        self._decay_all_bodies(all_envs, food_consumption)
+        decay_mask = food_overlap.view(self.num_envs*self.num_snakes, -1).sum(dim=-1).lt(EPS)
+        self.bodies[decay_mask] = self._decay_bodies(self.bodies[decay_mask])
         self._log(f'Growth/decay: {1000*(time() - t0)}ms')
 
-        # Check for collisions with snakes and food
-        t0 = time()
-        self._check_all_collisions(all_envs, snake_sizes, food_consumption)
-        self._log(f'Collision: {1000*(time() - t0)}ms')
+        # Move bodies forward
+        body_growth = food_overlap.view(self.num_envs*self.num_snakes, -1).sum(dim=-1)
+        self.bodies += self.heads * (snake_sizes + body_growth)[:, None, None, None]
 
-        # Check for edge collisions
-        t0 = time()
-        self._check_all_boundaries(all_envs)
-        self._log(f'Edge check: {1000*(time() - t0)}ms')
+        # # Check for collisions with snakes and food
+        # t0 = time()
+        # self._check_all_collisions(all_envs, snake_sizes, food_consumption)
+        # self._log(f'Collision: {1000*(time() - t0)}ms')
+        #
+        # # Check for edge collisions
+        # t0 = time()
+        # self._check_all_boundaries(all_envs)
+        # self._log(f'Edge check: {1000*(time() - t0)}ms')
+        #
+        # # Clear dead snakes and create food at dead snakes
+        # t0 = time()
+        # # self._handle_all_deaths()
+        # for i, (agent, _) in enumerate(actions.items()):
+        #     self._handle_deaths(i, agent)
 
-        # Clear dead snakes and create food at dead snakes
-        t0 = time()
-        # self._handle_all_deaths()
-        for i, (agent, _) in enumerate(actions.items()):
-            self._handle_deaths(i, agent)
+        # self._log(f'Deaths: {1000 * (time() - t0)}ms')
 
-        self._log(f'Deaths: {1000 * (time() - t0)}ms')
+        # # Add food if there is none in the environment
+        # self._add_food()
 
-        # Add food if there is none in the environment
-        self._add_food()
-
-        # Apply rounding to stop numerical errors accumulating
-        self.envs.round_()
+        # # Apply rounding to stop numerical errors accumulating
+        # self.foods.round_()
+        # self.heads.round_()
+        # self.bodies.round_()
 
         # Environment is finished if all snake are dead
         self.dones['__all__'] = torch.ones(self.num_envs, dtype=torch.uint8, device=self.device)
@@ -804,7 +602,7 @@ class MultiSnake(object):
 
         # Get observations
         t0 = time()
-        observations = self._observe()
+        observations = {}
         self._log(f'Observations: {1000 * (time() - t0)}ms')
 
         return observations, self.rewards, {k: v.clone() for k, v in self.dones.items()}, self.info
@@ -812,6 +610,7 @@ class MultiSnake(object):
     def check_consistency(self):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
         n = self.num_envs
+        return
 
         for i in range(self.num_snakes):
             head_channel = self.head_channels[i]
@@ -898,7 +697,7 @@ class MultiSnake(object):
         if done.sum() > 0:
             new_envs, new_positions = self._create_envs(num_done)
             self.envs[done.byte(), :, :, :] = new_envs
-            self.positions[done] = new_positions
+            self.orientations[done] = new_positions
 
         # Reset done trackers
         self.dones['__all__'][done] = 0
