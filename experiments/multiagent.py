@@ -135,6 +135,10 @@ if agent_type == 'relational':
 elif agent_type == 'conv':
     model = agents.ConvAgent(num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                              num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=dtype)
+elif agent_type == 'gru':
+    model = agents.GRUAgent(num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
+                             num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device,
+                                                                                             dtype=dtype)
 elif agent_type == 'random':
     model = agents.RandomAgent(num_actions=num_actions, device=args.device)
 else:
@@ -191,13 +195,18 @@ a2c = A2C(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=dtype)
 # Run agent in environment #
 ############################
 t0 = time()
+hidden_states = {}
 if args.warm_start:
     # Run all agents for warm_start steps before training
     observations = env.reset()
     for i in range(args.warm_start):
         actions = {}
         for agent, obs in observations.items():
-            probs_, value_ = model(obs)
+            if agent_type == 'gru':
+                probs_, value_, hidden_states_ = model(obs, hidden_states.get(agent))
+                hidden_states[agent] = hidden_states_.clone()
+            else:
+                probs_, value_ = model(obs)
             action_distribution = Categorical(probs_)
             actions[agent] = action_distribution.sample().clone().long()
 
@@ -226,7 +235,11 @@ for i_step in count(1):
     probs = {}
     entropies = {}
     for agent, obs in observations.items():
-        probs_, value_ = model(obs)
+        if agent_type == 'gru':
+            probs_, value_, hidden_states_ = model(obs, hidden_states.get(agent))
+            hidden_states[agent] = hidden_states_.clone().detach()
+        else:
+            probs_, value_ = model(obs)
         action_distribution = Categorical(probs_)
         actions[agent] = action_distribution.sample().clone().long()
         values[agent] = value_
@@ -237,6 +250,12 @@ for i_step in count(1):
 
     env.reset(done['__all__'])
     env.check_consistency()
+
+    if args.agent == 'gru':
+        # reset hidden states
+        for _agent, _done in done.items():
+            if _agent != '__all__':
+                hidden_states[_agent][_done] = 0
 
     if args.agent != 'random' and args.train:
         # Flatten (num_envs, num_agents) tensor to (num_envs*num_agents, )
@@ -256,6 +275,9 @@ for i_step in count(1):
             done=all_dones,
             entropy=all_entropies
         )
+        if agent_type == 'gru':
+            all_hiddens = torch.stack([v for k, v in hidden_states.items()]).view(-1, 64)
+            trajectories.append(hidden_state=all_hiddens)
 
     ##########################
     # Advantage actor-critic #
@@ -263,8 +285,14 @@ for i_step in count(1):
     if args.agent != 'random' and args.train and i_step % args.update_steps == 0:
         with torch.no_grad():
             all_obs = torch.stack([v for k, v in observations.items()]).view(
-                -1, in_channels, observation_size, observation_size)
-            _, bootstrap_values = model(all_obs)
+                -1, in_channels, observation_size, observation_size).detach()
+
+            if agent_type == 'gru':
+                all_hiddens = torch.stack([v for k, v in hidden_states.items()]).view(
+                   -1, 64)
+                _, bootstrap_values, _ = model(all_obs, all_hiddens)
+            else:
+                _, bootstrap_values = model(all_obs)
 
         value_loss, policy_loss = a2c.loss(
             bootstrap_values,
