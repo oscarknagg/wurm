@@ -327,10 +327,11 @@ class MultiSnake(object):
             raise ValueError('Unrecognised observation mode.')
 
     def sanitize_movements(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
+        # print(orientations.shape, movements.shape)
         mask = orientations == movements
-        print(movements, orientations)
+        # print(movements, orientations)
         movements = (movements + (mask * 2).long()).fmod(4)
-        print(movements)
+        # print(movements)
         return movements
 
     def _move_heads(self, heads: torch.Tensor, directions: torch.Tensor) -> torch.Tensor:
@@ -364,9 +365,14 @@ class MultiSnake(object):
         if self.food_mode == 'only_one':
             # Add new food only if there is none in the environment
             food_addition_env_indices = self.foods.view(self.num_envs, -1).sum(dim=-1) < EPS
-            if food_addition_env_indices.sum().item() > 0:
-                add_food_envs = self.envs[food_addition_env_indices, :, :, :]
-                food_addition = self._get_food_addition(add_food_envs)
+            n = food_addition_env_indices.sum().item()
+            if n > 0:
+                food_addition = self._get_food_addition(
+                    heads=self.heads[food_addition_env_indices.repeat_interleave(self.num_snakes)],
+                    bodies=self.bodies[food_addition_env_indices.repeat_interleave(self.num_snakes)],
+                    foods=self.foods[food_addition_env_indices],
+                )
+                print(food_addition.shape)
                 self.foods[food_addition_env_indices] += food_addition
         elif self.food_mode == 'random_rate':
             # Have a maximum amount of available food
@@ -453,6 +459,35 @@ class MultiSnake(object):
         # Reward penalty
         self.rewards[agent][active_envs] -= 1
 
+    def _get_food_addition(self, heads: torch.Tensor, bodies: torch.Tensor, foods: torch.Tensor):
+        n = foods.size(0)
+        _envs = torch.cat([
+            foods,
+            # foods.repeat_interleave(self.num_snakes, dim=0),
+            heads.view(n, self.num_snakes, self.size, self.size),
+            bodies.view(n, self.num_snakes, self.size, self.size)
+        ], dim=1)
+
+        # Get empty locations
+        available_locations = _envs.sum(dim=1, keepdim=True) < EPS
+        # Remove boundaries
+        available_locations[:, :, :1, :] = 0
+        available_locations[:, :, :, :1] = 0
+        available_locations[:, :, -1:, :] = 0
+        available_locations[:, :, :, -1:] = 0
+
+        food_indices = drop_duplicates(torch.nonzero(available_locations), 0)
+        food_addition = torch.sparse_coo_tensor(
+            food_indices.t(),
+            torch.ones(len(food_indices)),
+            available_locations.shape,
+            device=self.device,
+            dtype=self.dtype
+        )
+        food_addition = food_addition.to_dense()
+
+        return food_addition
+
     def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[dict, dict, dict, dict]:
         if len(actions) != self.num_snakes:
             raise RuntimeError('Must have a Tensor of actions for each snake')
@@ -466,6 +501,7 @@ class MultiSnake(object):
                 raise RuntimeError('Must have the same number of actions as environments.')
 
         # Clear info
+        self.rewards = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.float, device=self.device)
         self.info = {}
         move_directions = dict()
         boost_actions = dict()
@@ -566,6 +602,7 @@ class MultiSnake(object):
         t0 = time()
         # Get food overlap
         food_overlap = self._get_food_overlap(self.heads, self.foods.repeat_interleave(self.num_snakes, 0))
+        self.foods -= food_overlap.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True)
 
         # Decay bodies of all snakes that haven't eaten food
         decay_mask = food_overlap.view(self.num_envs*self.num_snakes, -1).sum(dim=-1).lt(EPS)
@@ -577,7 +614,7 @@ class MultiSnake(object):
         other = torch.arange(self.num_snakes, device=self.device).repeat(self.num_envs)
         other = ~F.one_hot(other, self.num_snakes).byte()
         heads = self.heads.view(self.num_envs, self.num_snakes, self.size, self.size).repeat_interleave(self.num_snakes, 0)
-        bodies = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).expand_as(self.bodies)
+        bodies = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).repeat_interleave(self.num_snakes, dim=0)
         pathing = torch.einsum('nshw,ns->nhw', [heads, other.float()]).unsqueeze(1)
         pathing += bodies
         collisions = self._check_collisions(self.heads, pathing)
@@ -605,21 +642,13 @@ class MultiSnake(object):
         self.bodies[self.dones] = 0
         self.heads[self.dones] = 0
 
-        # # Add food if there is none in the environment
-        # self._add_food()
+        # Add food if there is none in the environment
+        self._add_food()
 
-        # # Apply rounding to stop numerical errors accumulating
-        # self.foods.round_()
-        # self.heads.round_()
-        # self.bodies.round_()
-
-        # # Environment is finished if all snake are dead
-        # self.dones['__all__'] = torch.ones(self.num_envs, dtype=torch.uint8, device=self.device)
-        # for agent, _ in actions.items():
-        #     self.dones['__all__'] &= self.dones[agent]
-        #
-        # # or if its past the maximum episode length
-        # self.dones['__all__'] |= self.env_lifetimes > self.max_env_lifetime
+        # Apply rounding to stop numerical errors accumulating
+        self.foods.round_()
+        self.heads.round_()
+        self.bodies.round_()
 
         # Get observations
         t0 = time()
@@ -627,6 +656,11 @@ class MultiSnake(object):
         self._log(f'Observations: {1000 * (time() - t0)}ms')
 
         dones = {f'agent_{i}': d for i, d in enumerate(self.dones.clone().view(self.num_snakes, self.num_envs).unbind())}
+        # # Environment is finished if all snake are dead
+        dones['__all__'] = self.dones.view(self.num_envs, self.num_snakes).all(dim=1).clone()
+        # # or if its past the maximum episode length
+        dones['__all__'] |= self.env_lifetimes > self.max_env_lifetime
+
         rewards = {f'agent_{i}': d for i, d in enumerate(self.rewards.clone().view(self.num_snakes, self.num_envs).unbind())}
 
         return observations, rewards, dones, self.info
@@ -664,27 +698,6 @@ class MultiSnake(object):
         if not dead_all_zeros:
             raise RuntimeError(f'Dead snake contains non-zero elements.')
 
-    def _get_food_addition(self, envs: torch.Tensor):
-        # Get empty locations
-        available_locations = envs.sum(dim=1, keepdim=True) < EPS
-        # Remove boundaries
-        available_locations[:, :, :1, :] = 0
-        available_locations[:, :, :, :1] = 0
-        available_locations[:, :, -1:, :] = 0
-        available_locations[:, :, :, -1:] = 0
-
-        food_indices = drop_duplicates(torch.nonzero(available_locations), 0)
-        food_addition = torch.sparse_coo_tensor(
-            food_indices.t(),
-            torch.ones(len(food_indices)),
-            available_locations.shape,
-            device=self.device,
-            dtype=self.dtype
-        )
-        food_addition = food_addition.to_dense()
-
-        return food_addition
-
     def reset(self, done: torch.Tensor = None):
         """Resets environments in which the snake has died
 
@@ -695,22 +708,25 @@ class MultiSnake(object):
         # Reset envs that contain no snakes
         t0 = time()
         if done is None:
-            done = self.dones['__all__']
+            done = self.dones.view(self.num_envs, self.num_snakes).all(dim=1)
 
+        agent_dones = done.repeat_interleave(self.num_snakes)
         done = done.view((done.shape[0]))
         num_done = int(done.sum().item())
 
         # Create environments
         if done.sum() > 0:
-            new_envs, new_positions = self._create_envs(num_done)
-            self.envs[done.byte(), :, :, :] = new_envs
-            self.orientations[done] = new_positions
+            (new_foods, new_heads, new_bodies), new_positions = self._create_envs(num_done)
+            self.foods[done] = new_foods
+            self.heads[agent_dones] = new_heads
+            self.bodies[agent_dones] = new_bodies
+            self.orientations[agent_dones] = new_positions
 
         # Reset done trackers
-        self.dones['__all__'][done] = 0
         self.env_lifetimes[done] = 0
-        for i in range(self.num_snakes):
-            self.dones[f'agent_{i}'][done] = 0
+        self.dones[agent_dones] = 0
+        # for i in range(self.num_snakes):
+        #     self.dones[f'agent_{i}'][done] = 0
 
         if self.verbose:
             print(f'Resetting {num_done} envs: {1000 * (time() - t0)}ms')
@@ -737,7 +753,10 @@ class MultiSnake(object):
             if self.verbose:
                 print(f'Respawned {num_respawned} snakes: {1000 * (time() - t0)}ms')
 
-        return self._observe()
+        # observations = self._observe()
+        observations = {}
+
+        return observations
 
     def _add_snake(self,
                    envs: torch.Tensor,
@@ -838,13 +857,13 @@ class MultiSnake(object):
 
         new_positions = torch.stack(new_positions, dim=1)
 
-        # Add food
-        food_addition = self._get_food_addition(envs)
-        envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
-
         # Slice and reshape to get foods, heads and bodies
         foods = envs[:, 0:1].round()
         heads = envs[:, [2*(i+1)-1 for i in range(self.num_snakes)]].view(num_envs*self.num_snakes, 1, self.size, self.size).round()
         bodies = envs[:, [2*(i+1) for i in range(self.num_snakes)]].view(num_envs*self.num_snakes, 1, self.size, self.size).round()
 
-        return (foods, heads, bodies), new_positions
+        # Add food
+        food_addition = self._get_food_addition(foods=foods, heads=heads, bodies=bodies)
+        foods += food_addition
+
+        return (foods, heads, bodies), new_positions[:, :, 0].reshape(num_envs*self.num_snakes)

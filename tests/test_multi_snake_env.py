@@ -12,7 +12,7 @@ from config import DEFAULT_DEVICE
 
 
 print_envs = False
-render_envs = True
+render_envs = False
 render_sleep = 1
 size = 12
 torch.random.manual_seed(0)
@@ -34,8 +34,13 @@ def get_test_env(num_envs=1):
     env.bodies[1, 0, 8, 9] = 2
     env.bodies[1, 0, 9, 9] = 1
 
-    env.orientations[0] = determine_orientations(env.get_subenv(0))
-    env.orientations[0] = determine_orientations(env.get_subenv(1))
+    _envs = torch.cat([
+        env.foods.repeat_interleave(env.num_snakes, dim=0),
+        env.heads,
+        env.bodies
+    ], dim=1)
+
+    env.orientations = determine_orientations(_envs)
 
     return env
 
@@ -45,9 +50,9 @@ def print_or_render(env):
         print('='*30)
         print(env.foods)
         print('-'*30)
-        print(env.heads[1])
+        print(env.heads)
         print('-' * 30)
-        print(env.bodies[1])
+        print(env.bodies)
         print('-' * 30)
 
     if render_envs:
@@ -76,6 +81,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
             observations, reward, done, info = env.step(actions)
+
             env.reset(done['__all__'])
             env.check_consistency()
             print()
@@ -134,12 +140,12 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 [5, 3]
             ]),
             torch.tensor([
-                [7, 7],
-                [7, 6],
-                [7, 5],
-                [6, 5],
-                [6, 4],
-                [7, 4]
+                [9, 7],
+                [9, 6],
+                [9, 5],
+                [8, 5],
+                [8, 4],
+                [9, 4]
             ]),
         ]
 
@@ -157,6 +163,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 head_position = torch.tensor([
                     env.heads[i_agent, 0].flatten().argmax() // size, env.heads[i_agent, 0].flatten().argmax() % size
                 ])
+                print(i, head_position, expected_head_positions[i_agent][i])
                 self.assertTrue(torch.equal(head_position, expected_head_positions[i_agent][i]))
 
             print_or_render(env)
@@ -173,8 +180,8 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env.foods[0, 0, 1, 1] = 1
 
         all_actions = {
-            'agent_0': torch.tensor([1, 1, 1, 1, 1, 1, 1, 1]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.tensor([0, 2, 2, 6, 2, 2, 2, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_0': torch.tensor([1, 1, 1, 1, 1, ]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 2, 2, 6, 2, ]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         print_or_render(env)
@@ -196,7 +203,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             else:
                 self.assertEqual(dones['agent_0'].item(), 0)
 
-            if i >= 7:
+            if i >= 2:
                 self.assertEqual(dones['agent_1'].item(), 1)
             else:
                 self.assertEqual(dones['agent_1'].item(), 0)
@@ -231,12 +238,13 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 self.assertEqual(dones['agent_0'].item(), 0)
 
         # # Check some food has been created on death
-        # self.assertGreaterEqual(env.envs[:, 0].sum(), 2)
+        # self.assertGreaterEqual(env.foods[:, 0].sum().item(), 2)
 
     def test_other_snake_collision(self):
         # Actions and snakes are arranged so agent_1 collides with agent_0 and dies
         env = get_test_env()
         env.foods[0, 0, 1, 1] = 1
+        env.food_on_death_prob = 1
 
         all_actions = {
             'agent_0': torch.tensor([1, 2, 3, 3, 3, 3, 3, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
@@ -261,7 +269,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             print_or_render(env)
 
         # Check some food has been created on death
-        self.assertGreaterEqual(env.envs[:, 0].sum(), 2)
+        self.assertGreaterEqual(env.foods[:, 0].sum().item(), 2)
 
     def test_eat_food(self):
         env = get_test_env()
@@ -271,7 +279,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
         all_actions = {
             'agent_0': torch.tensor([1, 2, 1, 1, 0, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.tensor([2, 2, 3, 2, 1, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 1, 3, 2, 1, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         print_or_render(env)
@@ -286,37 +294,48 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
             print_or_render(env)
 
-            print(i, dones)
+            print(i, rewards)
 
-        #     # Check reward given when expected
-        #     if i == 0:
-        #         self.assertEqual(rewards['agent_1'].item(), 1)
-        #
-        #     if any(done for agent, done in dones.items()):
-        #         # These actions shouldn't cause any deaths
-        #         assert False
-        #
-        # # Check snake sizes. Expect agent_1: 4, agent_2: 5
-        # snake_sizes = env._bodies.view(1, 2, -1).max(dim=2)[0].long()
-        # self.assertTrue(torch.equal(snake_sizes, torch.tensor([[4, 5]]).to(DEFAULT_DEVICE)))
-        #
-        # # Check food has been removed
-        # self.assertEqual(env.envs[0, 0, 9, 7].item(), 0)
-        #
-        # # Check new food has been created
-        # self.assertEqual(food(env.envs).sum().item(), 1)
+            # Check reward given when expected
+            if i == 0:
+                self.assertEqual(rewards['agent_1'].item(), 1)
+            else:
+                self.assertEqual(rewards['agent_1'].item(), 0)
+
+            if any(done for agent, done in dones.items()):
+                # These actions shouldn't cause any deaths
+                assert False
+
+        # Check snake sizes. Expect agent_1: 4, agent_2: 5
+        snake_sizes = env.bodies.view(1, 2, -1).max(dim=2)[0].long()
+        self.assertTrue(torch.equal(snake_sizes, torch.tensor([[4, 5]]).to(DEFAULT_DEVICE)))
+
+        # Check food has been removed
+        self.assertEqual(env.foods[0, 0, 9, 7].item(), 0)
+
+        # Check new food has been created
+        self.assertEqual(env.foods.sum().item(), 1)
 
     def test_create_envs(self):
         # Create a large number of environments and check consistency
         env = MultiSnake(num_envs=512, num_snakes=2, size=size, manual_setup=False)
         env.check_consistency()
 
+        _envs = torch.cat([
+            env.foods.repeat_interleave(env.num_snakes, dim=0),
+            env.heads,
+            env.bodies
+        ], dim=1)
+
+        orientations = determine_orientations(_envs)
+        self.assertTrue(torch.equal(env.orientations, orientations))
+
     def test_reset(self):
         num_snakes = 2
 
         # agent_1 dies by other-collision, agent_0 dies by edge-collision
         env = get_test_env(num_envs=1)
-        env.envs[:, 0, 1, 1] = 1
+        env.foods[:, 0, 1, 1] = 1
 
         all_actions = {
             'agent_0': torch.tensor([1, 2, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
@@ -340,7 +359,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             print_or_render(env)
 
         # Both snakes should've died and hence the environment should've reset
-        self.assertTrue(torch.all(env._bodies.view(1, num_snakes, -1).max(dim=-1)[0] == env.initial_snake_length))
+        self.assertTrue(torch.all(env.bodies.view(1, num_snakes, -1).max(dim=-1)[0] == env.initial_snake_length))
 
     def test_agent_observations(self):
         # Test that own snake appears green, others appear blue
