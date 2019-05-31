@@ -113,8 +113,10 @@ class MultiSnake(object):
 
         if not manual_setup:
             # Create environments
-            self.envs, self.orientations = self._create_envs(self.num_envs)
-            self.envs.requires_grad_(False)
+            (self.foods, self.heads, self.bodies), self.orientations = self._create_envs(self.num_envs)
+            self.foods.requires_grad_(False)
+            self.heads.requires_grad_(False)
+            self.bodies.requires_grad_(False)
 
         ###################################
         # Environment dynamics parameters #
@@ -326,9 +328,9 @@ class MultiSnake(object):
 
     def sanitize_movements(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
         mask = orientations == movements
-        # print(orientations[1], movements[1])
+        print(movements, orientations)
         movements = (movements + (mask * 2).long()).fmod(4)
-        # print(movements[1])
+        print(movements)
         return movements
 
     def _move_heads(self, heads: torch.Tensor, directions: torch.Tensor) -> torch.Tensor:
@@ -632,7 +634,7 @@ class MultiSnake(object):
     def check_consistency(self):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
         _envs = torch.cat([
-            self.foods.expand_as(self.bodies),
+            self.foods.repeat_interleave(self.num_snakes, dim=0),
             self.heads,
             self.bodies
         ], dim=1)
@@ -800,28 +802,29 @@ class MultiSnake(object):
             ),
             random_directions_onehot
         ])
-        envs[:, self.body_channels[snake_channel], :, :] = bodies
+        envs[:, 2*(snake_channel+1), :, :] = bodies
+        # envs[:, self.body_channels[snake_channel], :, :] = bodies
 
         # Create heads at end of bodies
-        snake_sizes = envs[:, self.body_channels[snake_channel], :].view(n, -1).max(dim=1)[0]
+        snake_sizes = envs[:, 2*(snake_channel+1), :].view(n, -1).max(dim=1)[0]
         # Only create heads where there is a snake. This catches an edge case where there is no room
         # for a snake to spawn and hence snake size == bodies everywhere (as bodies is all 0)
         snake_sizes[snake_sizes == 0] = -1
         snake_size_mask = snake_sizes[:, None, None].expand((n, self.size, self.size))
-        envs[:, self.head_channels[snake_channel], :, :] = (bodies == snake_size_mask).to(dtype=self.dtype)
+        envs[:, 2*(snake_channel+1) - 1, :, :] = (bodies == snake_size_mask).to(dtype=self.dtype)
 
         # Start tracking head positions and orientations
         new_positions = torch.zeros((n, 3), dtype=torch.long, device=self.device)
         new_positions[:, 0] = random_directions
-        heads = envs[:, self.head_channels[snake_channel], :, :]
+        heads = envs[:, 2*(snake_channel+1) - 1, :, :]
         locations = torch.nonzero(heads)[:, 1:]
         dones = ~heads.view(n, -1).sum(dim=1).gt(EPS)
         new_positions[~dones, 1:] = \
-            torch.nonzero(envs[:, self.head_channels[snake_channel], :, :])[:, 1:]
+            torch.nonzero(envs[:, 2*(snake_channel+1) - 1, :, :])[:, 1:]
 
         return envs, successfully_spawned, new_positions
 
-    def _create_envs(self, num_envs: int) -> (torch.Tensor, torch.Tensor):
+    def _create_envs(self, num_envs: int) -> (Tuple[torch.Tensor], torch.Tensor):
         """Vectorised environment creation. Creates self.num_envs environments simultaneously."""
         if self.initial_snake_length != 3:
             raise NotImplementedError('Only initial snake length = 3 has been implemented.')
@@ -839,4 +842,9 @@ class MultiSnake(object):
         food_addition = self._get_food_addition(envs)
         envs[:, FOOD_CHANNEL:FOOD_CHANNEL + 1, :, :] += food_addition
 
-        return envs.round(), new_positions
+        # Slice and reshape to get foods, heads and bodies
+        foods = envs[:, 0:1].round()
+        heads = envs[:, [2*(i+1)-1 for i in range(self.num_snakes)]].view(num_envs*self.num_snakes, 1, self.size, self.size).round()
+        bodies = envs[:, [2*(i+1) for i in range(self.num_snakes)]].view(num_envs*self.num_snakes, 1, self.size, self.size).round()
+
+        return (foods, heads, bodies), new_positions

@@ -271,7 +271,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
         all_actions = {
             'agent_0': torch.tensor([1, 2, 1, 1, 0, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.tensor([3, 1, 3, 2, 1, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([2, 2, 3, 2, 1, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         print_or_render(env)
