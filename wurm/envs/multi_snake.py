@@ -98,8 +98,8 @@ class MultiSnake(object):
         self.foods = torch.zeros((num_envs, 1, size, size), dtype=self.dtype, device=self.device).requires_grad_(False)
         self.heads = torch.zeros((num_envs*num_snakes, 1, size, size), dtype=self.dtype, device=self.device).requires_grad_(False)
         self.bodies = torch.zeros((num_envs*num_snakes, 1, size, size), dtype=self.dtype, device=self.device).requires_grad_(False)
-        self.dones = {f'agent_{i}': torch.zeros(num_envs, dtype=torch.uint8, device=self.device) for i in range(self.num_snakes)}
-        self.dones.update({'__all__': torch.zeros(num_envs, dtype=torch.uint8, device=self.device)})
+        self.dones = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.uint8, device=self.device)
+        self.rewards = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.float, device=self.device)
         self.env_lifetimes = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.snake_lifetimes = torch.zeros((num_envs, num_snakes), dtype=torch.long, device=device)
         self.orientations = torch.zeros((num_envs*num_snakes), dtype=torch.long, device=self.device, requires_grad=False)
@@ -149,7 +149,6 @@ class MultiSnake(object):
         self.num_colours = self.agent_colours.shape[0]
 
         self.info = {}
-        self.rewards = {}
 
         self.edge_locations_mask = torch.zeros(
             (1, 1, self.size, self.size), dtype=self.dtype, device=self.device)
@@ -325,9 +324,8 @@ class MultiSnake(object):
         else:
             raise ValueError('Unrecognised observation mode.')
 
-    def santize_movements(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
+    def sanitize_movements(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
         mask = orientations == movements
-        print(orientations, movements)
         movements = (movements + (mask * 2).long()).fmod(4)
         return movements
 
@@ -356,7 +354,7 @@ class MultiSnake(object):
         return (bodies-1).relu()
 
     def _check_collisions(self, heads: torch.Tensor, pathing: torch.Tensor) -> torch.Tensor:
-        pass
+        return (heads * pathing).gt(EPS)
 
     def _add_food(self):
         if self.food_mode == 'only_one':
@@ -392,7 +390,7 @@ class MultiSnake(object):
     def _check_edges(self, heads: torch.Tensor) -> torch.Tensor:
         pass
 
-    def _handle_deaths(self, i: int, agent: str):
+    def __handle_deaths(self, i: int, agent: str):
         if self.dones[agent].sum() > 0:
             dead_snakes = self.envs[self.dones[agent], self.body_channels[i], :, :].clone()
             # Clear edge locations so we don't spawn food in the edge
@@ -418,6 +416,9 @@ class MultiSnake(object):
             # Remove any snakes that are dead
             self.envs[self.dones[agent], self.body_channels[i], :, :] = 0
             self.envs[self.dones[agent], self.head_channels[i], :, :] = 0
+
+    def _food_from_death(self, dead: torch.Tensor, living: torch.Tensor) -> torch.Tensor:
+        """Inputs are dead bodies, outputs"""
 
     def _boost_costs(self, i: int, agent: str, active_envs: torch.Tensor):
         boost_cost_env_mask = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
@@ -457,12 +458,12 @@ class MultiSnake(object):
             boost_actions[agent] = act > 3
             self.info[f'boost_{i}'] = boost_actions[agent].clone()
 
-        self.rewards = OrderedDict([
-            (
-                f'agent_{i}',
-                torch.zeros((self.num_envs,), dtype=self.dtype, device=self.device).requires_grad_(False)
-            ) for i in range(self.num_snakes)
-        ])
+        # self.rewards = OrderedDict([
+        #     (
+        #         f'agent_{i}',
+        #         torch.zeros((self.num_envs,), dtype=self.dtype, device=self.device).requires_grad_(False)
+        #     ) for i in range(self.num_snakes)
+        # ])
 
         snake_sizes = self.bodies.view(self.num_envs*self.num_snakes, -1).max(dim=-1)[0]
 
@@ -548,23 +549,38 @@ class MultiSnake(object):
         # Check orientations and move head positions of all snakes
         t0 = time()
         move_directions = torch.stack([v for k, v in move_directions.items()]).flatten()
-        move_directions = self.santize_movements(movements=move_directions, orientations=self.orientations)
+        move_directions = self.sanitize_movements(movements=move_directions, orientations=self.orientations)
         self.heads = self._move_heads(self.heads, move_directions)
         self.orientations = self._update_orientations(movements=move_directions, orientations=self.orientations)
         self._log(f'Movement: {1000 * (time() - t0)}ms')
 
+        t0 = time()
         # Get food overlap
         food_overlap = self._get_food_overlap(self.heads, self.foods.repeat_interleave(self.num_snakes, 0))
 
         # Decay bodies of all snakes that haven't eaten food
-        t0 = time()
         decay_mask = food_overlap.view(self.num_envs*self.num_snakes, -1).sum(dim=-1).lt(EPS)
         self.bodies[decay_mask] = self._decay_bodies(self.bodies[decay_mask])
+        self.rewards += (~decay_mask).float()
         self._log(f'Growth/decay: {1000*(time() - t0)}ms')
 
+        # Check for collisions
+        other = torch.arange(self.num_snakes, device=self.device).repeat(self.num_envs)
+        other = ~F.one_hot(other, self.num_snakes).byte()
+        heads = self.heads.view(self.num_envs, self.num_snakes, self.size, self.size).repeat_interleave(self.num_snakes, 0)
+        bodies = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).expand_as(self.bodies)
+        pathing = torch.einsum('nshw,ns->nhw', [heads, other.float()]).unsqueeze(1)
+        pathing += bodies
+        collisions = self._check_collisions(self.heads, pathing)
+        self.dones |= collisions.view(self.num_envs*self.num_snakes, -1).any(dim=-1)
+
         # Move bodies forward
-        body_growth = food_overlap.view(self.num_envs*self.num_snakes, -1).sum(dim=-1)
+        body_growth = food_overlap.view(self.num_envs * self.num_snakes, -1).sum(dim=-1)
         self.bodies += self.heads * (snake_sizes + body_growth)[:, None, None, None]
+
+        # Create food at dead snake locations
+
+
 
         # # Check for collisions with snakes and food
         # t0 = time()
@@ -592,20 +608,23 @@ class MultiSnake(object):
         # self.heads.round_()
         # self.bodies.round_()
 
-        # Environment is finished if all snake are dead
-        self.dones['__all__'] = torch.ones(self.num_envs, dtype=torch.uint8, device=self.device)
-        for agent, _ in actions.items():
-            self.dones['__all__'] &= self.dones[agent]
-
-        # or if its past the maximum episode length
-        self.dones['__all__'] |= self.env_lifetimes > self.max_env_lifetime
+        # # Environment is finished if all snake are dead
+        # self.dones['__all__'] = torch.ones(self.num_envs, dtype=torch.uint8, device=self.device)
+        # for agent, _ in actions.items():
+        #     self.dones['__all__'] &= self.dones[agent]
+        #
+        # # or if its past the maximum episode length
+        # self.dones['__all__'] |= self.env_lifetimes > self.max_env_lifetime
 
         # Get observations
         t0 = time()
         observations = {}
         self._log(f'Observations: {1000 * (time() - t0)}ms')
 
-        return observations, self.rewards, {k: v.clone() for k, v in self.dones.items()}, self.info
+        dones = {f'agent_{i}': d for i, d in enumerate(self.dones.clone().view(self.num_snakes, self.num_envs).unbind())}
+        rewards = {f'agent_{i}': d for i, d in enumerate(self.rewards.clone().view(self.num_snakes, self.num_envs).unbind())}
+
+        return observations, rewards, dones, self.info
 
     def check_consistency(self):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
