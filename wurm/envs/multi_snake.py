@@ -326,7 +326,9 @@ class MultiSnake(object):
 
     def sanitize_movements(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
         mask = orientations == movements
+        # print(orientations[1], movements[1])
         movements = (movements + (mask * 2).long()).fmod(4)
+        # print(movements[1])
         return movements
 
     def _move_heads(self, heads: torch.Tensor, directions: torch.Tensor) -> torch.Tensor:
@@ -388,7 +390,8 @@ class MultiSnake(object):
             raise ValueError('food_mechanics not recognised')
 
     def _check_edges(self, heads: torch.Tensor) -> torch.Tensor:
-        pass
+        edge_collision = (heads * self.edge_locations_mask.expand_as(heads))
+        return edge_collision
 
     def __handle_deaths(self, i: int, agent: str):
         if self.dones[agent].sum() > 0:
@@ -419,6 +422,17 @@ class MultiSnake(object):
 
     def _food_from_death(self, dead: torch.Tensor, living: torch.Tensor) -> torch.Tensor:
         """Inputs are dead bodies, outputs"""
+        dead[:, :, 1, :] = 0
+        dead[:, :, :, :1] = 0
+        dead[:, :, -1:, :] = 0
+        dead[:, :, :, -1:] = 0
+        dead = (dead.round() > 0).float()
+
+        prob = (dead * torch.rand_like(dead) > (1 - self.food_on_death_prob))
+
+        food_addition_mask = prob & ~living
+
+        return food_addition_mask
 
     def _boost_costs(self, i: int, agent: str, active_envs: torch.Tensor):
         boost_cost_env_mask = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
@@ -457,13 +471,6 @@ class MultiSnake(object):
             move_directions[agent] = act.fmod(4)
             boost_actions[agent] = act > 3
             self.info[f'boost_{i}'] = boost_actions[agent].clone()
-
-        # self.rewards = OrderedDict([
-        #     (
-        #         f'agent_{i}',
-        #         torch.zeros((self.num_envs,), dtype=self.dtype, device=self.device).requires_grad_(False)
-        #     ) for i in range(self.num_snakes)
-        # ])
 
         snake_sizes = self.bodies.view(self.num_envs*self.num_snakes, -1).max(dim=-1)[0]
 
@@ -578,27 +585,23 @@ class MultiSnake(object):
         body_growth = food_overlap.view(self.num_envs * self.num_snakes, -1).sum(dim=-1)
         self.bodies += self.heads * (snake_sizes + body_growth)[:, None, None, None]
 
+        # Check for edge collisions
+        edge_collisions = self._check_edges(self.heads)
+        self.dones |= edge_collisions.view(self.num_envs * self.num_snakes, -1).gt(EPS).any(dim=-1)
+
         # Create food at dead snake locations
+        _bodies = self.bodies.clone()
+        _bodies[~self.dones] = 0
+        dead = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True)
+        _bodies = self.bodies.clone()
+        _bodies[self.dones] = 0
+        living = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).gt(EPS)
+        food_on_death = self._food_from_death(dead, living)
+        self.foods += food_on_death.float()
 
-
-
-        # # Check for collisions with snakes and food
-        # t0 = time()
-        # self._check_all_collisions(all_envs, snake_sizes, food_consumption)
-        # self._log(f'Collision: {1000*(time() - t0)}ms')
-        #
-        # # Check for edge collisions
-        # t0 = time()
-        # self._check_all_boundaries(all_envs)
-        # self._log(f'Edge check: {1000*(time() - t0)}ms')
-        #
-        # # Clear dead snakes and create food at dead snakes
-        # t0 = time()
-        # # self._handle_all_deaths()
-        # for i, (agent, _) in enumerate(actions.items()):
-        #     self._handle_deaths(i, agent)
-
-        # self._log(f'Deaths: {1000 * (time() - t0)}ms')
+        # Delete done snakes
+        self.bodies[self.dones] = 0
+        self.heads[self.dones] = 0
 
         # # Add food if there is none in the environment
         # self._add_food()
@@ -628,53 +631,36 @@ class MultiSnake(object):
 
     def check_consistency(self):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
-        n = self.num_envs
-        return
+        _envs = torch.cat([
+            self.foods.expand_as(self.bodies),
+            self.heads,
+            self.bodies
+        ], dim=1)
 
-        for i in range(self.num_snakes):
-            head_channel = self.head_channels[i]
-            body_channel = self.body_channels[i]
-
-            # Check dead snakes all 0
-            if self.dones[f'agent_{i}'].sum() > 0:
-                dead_envs = torch.cat([
-                    self.envs[self.dones[f'agent_{i}'], head_channel:head_channel+1:, :, :],
-                    self.envs[self.dones[f'agent_{i}'], body_channel:body_channel + 1, :, :]
-                ], dim=1)
-                dead_all_zeros = dead_envs.sum() == 0
-                if not dead_all_zeros:
-                    raise RuntimeError(f'Dead snake (agent_{i}) contains non-zero elements.')
-
-            # Check living envs
-            if (~self.dones[f'agent_{i}']).sum() > 0:
-                living_envs = torch.cat([
-                    self.envs[~self.dones[f'agent_{i}'], 0:1, :, :],
-                    self.envs[~self.dones[f'agent_{i}'], head_channel:head_channel + 1, :, :],
-                    self.envs[~self.dones[f'agent_{i}'], body_channel:body_channel + 1, :, :]
-                ], dim=1)
-                try:
-                    snake_consistency(living_envs)
-                except RuntimeError as e:
-                    print(f'agent_{i}')
-                    raise e
-
-            if self.food_mode == 'only_one':
-                # Environment contains one food instance
-                contains_one_food = torch.all(food(self.envs).view(n, -1).sum(dim=-1) >= 1)
-                if not contains_one_food:
-                    raise RuntimeError('An environment doesn\'t contain at least one food instance')
+        living_envs = _envs[~self.dones]
+        snake_consistency(living_envs)
 
         # Check no overlapping snakes
         # Sum of bodies in each square of each env should be no more than 1
-        body_exists = (self._bodies < EPS).float()
-        no_overlapping_bodies = torch.all(body_exists.view(n, -1).max(dim=1)[0] <= 1)
-        if not no_overlapping_bodies:
+        overlapping_bodies = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size)\
+            .gt(EPS)\
+            .sum(dim=1, keepdim=True)\
+            .view(self.num_envs, -1)\
+            .max(dim=-1)[0]\
+            .gt(1)
+        if torch.any(overlapping_bodies):
             raise RuntimeError('An environment contains overlapping snakes')
 
         # Check number of heads is no more than env.num_snakes
-        num_heads = self._heads.sum(dim=1, keepdim=True).view(n, -1)
+        num_heads = self.heads.view(self.num_envs, self.num_snakes, self.size, self.size) \
+            .sum(dim=1, keepdim=True)
         if not torch.all(num_heads <= self.num_snakes):
             raise RuntimeError('An environment contains more snakes than it should.')
+
+        dead_envs = _envs[self.dones]
+        dead_all_zeros = dead_envs[:, 1:].sum() == 0
+        if not dead_all_zeros:
+            raise RuntimeError(f'Dead snake contains non-zero elements.')
 
     def _get_food_addition(self, envs: torch.Tensor):
         # Get empty locations
