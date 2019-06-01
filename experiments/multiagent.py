@@ -326,17 +326,18 @@ for i_step in count(1):
         'edge_collisions': instantaneous_edge,
     }
     if args.env == 'snake':
-        instantaneous_self = torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
-        instanteous_sizes = env._bodies.view(env.num_envs, env.num_snakes, -1).max(dim=-1)[0]
+        instantaneous_snake = torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
+        instanteous_sizes = env.bodies.view(env.num_envs, env.num_snakes, -1).max(dim=-1)[0]
         living_sizes = instanteous_sizes[currently_alive].mean().item()
         living_sizes = 0 if np.isnan(living_sizes) else living_sizes
         instantaneous_snake_collision = \
             torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
-        instaneous_boosts = torch.stack([v for k, v in env.boost_this_step.items()])
+        # instaneous_boosts = torch.stack([v for k, v in env.boost_this_step.items()])
+        instaneous_boosts = env.boost_this_step.view(env.num_snakes, env.num_envs)
         living_boosts = instaneous_boosts[currently_alive.t()].float().mean().item()
         living_boosts = 0 if np.isnan(living_boosts) else living_boosts
         ewm_tracker(
-            snake_collisions=instantaneous_self,
+            snake_collisions=instantaneous_snake,
             avg_size=living_sizes,
             boost_rate=living_boosts
         )

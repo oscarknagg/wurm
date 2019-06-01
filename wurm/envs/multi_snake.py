@@ -448,6 +448,9 @@ class MultiSnake(object):
 
         return food_addition
 
+    def _to_per_agent_dict(self, tensor: torch.Tensor, key: str):
+        return {f'{key}_{i}': d for i, d in enumerate(tensor.clone().view(self.num_envs, self.num_snakes).t().unbind())}
+
     def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[dict, dict, dict, dict]:
         if len(actions) != self.num_snakes:
             raise RuntimeError('Must have a Tensor of actions for each snake')
@@ -461,6 +464,8 @@ class MultiSnake(object):
                 raise RuntimeError('Must have the same number of actions as environments.')
 
         # Clear info
+        snake_collision_tracker = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.uint8, device=self.device)
+        edge_collision_tracker = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.uint8, device=self.device)
         self.rewards = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.float, device=self.device)
         self.info = {}
         move_directions = dict()
@@ -469,6 +474,8 @@ class MultiSnake(object):
             move_directions[agent] = act.fmod(4)
             boost_actions[agent] = act > 3
             self.info[f'boost_{i}'] = boost_actions[agent].clone()
+            self.info[f'snake_collision_{i}'] = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
+            self.info[f'edge_collision_{i}'] = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
 
         snake_sizes = self.bodies.view(self.num_envs*self.num_snakes, -1).max(dim=-1)[0]
 
@@ -522,8 +529,10 @@ class MultiSnake(object):
                 .repeat_interleave(self.num_snakes, dim=0)
             pathing = torch.einsum('nshw,ns->nhw', [heads, other.float()]).unsqueeze(1)
             pathing += bodies
-            collisions = self._check_collisions(self.heads[boosted_agents], pathing[boosted_agents])
-            self.dones[boosted_agents] |= collisions.view(n_boosted, -1).any(dim=-1)
+            collisions = self._check_collisions(self.heads[boosted_agents], pathing[boosted_agents])\
+                .view(n_boosted, -1).any(dim=-1)
+            self.dones[boosted_agents] |= collisions
+            snake_collision_tracker[boosted_agents] |= collisions
             self._log(f'Collisions: {1000 * (time() - t0)}ms')
 
             t0 = time()
@@ -536,8 +545,9 @@ class MultiSnake(object):
 
             t0 = time()
             # Check for edge collisions
-            edge_collisions = self._check_edges(self.heads[boosted_agents])
-            self.dones[boosted_agents] |= edge_collisions.view(n_boosted, -1).gt(EPS).any(dim=-1)
+            edge_collisions = self._check_edges(self.heads[boosted_agents]).view(n_boosted, -1).gt(EPS).any(dim=-1)
+            self.dones[boosted_agents] |= edge_collisions
+            edge_collision_tracker[boosted_agents] |= edge_collisions
             self._log(f'Edges: {1000 * (time() - t0)}ms')
 
             t0 = time()
@@ -549,8 +559,6 @@ class MultiSnake(object):
             _bodies[self.dones] = 0
             living = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).gt(EPS)
             food_on_death = self._food_from_death(dead, living).float()
-            # if torch.any(food_on_death == 2) or torch.any(food_on_death < 0):
-            #     raise RuntimeError('Bad food on death')
             self.foods += food_on_death
             self._log(f'Deaths: {1000 * (time() - t0)}ms')
 
@@ -560,7 +568,6 @@ class MultiSnake(object):
                 t0 = time()
                 boost_cost_envs = boost_cost_agents.view(self.num_envs, self.num_snakes).any(dim=1)
                 n_boost_cost_envs = boost_cost_envs.sum().item()
-                # print('n_boost_cost_envs', boost_cost_envs.sum().item())
                 tail_locations = self.bodies[boost_cost_agents] == 1
                 agent_to_boost_cost_env_index = (boost_cost_envs.cumsum(dim=0) - 1).repeat_interleave(self.num_snakes, 0)[boost_cost_agents]
                 agent_to_boost_cost_env_index = F.one_hot(agent_to_boost_cost_env_index, n_boost_cost_envs)
@@ -600,8 +607,8 @@ class MultiSnake(object):
         food_overlap = self._get_food_overlap(self.heads, self.foods.repeat_interleave(self.num_snakes, 0)).float()
         # Clamp here because if two snakes simultaneiously move their heads on to a food pixel then we get a food
         # overlap pixel with a value of 2 (which then leads to a food pixel of -1 and some issue down the line)
-        food_overlap = food_overlap.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).clamp(0, 1)
-        self.foods -= food_overlap
+        food_overlap = food_overlap
+        self.foods -= food_overlap.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).clamp(0, 1)
         self._log(f'Food overlap: {1000 * (time() - t0)}ms')
 
         t0 = time()
@@ -619,8 +626,9 @@ class MultiSnake(object):
         bodies = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).repeat_interleave(self.num_snakes, dim=0)
         pathing = torch.einsum('nshw,ns->nhw', [heads, other.float()]).unsqueeze(1)
         pathing += bodies
-        collisions = self._check_collisions(self.heads, pathing)
-        self.dones |= collisions.view(self.num_envs*self.num_snakes, -1).any(dim=-1)
+        collisions = self._check_collisions(self.heads, pathing).view(self.num_envs*self.num_snakes, -1).any(dim=-1)
+        self.dones |= collisions
+        snake_collision_tracker |= collisions
         self._log(f'Collisions: {1000 * (time() - t0)}ms')
 
         t0 = time()
@@ -633,8 +641,9 @@ class MultiSnake(object):
 
         t0 = time()
         # Check for edge collisions
-        edge_collisions = self._check_edges(self.heads)
-        self.dones |= edge_collisions.view(self.num_envs * self.num_snakes, -1).gt(EPS).any(dim=-1)
+        edge_collisions = self._check_edges(self.heads).view(self.num_envs * self.num_snakes, -1).gt(EPS).any(dim=-1)
+        self.dones |= edge_collisions
+        edge_collision_tracker |= collisions
         self._log(f'Edges: {1000 * (time() - t0)}ms')
 
         t0 = time()
@@ -667,10 +676,9 @@ class MultiSnake(object):
 
         # Get observations
         t0 = time()
-        observations = {}
+        observations = self._observe()
         self._log(f'Observations: {1000 * (time() - t0)}ms')
 
-        # dones = {f'agent_{i}': d for i, d in enumerate(self.dones.clone().view(self.num_snakes, self.num_envs).unbind())}
         dones = {f'agent_{i}': d for i, d in enumerate(self.dones.clone().view(self.num_envs, self.num_snakes).t().unbind())}
         # # Environment is finished if all snake are dead
         dones['__all__'] = self.dones.view(self.num_envs, self.num_snakes).all(dim=1).clone()
@@ -678,6 +686,16 @@ class MultiSnake(object):
         dones['__all__'] |= self.env_lifetimes > self.max_env_lifetime
 
         rewards = {f'agent_{i}': d for i, d in enumerate(self.rewards.clone().view(self.num_envs, self.num_snakes).t().unbind())}
+
+        # Update info
+        self.info.update({
+            f'snake_collision_{i}': d for i, d in
+            enumerate(snake_collision_tracker.clone().view(self.num_envs, self.num_snakes).t().unbind())
+        })
+        self.info.update({
+            f'edge_collision_{i}': d for i, d in
+            enumerate(edge_collision_tracker.clone().view(self.num_envs, self.num_snakes).t().unbind())
+        })
 
         return observations, rewards, dones, self.info
 
@@ -758,14 +776,6 @@ class MultiSnake(object):
                 # Only spawn the first dead snake from each env
                 # i.e. only spawn one snake per step
                 first_done_per_env = (self.dones.view(self.num_envs, self.num_snakes).cumsum(dim=1) == 1).flatten() & self.dones
-                # print(self.dones)
-
-                # print('num_done', num_done)
-                # print('n_any_done_envs', n_any_done_envs)
-                # print('first_done_per_env')
-                # print(self.dones.view(self.num_envs, self.num_snakes))
-                # print(self.dones.view(self.num_envs, self.num_snakes).cumsum(dim=1))
-                # print(first_done_per_env)
                 _envs = torch.cat([
                     self.foods.repeat_interleave(self.num_snakes, 0),
                     self.heads,
@@ -776,15 +786,9 @@ class MultiSnake(object):
 
                 # Get empty locations
                 pathing = _envs.sum(dim=1, keepdim=True) > EPS
-                # print(pathing)
-                # print(num_done, pathing.shape)
-
                 new_bodies, new_heads, new_orientations, successfully_spawned = self._get_snake_addition(
                     pathing, exception_on_failure=False)
 
-                # print(successfully_spawned)
-                # print(new_bodies.shape)
-                # exit()
                 self.bodies[first_done_per_env] = new_bodies
                 self.heads[first_done_per_env] = new_heads
                 self.orientations[first_done_per_env] = new_orientations
@@ -792,25 +796,7 @@ class MultiSnake(object):
 
                 self._log(f'Respawned {successfully_spawned.sum().item()} snakes: {1000 * (time() - t0)}ms')
 
-                # overlapping_bodies = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size) \
-                #     .gt(EPS) \
-                #     .sum(dim=1, keepdim=True) \
-                #     .view(self.num_envs, -1) \
-                #     .max(dim=-1)[0] \
-                #     .gt(1)
-                # if torch.any(overlapping_bodies):
-                    # print(overlapping_bodies.nonzero())
-                    # print(self.heads[overlapping_bodies.repeat_interleave(self.num_snakes, 0)][:self.num_snakes])
-                    # for i in self.bodies[overlapping_bodies.repeat_interleave(self.num_snakes, 0)][:self.num_snakes]:
-                    #     print(i.long())
-                    # print('-' * 10)
-                    # _overlapping = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size).gt(EPS).sum(
-                    #     dim=1, keepdim=True)
-                    # print(_overlapping[overlapping_bodies][0])
-                    # raise RuntimeError('An environment contains overlapping snakes')
-
-        # observations = self._observe()
-        observations = {}
+        observations = self._observe()
 
         return observations
 
