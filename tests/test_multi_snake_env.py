@@ -370,7 +370,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
     def test_agent_observations(self):
         # Test that own snake appears green, others appear blue
         env = get_test_env(num_envs=1)
-        env.envs[:, 0, 1, 1] = 1
+        env.foods[:, 0, 1, 1] = 1
 
         obs_0 = env._observe_agent(0)
         obs_1 = env._observe_agent(1)
@@ -619,20 +619,23 @@ class TestMultiSnakeEnv(unittest.TestCase):
             env.check_consistency()
 
     def test_partial_observations(self):
-        num_envs = 8
+        num_envs = 2
         num_snakes = 4
         observation_mode = 'partial_3'
         env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=size, manual_setup=False, boost=True,
-                         observation_mode=observation_mode)
+                         observation_mode=observation_mode,
+                         render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
+                         )
         env.check_consistency()
 
         observations = env._observe(observation_mode)
-
+        render_envs = True
         if render_envs:
             fig, axes = plt.subplots(2, 2)
             i = 0
+            # Show all the observations of the agent in the first env
             for k, v in observations.items():
-                axes[i // 2, i %2].imshow(v[0].permute(1, 2, 0).cpu().numpy())
+                axes[i // 2, i % 2].imshow(v[0].permute(1, 2, 0).cpu().numpy())
                 i += 1
 
             plt.show()

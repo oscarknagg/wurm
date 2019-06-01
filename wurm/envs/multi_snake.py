@@ -197,6 +197,9 @@ class MultiSnake(object):
             self.heads.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1).gt(EPS): self.agent_colours[0]
         })
 
+        for l, c in layers.items():
+            print(l.shape, c)
+
         # for i, (agent, has_boosted) in enumerate(self.boost_this_step.items()):
         #     if has_boosted.sum() > 0:
         #         boosted_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
@@ -293,34 +296,34 @@ class MultiSnake(object):
             # Pad envs so we ge the correct size observation even when the head of the snake
             # is close to the edge of the environment
             padding = [self.observation_width, self.observation_width, ] * 2
-            padded_size = self.size + 2*self.observation_width
-            padded_img = F.pad(img, padding)
+            padded_img = F.pad(img, padding).repeat_interleave(self.num_snakes, dim=0)
+
+            filter = torch.ones((1, 1, self.observation_size, self.observation_size)).to(self.device)
+
+            n_living = (~self.dones).sum().item()
+            padded_heads = F.pad(self.heads, padding)
+            head_area_indices = F.conv2d(
+                padded_heads,
+                filter,
+                padding=self.observation_width
+            ).round()
+
+            living_observations = padded_img[
+                head_area_indices.expand_as(padded_img).byte()
+            ]
+            living_observations = living_observations.reshape(
+                n_living, 3, self.observation_size, self.observation_size)
+
+            observations = torch.zeros((self.num_envs*self.num_snakes, 3, self.observation_size, self.observation_size),
+                                       dtype=self.dtype, device=self.device)
+
+            observations[~self.dones] = living_observations
+            observations = observations\
+                .reshape(self.num_envs, self.num_snakes, 3, self.observation_size, self.observation_size)
 
             dict_observations = {}
-            filter = torch.ones((1, 1, self.observation_size, self.observation_size)).to(self.device)
             for i in range(self.num_snakes):
-                n_living = (~self.dones[f'agent_{i}']).sum().item()
-                head_channel = self.head_channels[i]
-                heads = self.envs[:, head_channel:head_channel+1, :, :]
-                padded_heads = F.pad(heads, padding)
-                head_area_indices = F.conv2d(
-                    padded_heads,
-                    filter,
-                    padding=self.observation_width
-                ).round()
-
-                living_observations = padded_img[
-                    head_area_indices.expand_as(padded_img).byte()
-                ]
-                living_observations = living_observations.reshape(
-                    n_living, 3, self.observation_size, self.observation_size)
-
-                observations = torch.zeros((self.num_envs, 3, self.observation_size, self.observation_size),
-                                           dtype=self.dtype, device=self.device)
-
-                observations[~self.dones[f'agent_{i}']] = living_observations
-
-                dict_observations[f'agent_{i}'] = observations.clone()
+                dict_observations[f'agent_{i}'] = observations[:, i].clone()
 
             return dict_observations
         else:
@@ -345,7 +348,7 @@ class MultiSnake(object):
         heads += head_deltas
         return heads
 
-    def _update_orientations(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
+    def _update_orientations(self, movements: torch.Tensor) -> torch.Tensor:
         orientations = (movements + 2).fmod(4)
         return orientations
 
@@ -476,7 +479,7 @@ class MultiSnake(object):
 
         move_directions = torch.stack([v for k, v in move_directions.items()]).flatten()
         move_directions = self.sanitize_movements(movements=move_directions, orientations=self.orientations)
-        self.orientations = self._update_orientations(movements=move_directions, orientations=self.orientations)
+        self.orientations = self._update_orientations(movements=move_directions)
 
         boost_actions = torch.stack([v for k, v in boost_actions.items()]).flatten()
         size_gte_4 = snake_sizes >= 4
@@ -484,11 +487,6 @@ class MultiSnake(object):
         n_boosted = boosted_agents.sum().item()
         boosted_envs = boosted_agents.view(self.num_envs, self.num_snakes).any(dim=1)
         n_boosted_envs = boosted_envs.sum().item()
-        # print('boosted_agents', boosted_agents)
-        # print('n_boosted', n_boosted)
-        # print('boosted_envs', boosted_envs)
-        # print('n_boosted_envs', n_boosted_envs)
-        # print('-'*30)
         if self.boost and torch.any(boosted_agents):
             # print('doing booost????')
             self._log('>>>Boost phase')
@@ -502,8 +500,6 @@ class MultiSnake(object):
             t0 = time()
             # Get food overlap
             food_overlap = self._get_food_overlap(self.heads, self.foods.repeat_interleave(self.num_snakes, 0)).float()
-            # if torch.any(food_overlap == 2) or torch.any(food_overlap < 0):
-            #     raise RuntimeError('Bad food overlap')
             # Clamp here because if two snakes simultaneiously move their heads on to a food pixel then we get a food
             # overlap pixel with a value of 2 (which then leads to a food pixel of -1 and some issue down the line)
             self.foods -= food_overlap \
@@ -567,9 +563,6 @@ class MultiSnake(object):
             boost_cost_agents = boosted_agents & (torch.rand(self.num_envs*self.num_snakes, device=self.device) < self.boost_cost_prob)
             if boost_cost_agents.sum() > 0:
                 t0 = time()
-                # print('doing boost cost????')
-                # print('====================')
-                # print('boost_cost_agents.sum()', boost_cost_agents.sum().item())
                 boost_cost_envs = boost_cost_agents.view(self.num_envs, self.num_snakes).any(dim=1)
                 n_boost_cost_envs = boost_cost_envs.sum().item()
                 # print('n_boost_cost_envs', boost_cost_envs.sum().item())
@@ -577,12 +570,7 @@ class MultiSnake(object):
                 agent_to_boost_cost_env_index = (boost_cost_envs.cumsum(dim=0) - 1).repeat_interleave(self.num_snakes, 0)[boost_cost_agents]
                 agent_to_boost_cost_env_index = F.one_hot(agent_to_boost_cost_env_index, n_boost_cost_envs)
                 # m: boosted snake index, i: arbitrary, n: environment index, (h, w): positional indices
-                # print(agent_to_boosted_env_index)
-                # print(tail_locations.shape, agent_to_boosted_env_index.shape)
                 food_addition = torch.einsum('mihw,mn->nihw', [tail_locations.float(), agent_to_boost_cost_env_index.float()])
-                # print('food_addition', food_addition.shape)
-                # if torch.any(food_addition == 2) or torch.any(food_addition < 0):
-                #     raise RuntimeError('Bad food overlap')
                 self.foods[boost_cost_envs] += food_addition
                 self.bodies[boost_cost_agents] = \
                     self._decay_bodies(self.bodies[boost_cost_agents])
@@ -619,8 +607,6 @@ class MultiSnake(object):
         # overlap pixel with a value of 2 (which then leads to a food pixel of -1 and some issue down the line)
         food_overlap = food_overlap.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).clamp(0, 1)
         self.foods -= food_overlap
-        # if torch.any(food_overlap == 2) or torch.any(food_overlap < 0):
-        #     raise RuntimeError('Bad food overlap')
         self._log(f'Food overlap: {1000 * (time() - t0)}ms')
 
         t0 = time()
@@ -665,8 +651,6 @@ class MultiSnake(object):
         _bodies[self.dones] = 0
         living = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).gt(EPS)
         food_on_death = self._food_from_death(dead, living).float()
-        # if torch.any(food_on_death == 2) or torch.any(food_on_death < 0):
-        #     raise RuntimeError('Bad food on death')
         self.foods += food_on_death
         self._log(f'Deaths: {1000 * (time() - t0)}ms')
 
