@@ -629,7 +629,6 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env.check_consistency()
 
         observations = env._observe(observation_mode)
-        render_envs = True
         if render_envs:
             fig, axes = plt.subplots(2, 2)
             i = 0

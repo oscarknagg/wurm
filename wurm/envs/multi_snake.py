@@ -99,17 +99,12 @@ class MultiSnake(object):
         self.heads = torch.zeros((num_envs*num_snakes, 1, size, size), dtype=self.dtype, device=self.device).requires_grad_(False)
         self.bodies = torch.zeros((num_envs*num_snakes, 1, size, size), dtype=self.dtype, device=self.device).requires_grad_(False)
         self.dones = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.uint8, device=self.device)
+        self.boost_this_step = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.uint8, device=self.device)
         self.rewards = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.float, device=self.device)
         self.env_lifetimes = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.snake_lifetimes = torch.zeros((num_envs, num_snakes), dtype=torch.long, device=device)
         self.orientations = torch.zeros((num_envs*num_snakes), dtype=torch.long, device=self.device, requires_grad=False)
         self.viewer = 0
-        self.boost_this_step = OrderedDict([
-            (
-                f'agent_{i}',
-                torch.zeros((self.num_envs,), dtype=torch.uint8, device=self.device).requires_grad_(False)
-            ) for i in range(self.num_snakes)
-        ])
 
         if not manual_setup:
             # Create environments
@@ -192,36 +187,33 @@ class MultiSnake(object):
             self.foods.gt(EPS).squeeze(1): self.food_colour,
         }
 
-        layers.update({
-            self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1).gt(EPS): self.agent_colours[0] / 2,
-            self.heads.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1).gt(EPS): self.agent_colours[0]
-        })
+        bodies_per_env = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size)
+        heads_per_env = self.heads.view(self.num_envs, self.num_snakes, self.size, self.size)
+        boosts_per_env = self.boost_this_step.view(self.num_envs, self.num_snakes)
+        for i in range(self.num_snakes):
+            if boosts_per_env[:, i].sum().item() > 0:
+                boosted_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
+                                                 device=self.device)
+                boosted_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
+                                                device=self.device)
 
-        for l, c in layers.items():
-            print(l.shape, c)
+                boosted_bodies[boosts_per_env[:, i]] = bodies_per_env[boosts_per_env[:, i], i].gt(EPS)
+                boosted_heads[boosts_per_env[:, i]] = heads_per_env[boosts_per_env[:, i], i].gt(EPS)
 
-        # for i, (agent, has_boosted) in enumerate(self.boost_this_step.items()):
-        #     if has_boosted.sum() > 0:
-        #         boosted_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
-        #                                      device=self.device)
-        #         boosted_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
-        #                                     device=self.device)
-        #
-        #         boosted_bodies[has_boosted] = self._bodies[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
-        #         boosted_heads[has_boosted] = self._heads[has_boosted, i:i + 1].sum(dim=1).gt(EPS)
-        #         layers.update({
-        #             boosted_bodies: (self.agent_colours[i % self.num_colours].float() * (2 / 3)).short(),
-        #             boosted_heads: (self.agent_colours[i % self.num_colours].float() * (4 / 3)).short(),
-        #         })
-        #
-        #     regular_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
-        #     regular_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
-        #     regular_bodies[~has_boosted] = self._bodies[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
-        #     regular_heads[~has_boosted] = self._heads[~has_boosted, i:i + 1].sum(dim=1).gt(EPS)
-        #     layers.update({
-        #         regular_bodies: self.agent_colours[i % self.num_colours] / 2,
-        #         regular_heads: self.agent_colours[i % self.num_colours],
-        #     })
+                layers.update({
+                    boosted_bodies: (self.agent_colours[i % self.num_colours].float() * (2 / 3)).short(),
+                    boosted_heads: (self.agent_colours[i % self.num_colours].float() * (4 / 3)).short(),
+                })
+
+            regular_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
+            regular_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
+            regular_bodies[~boosts_per_env[:, i]] = bodies_per_env[~boosts_per_env[:, i], i].gt(EPS)
+            regular_heads[~boosts_per_env[:, i]] = heads_per_env[~boosts_per_env[:, i], i].gt(EPS)
+
+            layers.update({
+                regular_bodies: self.agent_colours[i % self.num_colours] / 2,
+                regular_heads: self.agent_colours[i % self.num_colours],
+            })
 
         # Get RBG Tensor NCHW
         img = self._make_generic_rgb(layers)
@@ -233,14 +225,13 @@ class MultiSnake(object):
             self.viewer = rendering.SimpleImageViewer()
 
         img = self._get_env_images()
-
         # Convert to numpy
         img = img.cpu().numpy()
 
         # Rearrange images depending on number of envs
         if self.num_envs == 1 or env is not None:
             num_cols = num_rows = 1
-            img = img[0 or env]
+            img = img[env or 0]
             img = np.transpose(img, (1, 2, 0))
         else:
             num_rows = self.render_args['num_rows']
@@ -270,12 +261,16 @@ class MultiSnake(object):
 
     def _observe_agent(self, agent: int) -> torch.Tensor:
         agents = torch.arange(self.num_snakes)
+
+        bodies_per_env = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size)
+        heads_per_env = self.heads.view(self.num_envs, self.num_snakes, self.size, self.size)
+
         layers = {
-            (self._food > EPS).squeeze(1): self.food_colour,
-            (self._bodies[:, agent].unsqueeze(1) > EPS).squeeze(1): self.self_colour/2,
-            (self._heads[:, agent].unsqueeze(1) > EPS).squeeze(1): self.self_colour,
-            (self._bodies[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_colour/2,
-            (self._heads[:, agents[agents != agent]].sum(dim=1) > EPS): self.other_colour
+            self.foods.gt(EPS).squeeze(1): self.food_colour,
+            bodies_per_env[:, agent].gt(EPS): self.self_colour/2,
+            heads_per_env[:, agent].gt(EPS): self.self_colour,
+            bodies_per_env[:, agents[agents != agent]].sum(dim=1).gt(EPS): self.other_colour / 2,
+            heads_per_env[:, agents[agents != agent]].sum(dim=1).gt(EPS): self.other_colour,
         }
         return self._make_generic_rgb(layers).to(dtype=self.dtype) / 255
 
@@ -484,11 +479,11 @@ class MultiSnake(object):
         boost_actions = torch.stack([v for k, v in boost_actions.items()]).flatten()
         size_gte_4 = snake_sizes >= 4
         boosted_agents = boost_actions & size_gte_4
+        self.boost_this_step = boosted_agents
         n_boosted = boosted_agents.sum().item()
         boosted_envs = boosted_agents.view(self.num_envs, self.num_snakes).any(dim=1)
         n_boosted_envs = boosted_envs.sum().item()
         if self.boost and torch.any(boosted_agents):
-            # print('doing booost????')
             self._log('>>>Boost phase')
             ##############
             # Boost step #
