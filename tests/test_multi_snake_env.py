@@ -15,7 +15,7 @@ print_envs = False
 render_envs = False
 render_sleep = 1
 size = 12
-torch.random.manual_seed(1)
+torch.random.manual_seed(0)
 
 
 def get_test_env(num_envs=1):
@@ -63,7 +63,7 @@ def print_or_render(env):
 class TestMultiSnakeEnv(unittest.TestCase):
     def test_random_actions(self):
         num_envs = 100
-        num_steps = 50
+        num_steps = 100
         # Create some environments and run random actions for N steps, checking for consistency at each step
         env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, verbose=True,
                          render_args={'num_rows': 5, 'num_cols': 5, 'size': 128},
@@ -92,12 +92,12 @@ class TestMultiSnakeEnv(unittest.TestCase):
     def test_random_actions_with_boost(self):
         # num_envs = 1024*8
         num_envs = 100
-        num_steps = 50
+        num_steps = 200
         num_snakes = 4
         # Create some environments and run random actions for N steps, checking for consistency at each step
         env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=16, manual_setup=False, boost=True, verbose=True,
-                         render_args={'num_rows': 2, 'num_cols': 2, 'size': 256},
-                         respawn_mode='all', food_mode='random_rate',
+                         render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
+                         respawn_mode='any', food_mode='random_rate',
                          observation_mode='partial_5'
                          )
         env.check_consistency()
@@ -109,13 +109,19 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
         t0 = time()
         for i in range(all_actions['agent_0'].shape[0]):
+            # env.render()
+            # sleep(0.5)
             actions = {
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
             observations, reward, done, info = env.step(actions)
+
             env.reset(done['__all__'])
             env.check_consistency()
             print()
+
+            # if i == 4:
+            #     break
 
         t = time() - t0
         print(f'Ran {num_envs * num_steps} actions in {t}s = {num_envs * num_steps / t} actions/s')
@@ -560,7 +566,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
         # Test boosting through a food
         env = get_test_env(num_envs=1)
         env.boost = True
-        env.envs[:, 0, 1, 5] = 11
+        env.foods[:, 0, 1, 5] = 1
         print('=====')
         print(env.self_colour/2)
         print(env.self_colour)
@@ -593,7 +599,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
         # Add food to block respawn
         for i in range(2, 9, 2):
             for j in range(2, 9, 2):
-                env.envs[0, 0, i, j] = 1
+                env.foods[0, 0, i, j] = 1
 
         all_actions = {
             'agent_0': torch.tensor([1, 1, 1, 1, 2, 2, 2, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),

@@ -113,6 +113,14 @@ def snake_consistency(envs: torch.Tensor):
     if n == 0:
         return
 
+    food_is_zero = food(envs) == 0
+    food_is_one = food(envs) == 1
+    if not torch.all(food_is_zero | food_is_one):
+        offending_envs = (~(food_is_zero | food_is_one)).view(n, -1).any(dim=-1)
+        print(envs[offending_envs][0].long())
+        print(offending_envs.nonzero().flatten())
+        raise RuntimeError('An environment has an invalid food pixel')
+
     one_head_per_snake = torch.all(head(envs).view(n, -1).sum(dim=-1) == 1)
     if not one_head_per_snake:
         print('Snake head sums: ')
@@ -138,6 +146,7 @@ def snake_consistency(envs: torch.Tensor):
     consistent_body_size = torch.equal(estimated_body_sizes, body_sizes)
     if not consistent_body_size:
         print(envs[estimated_body_sizes != body_sizes][0])
+        print(torch.nonzero(estimated_body_sizes != body_sizes))
         raise RuntimeError('An environment has a body with inconsistent values i.e. not range(n)')
 
     # No snakes of length less than 3 (size 6)
@@ -148,7 +157,7 @@ def snake_consistency(envs: torch.Tensor):
     head_food_overlap = (head(envs) * food(envs)).view(n, -1).sum(dim=-1)
     if not torch.all(head_food_overlap == 0):
         print(torch.nonzero(head_food_overlap))
-        print(envs[torch.nonzero(head_food_overlap)[0]])
+        print(envs[torch.nonzero(head_food_overlap)[0]].long())
         raise RuntimeError(f'A food and head pixel is overlapping in {int(head_food_overlap.sum().item())} env(s).')
 
 

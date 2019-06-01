@@ -225,7 +225,7 @@ class MultiSnake(object):
 
         return img
 
-    def render(self, mode: str = 'human'):
+    def render(self, mode: str = 'human', env: int = None):
         if self.viewer is None:
             self.viewer = rendering.SimpleImageViewer()
 
@@ -235,9 +235,9 @@ class MultiSnake(object):
         img = img.cpu().numpy()
 
         # Rearrange images depending on number of envs
-        if self.num_envs == 1:
+        if self.num_envs == 1 or env is not None:
             num_cols = num_rows = 1
-            img = img[0]
+            img = img[0 or env]
             img = np.transpose(img, (1, 2, 0))
         else:
             num_rows = self.render_args['num_rows']
@@ -327,11 +327,8 @@ class MultiSnake(object):
             raise ValueError('Unrecognised observation mode.')
 
     def sanitize_movements(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
-        # print(orientations.shape, movements.shape)
         mask = orientations == movements
-        # print(movements, orientations)
         movements = (movements + (mask * 2).long()).fmod(4)
-        # print(movements)
         return movements
 
     def _move_heads(self, heads: torch.Tensor, directions: torch.Tensor) -> torch.Tensor:
@@ -353,7 +350,7 @@ class MultiSnake(object):
         return orientations
 
     def _get_food_overlap(self, heads: torch.Tensor, foods: torch.Tensor) -> torch.Tensor:
-        return heads * foods
+        return (heads * foods).gt(EPS)
 
     def _decay_bodies(self, bodies: torch.Tensor) -> torch.Tensor:
         return (bodies-1).relu()
@@ -379,7 +376,7 @@ class MultiSnake(object):
             food_addition_env_indices = (self.foods.view(self.num_envs, -1).sum(dim=-1) < self.max_food)
             n = food_addition_env_indices.sum().item()
 
-            # # Get empty locations
+            # Get empty locations
             _envs = torch.cat([
                 self.foods[food_addition_env_indices],
                 self.heads[food_addition_env_indices.repeat_interleave(self.num_snakes)].view(n, self.num_snakes, self.size, self.size),
@@ -400,7 +397,8 @@ class MultiSnake(object):
             food_addition = food_addition.lt(self.food_rate)
 
             food_addition &= ~filled_locations
-
+            if torch.any(food_addition == 2) or torch.any(food_addition < 0):
+                raise RuntimeError('Bad food_addition')
             self.foods[food_addition_env_indices] += food_addition.float()
         else:
             raise ValueError('food_mechanics not recognised')
@@ -408,33 +406,6 @@ class MultiSnake(object):
     def _check_edges(self, heads: torch.Tensor) -> torch.Tensor:
         edge_collision = (heads * self.edge_locations_mask.expand_as(heads))
         return edge_collision
-
-    def __handle_deaths(self, i: int, agent: str):
-        if self.dones[agent].sum() > 0:
-            dead_snakes = self.envs[self.dones[agent], self.body_channels[i], :, :].clone()
-            # Clear edge locations so we don't spawn food in the edge
-            dead_snakes[:, :1, :] = 0
-            dead_snakes[:, :, :1] = 0
-            dead_snakes[:, -1:, :] = 0
-            dead_snakes[:, :, -1:] = 0
-            dead_snakes = (dead_snakes.round() > 0).float()
-
-            # Create food at dead snake positions with probability self.food_on_death_prob
-            # Don't create food where there's already a snake
-            other_snakes = torch.ones(self.num_snakes, dtype=torch.uint8, device=self.device)
-            other_snakes[i] = 0
-            other_bodies = self._bodies[self.dones[agent]][:, other_snakes, :, :].sum(dim=1) > EPS
-            prob = (dead_snakes * torch.rand_like(dead_snakes) > (1 - self.food_on_death_prob))
-            food_addition_mask = (
-                    prob & ~other_bodies
-            ).unsqueeze(1)
-
-            self.envs[self.dones[agent], FOOD_CHANNEL:FOOD_CHANNEL+1] += food_addition_mask.to(self.dtype)
-            self.envs[:, 0] = self.envs[:, 0].clamp(0, 1)
-
-            # Remove any snakes that are dead
-            self.envs[self.dones[agent], self.body_channels[i], :, :] = 0
-            self.envs[self.dones[agent], self.head_channels[i], :, :] = 0
 
     def _food_from_death(self, dead: torch.Tensor, living: torch.Tensor) -> torch.Tensor:
         """Inputs are dead bodies, outputs"""
@@ -449,23 +420,6 @@ class MultiSnake(object):
         food_addition_mask = prob & ~living
 
         return food_addition_mask
-
-    def _boost_costs(self, i: int, agent: str, active_envs: torch.Tensor):
-        boost_cost_env_mask = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
-        boost_cost_env_mask[active_envs] = 1
-        head_channel = self.head_channels[i]
-        body_channel = self.body_channels[i]
-        _env = self.envs[active_envs][:, [0, head_channel, body_channel], :, :]
-        tail_locations = body(_env) == 1
-        self.envs[boost_cost_env_mask, FOOD_CHANNEL] += tail_locations.squeeze(1).to(self.dtype)
-
-        # Decay bodies
-        self.envs[boost_cost_env_mask, body_channel:body_channel + 1, :, :] -= 1
-        self.envs[boost_cost_env_mask, body_channel:body_channel + 1, :, :] = \
-            self.envs[boost_cost_env_mask, body_channel:body_channel + 1, :, :].relu()
-
-        # Reward penalty
-        self.rewards[agent][active_envs] -= 1
 
     def _get_food_addition(self, heads: torch.Tensor, bodies: torch.Tensor, foods: torch.Tensor):
         n = foods.size(0)
@@ -547,54 +501,33 @@ class MultiSnake(object):
 
             t0 = time()
             # Get food overlap
-            food_overlap = self._get_food_overlap(
-                self.heads[boosted_agents],
-                self.foods.repeat_interleave(self.num_snakes, 0)[boosted_agents]
-            )
-            # print(torch.nonzero(boosted_agents))
-            # print('food_overlap', food_overlap.shape)
-            x = torch.arange(self.num_envs, device=self.device).repeat_interleave(self.num_snakes, 0)
-            x = F.one_hot(x, self.num_envs)[boosted_agents]
-            # print(boosted_envs.cumsum(dim=0))
-            # print(boosted_envs.cumsum(dim=0).repeat_interleave(self.num_snakes, 0))
-            # print((boosted_envs.cumsum(dim=0)-1).repeat_interleave(self.num_snakes, 0)[boosted_agents])
-            agent_to_boosted_env_index = (boosted_envs.cumsum(dim=0)-1).repeat_interleave(self.num_snakes, 0)[boosted_agents]
-            agent_to_boosted_env_index = F.one_hot(agent_to_boosted_env_index, n_boosted_envs)
-            # print(x.argmax(dim=1))
-            # print(agent_to_boosted_env_index.argmax(dim=1))
-            # m: boosted snake index, i: arbitrary, n: environment index, (h, w): positional indices
-            # print('x', x.argmax(dim=1))
-            # print('x', x.shape)
-            # print('food_overlap', food_overlap.shape)
-            food_removal = torch.einsum('mihw,mn->nihw', [food_overlap, agent_to_boosted_env_index.float()])
-            # print('food_removal', food_removal.shape)
-            # self.foods -= food_removal
-            self.foods[boosted_envs] -= \
-                food_removal.view(n_boosted_envs, 1, self.size, self.size).sum(dim=1, keepdim=True)
+            food_overlap = self._get_food_overlap(self.heads, self.foods.repeat_interleave(self.num_snakes, 0)).float()
+            # if torch.any(food_overlap == 2) or torch.any(food_overlap < 0):
+            #     raise RuntimeError('Bad food overlap')
+            # Clamp here because if two snakes simultaneiously move their heads on to a food pixel then we get a food
+            # overlap pixel with a value of 2 (which then leads to a food pixel of -1 and some issue down the line)
+            self.foods -= food_overlap \
+                .view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).clamp(0, 1)
             self._log(f'Food overlap: {1000 * (time() - t0)}ms')
 
             t0 = time()
             # Decay bodies of all snakes that haven't eaten food
-            # decay_mask = food_overlap.view(n_boosted, -1).sum(dim=-1).lt(EPS)
             decay_mask = boosted_agents.clone()
-            decay_mask[boosted_agents] &= food_overlap.view(n_boosted, -1).sum(dim=-1).lt(EPS)
-            # print(boosted_agents[boosted_agents])
-            # print(boosted_agents.shape, food_overlap.shape)
-            # decay_mask = boosted_agents & food_overlap.view(n_boosted, -1).sum(dim=-1).lt(EPS)
+            decay_mask[boosted_agents] &= food_overlap[boosted_agents].view(n_boosted, -1).sum(dim=-1).lt(EPS)
             self.bodies[decay_mask] = \
                 self._decay_bodies(self.bodies[decay_mask])
-            self.rewards[boosted_agents] += food_overlap.view(n_boosted, -1).sum(dim=-1).gt(EPS).float()
+            self.rewards[boosted_agents] += food_overlap[boosted_agents].view(n_boosted, -1).sum(dim=-1).gt(EPS).float()
             self._log(f'Growth/decay: {1000 * (time() - t0)}ms')
 
             t0 = time()
             # Check for collisions
             other = torch.arange(self.num_snakes, device=self.device).repeat(self.num_envs)
             other = ~F.one_hot(other, self.num_snakes).byte()
-            heads = self.heads\
-                .view(self.num_envs, self.num_snakes, self.size, self.size)\
+            heads = self.heads \
+                .view(self.num_envs, self.num_snakes, self.size, self.size) \
                 .repeat_interleave(self.num_snakes, 0)
-            bodies = self.bodies\
-                .view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True)\
+            bodies = self.bodies \
+                .view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True) \
                 .repeat_interleave(self.num_snakes, dim=0)
             pathing = torch.einsum('nshw,ns->nhw', [heads, other.float()]).unsqueeze(1)
             pathing += bodies
@@ -604,7 +537,7 @@ class MultiSnake(object):
 
             t0 = time()
             # Move bodies forward
-            body_growth = food_overlap.view(n_boosted, -1).sum(dim=-1)
+            body_growth = food_overlap[boosted_agents].view(n_boosted, -1).sum(dim=-1).gt(EPS).float()
             self.bodies[boosted_agents] += self.heads[boosted_agents] * (snake_sizes[boosted_agents] + body_growth)[:, None, None, None]
             # Update snake sizes
             snake_sizes[boosted_agents] += body_growth
@@ -624,8 +557,10 @@ class MultiSnake(object):
             _bodies = self.bodies.clone()
             _bodies[self.dones] = 0
             living = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).gt(EPS)
-            food_on_death = self._food_from_death(dead, living)
-            self.foods += food_on_death.float()
+            food_on_death = self._food_from_death(dead, living).float()
+            # if torch.any(food_on_death == 2) or torch.any(food_on_death < 0):
+            #     raise RuntimeError('Bad food on death')
+            self.foods += food_on_death
             self._log(f'Deaths: {1000 * (time() - t0)}ms')
 
             # Apply boost cost
@@ -646,6 +581,8 @@ class MultiSnake(object):
                 # print(tail_locations.shape, agent_to_boosted_env_index.shape)
                 food_addition = torch.einsum('mihw,mn->nihw', [tail_locations.float(), agent_to_boost_cost_env_index.float()])
                 # print('food_addition', food_addition.shape)
+                # if torch.any(food_addition == 2) or torch.any(food_addition < 0):
+                #     raise RuntimeError('Bad food overlap')
                 self.foods[boost_cost_envs] += food_addition
                 self.bodies[boost_cost_agents] = \
                     self._decay_bodies(self.bodies[boost_cost_agents])
@@ -656,6 +593,15 @@ class MultiSnake(object):
             # Delete done snakes
             self.bodies[self.dones] = 0
             self.heads[self.dones] = 0
+
+            # Apply rounding to stop numerical errors accumulating
+            self.foods.round_()
+            # Occasionally we end up with a food pixel of value 2, probably because two food addition events
+            # have occured in one place twice in the same .step(). As I can't figure out why this happens I've
+            # added this quick fix
+            self.foods.clamp_(0, 1)
+            self.heads.round_()
+            self.bodies.round_()
 
         ################
         # Regular step #
@@ -668,8 +614,13 @@ class MultiSnake(object):
 
         t0 = time()
         # Get food overlap
-        food_overlap = self._get_food_overlap(self.heads, self.foods.repeat_interleave(self.num_snakes, 0))
-        self.foods -= food_overlap.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True)
+        food_overlap = self._get_food_overlap(self.heads, self.foods.repeat_interleave(self.num_snakes, 0)).float()
+        # Clamp here because if two snakes simultaneiously move their heads on to a food pixel then we get a food
+        # overlap pixel with a value of 2 (which then leads to a food pixel of -1 and some issue down the line)
+        food_overlap = food_overlap.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).clamp(0, 1)
+        self.foods -= food_overlap
+        # if torch.any(food_overlap == 2) or torch.any(food_overlap < 0):
+        #     raise RuntimeError('Bad food overlap')
         self._log(f'Food overlap: {1000 * (time() - t0)}ms')
 
         t0 = time()
@@ -693,8 +644,10 @@ class MultiSnake(object):
 
         t0 = time()
         # Move bodies forward
-        body_growth = food_overlap.view(self.num_envs * self.num_snakes, -1).sum(dim=-1)
+        body_growth = food_overlap.view(self.num_envs * self.num_snakes, -1).sum(dim=-1).gt(EPS).float()
         self.bodies += self.heads * (snake_sizes + body_growth)[:, None, None, None]
+        # Update snake sizes
+        snake_sizes += body_growth
         self._log(f'Move bodies: {1000 * (time() - t0)}ms')
 
         t0 = time()
@@ -711,8 +664,10 @@ class MultiSnake(object):
         _bodies = self.bodies.clone()
         _bodies[self.dones] = 0
         living = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).gt(EPS)
-        food_on_death = self._food_from_death(dead, living)
-        self.foods += food_on_death.float()
+        food_on_death = self._food_from_death(dead, living).float()
+        # if torch.any(food_on_death == 2) or torch.any(food_on_death < 0):
+        #     raise RuntimeError('Bad food on death')
+        self.foods += food_on_death
         self._log(f'Deaths: {1000 * (time() - t0)}ms')
 
         # Delete done snakes
@@ -724,6 +679,10 @@ class MultiSnake(object):
 
         # Apply rounding to stop numerical errors accumulating
         self.foods.round_()
+        # Occasionally we end up with a food pixel of value 2, probably because two food addition events
+        # have occured in one place twice in the same .step(). As I can't figure out why this happens I've
+        # added this quick fix
+        self.foods.clamp_(0, 1)
         self.heads.round_()
         self.bodies.round_()
 
@@ -732,13 +691,14 @@ class MultiSnake(object):
         observations = {}
         self._log(f'Observations: {1000 * (time() - t0)}ms')
 
-        dones = {f'agent_{i}': d for i, d in enumerate(self.dones.clone().view(self.num_snakes, self.num_envs).unbind())}
+        # dones = {f'agent_{i}': d for i, d in enumerate(self.dones.clone().view(self.num_snakes, self.num_envs).unbind())}
+        dones = {f'agent_{i}': d for i, d in enumerate(self.dones.clone().view(self.num_envs, self.num_snakes).t().unbind())}
         # # Environment is finished if all snake are dead
         dones['__all__'] = self.dones.view(self.num_envs, self.num_snakes).all(dim=1).clone()
         # # or if its past the maximum episode length
         dones['__all__'] |= self.env_lifetimes > self.max_env_lifetime
 
-        rewards = {f'agent_{i}': d for i, d in enumerate(self.rewards.clone().view(self.num_snakes, self.num_envs).unbind())}
+        rewards = {f'agent_{i}': d for i, d in enumerate(self.rewards.clone().view(self.num_envs, self.num_snakes).t().unbind())}
 
         return observations, rewards, dones, self.info
 
@@ -762,6 +722,12 @@ class MultiSnake(object):
             .max(dim=-1)[0]\
             .gt(1)
         if torch.any(overlapping_bodies):
+            # print(self.heads[overlapping_bodies.repeat_interleave(self.num_snakes, 0)][:self.num_snakes])
+            for i in self.bodies[overlapping_bodies.repeat_interleave(self.num_snakes, 0)][:self.num_snakes]:
+                print(i)
+            print('-'*10)
+            _overlapping = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size).gt(EPS).sum(dim=1, keepdim=True)
+            print(_overlapping[overlapping_bodies][0])
             raise RuntimeError('An environment contains overlapping snakes')
 
         # Check number of heads is no more than env.num_snakes
@@ -783,7 +749,6 @@ class MultiSnake(object):
                 reset
         """
         # Reset envs that contain no snakes
-        t0 = time()
         if done is None:
             done = self.dones.view(self.num_envs, self.num_snakes).all(dim=1)
 
@@ -793,52 +758,148 @@ class MultiSnake(object):
 
         # Create environments
         if done.sum() > 0:
+            t0 = time()
             (new_foods, new_heads, new_bodies), new_positions = self._create_envs(num_done)
             self.foods[done] = new_foods
             self.heads[agent_dones] = new_heads
             self.bodies[agent_dones] = new_bodies
             self.orientations[agent_dones] = new_positions
+            self._log(f'Resetting {num_done} envs: {1000 * (time() - t0)}ms')
 
         # Reset done trackers
         self.env_lifetimes[done] = 0
         self.dones[agent_dones] = 0
 
-        self._log(f'Resetting {num_done} envs: {1000 * (time() - t0)}ms')
-
         if self.respawn_mode == 'any':
             t0 = time()
-            num_respawned = 0
+            num_done = self.dones.sum().item()
             if torch.any(self.dones):
-                pass
+                any_done_in_env = self.dones.view(self.num_envs, self.num_snakes).any(dim=1)
+                n_any_done_envs = any_done_in_env.sum().item()
+                # Only spawn the first dead snake from each env
+                # i.e. only spawn one snake per step
+                first_done_per_env = (self.dones.view(self.num_envs, self.num_snakes).cumsum(dim=1) == 1).flatten() & self.dones
+                # print(self.dones)
 
-            self._log(f'Respawned {num_respawned} snakes: {1000 * (time() - t0)}ms')
+                # print('num_done', num_done)
+                # print('n_any_done_envs', n_any_done_envs)
+                # print('first_done_per_env')
+                # print(self.dones.view(self.num_envs, self.num_snakes))
+                # print(self.dones.view(self.num_envs, self.num_snakes).cumsum(dim=1))
+                # print(first_done_per_env)
+                _envs = torch.cat([
+                    self.foods.repeat_interleave(self.num_snakes, 0),
+                    self.heads,
+                    self.bodies,
+                ], dim=1).sum(dim=1, keepdim=True)
+                _envs = _envs.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).repeat_interleave(self.num_snakes, 0)
+                _envs = _envs[first_done_per_env]
 
-        # Optionally respawn snakes
-        if self.respawn_mode == 'any':
-            t0 = time()
-            num_respawned = 0
-            for i in range(self.num_snakes):
-                if torch.any(self.dones[f'agent_{i}']):
-                    # Add snake
-                    successfully_respawned = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
-                    respawned_envs, respawns, new_positions = self._add_snake(
-                        envs=self.envs[self.dones[f'agent_{i}']],
-                        snake_channel=i,
-                        exception_on_failure=False
-                    )
-                    self.envs[self.dones[f'agent_{i}']] = respawned_envs
-                    num_respawned += respawns.sum().item()
-                    successfully_respawned[self.dones[f'agent_{i}']] = respawns
-                    # Reset done trackers
-                    self.dones[f'agent_{i}'][successfully_respawned] = 0
+                # Get empty locations
+                pathing = _envs.sum(dim=1, keepdim=True) > EPS
+                # print(pathing)
+                # print(num_done, pathing.shape)
 
-            if self.verbose:
-                print(f'Respawned {num_respawned} snakes: {1000 * (time() - t0)}ms')
+                new_bodies, new_heads, new_orientations, successfully_spawned = self._get_snake_addition(
+                    pathing, exception_on_failure=False)
+
+                # print(successfully_spawned)
+                # print(new_bodies.shape)
+                # exit()
+                self.bodies[first_done_per_env] = new_bodies
+                self.heads[first_done_per_env] = new_heads
+                self.orientations[first_done_per_env] = new_orientations
+                self.dones[first_done_per_env] = ~successfully_spawned
+
+                self._log(f'Respawned {successfully_spawned.sum().item()} snakes: {1000 * (time() - t0)}ms')
+
+                # overlapping_bodies = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size) \
+                #     .gt(EPS) \
+                #     .sum(dim=1, keepdim=True) \
+                #     .view(self.num_envs, -1) \
+                #     .max(dim=-1)[0] \
+                #     .gt(1)
+                # if torch.any(overlapping_bodies):
+                    # print(overlapping_bodies.nonzero())
+                    # print(self.heads[overlapping_bodies.repeat_interleave(self.num_snakes, 0)][:self.num_snakes])
+                    # for i in self.bodies[overlapping_bodies.repeat_interleave(self.num_snakes, 0)][:self.num_snakes]:
+                    #     print(i.long())
+                    # print('-' * 10)
+                    # _overlapping = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size).gt(EPS).sum(
+                    #     dim=1, keepdim=True)
+                    # print(_overlapping[overlapping_bodies][0])
+                    # raise RuntimeError('An environment contains overlapping snakes')
 
         # observations = self._observe()
         observations = {}
 
         return observations
+
+    def _get_snake_addition(self,
+                            pathing: torch.Tensor,
+                            exception_on_failure: bool) -> (torch.Tensor, torch.Tensor, torch.Tensor):
+        """pathing is a nx1xhxw tensor containing filled locations"""
+        n = pathing.shape[0]
+        l = self.initial_snake_length - 1
+        successfully_spawned = torch.zeros(n, dtype=torch.uint8, device=self.device)
+
+        # Expand pathing because you can't put a snake right next to another snake
+        pathing = (F.conv2d(
+            pathing.to(dtype=self.dtype),
+            torch.ones((1, 1, 3, 3), dtype=self.dtype, device=self.device),
+            padding=1
+        ) > EPS).byte()
+        # Remove boundaries
+        pathing[:, :, :l, :] = 1
+        pathing[:, :, :, :l] = 1
+        pathing[:, :, -l:, :] = 1
+        pathing[:, :, :, -l:] = 1
+        available_locations = ~pathing
+
+        any_available_locations = available_locations.view(n, -1).max(dim=1)[0].byte()
+        if exception_on_failure:
+            # If there is no available locations for a snake raise an exception
+            if torch.any(~any_available_locations):
+                raise RuntimeError('There is no available locations to create snake!')
+
+        successfully_spawned |= any_available_locations
+
+        body_seed_indices = drop_duplicates(torch.nonzero(available_locations), 0)
+        # Body seeds is a tensor that contains all zeros except where a snake will be spawned
+        # Shape: (n, 1, self.size, self.size)
+        body_seeds = torch.sparse_coo_tensor(
+            body_seed_indices.t(), torch.ones(len(body_seed_indices)), available_locations.shape,
+            device=self.device, dtype=self.dtype
+        )
+
+        # Choose random starting directions
+        random_directions = torch.randint(4, (n,), device=self.device)
+        random_directions_onehot = torch.empty((n, 4), dtype=self.dtype, device=self.device)
+        random_directions_onehot.zero_()
+        random_directions_onehot.scatter_(1, random_directions.unsqueeze(-1), 1)
+
+        # Create bodies
+        new_bodies = torch.einsum('bchw,bc->bhw', [
+            F.conv2d(
+                body_seeds.to_dense(),
+                LENGTH_3_SNAKES.to(self.device).to(dtype=self.dtype),
+                padding=1
+            ),
+            random_directions_onehot
+        ]).unsqueeze(1)
+        # print(new_bodies.shape)
+        # envs[:, 2 * (snake_channel + 1), :, :] = bodies
+        # envs[:, self.body_channels[snake_channel], :, :] = bodies
+
+        # Create heads at end of bodies
+        snake_sizes = new_bodies.view(n, -1).max(dim=1)[0]
+        # Only create heads where there is a snake. This catches an edge case where there is no room
+        # for a snake to spawn and hence snake size == bodies everywhere (as bodies is all 0)
+        snake_sizes[snake_sizes == 0] = -1
+        snake_size_mask = snake_sizes[:, None, None, None].expand((n, 1, self.size, self.size))
+        new_heads = (new_bodies == snake_size_mask).to(dtype=self.dtype)
+
+        return new_bodies, new_heads, random_directions, successfully_spawned
 
     def _add_snake(self,
                    envs: torch.Tensor,
