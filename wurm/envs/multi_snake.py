@@ -282,7 +282,9 @@ class MultiSnake(object):
             return {f'agent_{i}': self._observe_agent(i) for i in range(self.num_snakes)}
         elif mode.startswith('partial_'):
             # Get full batch of images
+            t0 = time()
             img = self._get_env_images()
+            self._log(f'Rendering: {1000 * (time() - t0)}ms')
 
             # Normalise to 0-1
             img = img.float() / 255
