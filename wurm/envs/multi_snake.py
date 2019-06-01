@@ -295,9 +295,9 @@ class MultiSnake(object):
             padding = [self.observation_width, self.observation_width, ] * 2
             padded_img = F.pad(img, padding).repeat_interleave(self.num_snakes, dim=0)
 
-            filter = torch.ones((1, 1, self.observation_size, self.observation_size)).to(self.device)
-
+            t0 = time()
             n_living = (~self.dones).sum().item()
+            filter = torch.ones((1, 1, self.observation_size, self.observation_size)).to(self.device)
             padded_heads = F.pad(self.heads, padding)
             head_area_indices = F.conv2d(
                 padded_heads,
@@ -317,6 +317,8 @@ class MultiSnake(object):
             observations[~self.dones] = living_observations
             observations = observations\
                 .reshape(self.num_envs, self.num_snakes, 3, self.observation_size, self.observation_size)
+
+            self._log(f'Head cropping: {1000 * (time() - t0)}ms')
 
             dict_observations = {}
             for i in range(self.num_snakes):
@@ -369,7 +371,6 @@ class MultiSnake(object):
                     bodies=self.bodies[food_addition_env_indices.repeat_interleave(self.num_snakes)],
                     foods=self.foods[food_addition_env_indices],
                 )
-                print(food_addition.shape)
                 self.foods[food_addition_env_indices] += food_addition
         elif self.food_mode == 'random_rate':
             # Have a maximum amount of available food
@@ -481,11 +482,11 @@ class MultiSnake(object):
 
         snake_sizes = self.bodies.view(self.num_envs*self.num_snakes, -1).max(dim=-1)[0]
 
-        move_directions = torch.stack([v for k, v in move_directions.items()]).flatten()
+        move_directions = torch.stack([v for k, v in move_directions.items()]).t().flatten()
         move_directions = self.sanitize_movements(movements=move_directions, orientations=self.orientations)
         self.orientations = self._update_orientations(movements=move_directions)
 
-        boost_actions = torch.stack([v for k, v in boost_actions.items()]).flatten()
+        boost_actions = torch.stack([v for k, v in boost_actions.items()]).t().flatten()
         size_gte_4 = snake_sizes >= 4
         boosted_agents = boost_actions & size_gte_4
         self.boost_this_step = boosted_agents
@@ -645,7 +646,7 @@ class MultiSnake(object):
         # Check for edge collisions
         edge_collisions = self._check_edges(self.heads).view(self.num_envs * self.num_snakes, -1).gt(EPS).any(dim=-1)
         self.dones |= edge_collisions
-        edge_collision_tracker |= collisions
+        edge_collision_tracker |= edge_collisions
         self._log(f'Edges: {1000 * (time() - t0)}ms')
 
         t0 = time()
@@ -740,7 +741,7 @@ class MultiSnake(object):
         if not dead_all_zeros:
             raise RuntimeError(f'Dead snake contains non-zero elements.')
 
-    def reset(self, done: torch.Tensor = None):
+    def reset(self, done: torch.Tensor = None, return_observations: bool = True):
         """Resets environments in which the snake has died
 
         Args:
@@ -798,9 +799,10 @@ class MultiSnake(object):
 
                 self._log(f'Respawned {successfully_spawned.sum().item()} snakes: {1000 * (time() - t0)}ms')
 
-        observations = self._observe()
+        if return_observations:
+            observations = self._observe()
 
-        return observations
+            return observations
 
     def _get_snake_addition(self,
                             pathing: torch.Tensor,

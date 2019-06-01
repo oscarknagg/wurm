@@ -21,18 +21,19 @@ torch.random.manual_seed(0)
 def get_test_env(num_envs=1):
     env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=True)
 
-    # Snake 1
-    env.heads[0, 0, 5, 5] = 1
-    env.bodies[0, 0, 5, 5] = 4
-    env.bodies[0, 0, 4, 5] = 3
-    env.bodies[0, 0, 4, 4] = 2
-    env.bodies[0, 0, 4, 3] = 1
-    # Snake 2
-    env.heads[1, 0, 8, 7] = 1
-    env.bodies[1, 0, 8, 7] = 4
-    env.bodies[1, 0, 8, 8] = 3
-    env.bodies[1, 0, 8, 9] = 2
-    env.bodies[1, 0, 9, 9] = 1
+    for i in range(num_envs):
+        # Snake 1
+        env.heads[2*i, 0, 5, 5] = 1
+        env.bodies[2*i, 0, 5, 5] = 4
+        env.bodies[2*i, 0, 4, 5] = 3
+        env.bodies[2*i, 0, 4, 4] = 2
+        env.bodies[2*i, 0, 4, 3] = 1
+        # Snake 2
+        env.heads[2*i+1, 0, 8, 7] = 1
+        env.bodies[2*i+1, 0, 8, 7] = 4
+        env.bodies[2*i+1, 0, 8, 8] = 3
+        env.bodies[2*i+1, 0, 8, 9] = 2
+        env.bodies[2*i+1, 0, 9, 9] = 1
 
     _envs = torch.cat([
         env.foods.repeat_interleave(env.num_snakes, dim=0),
@@ -41,6 +42,7 @@ def get_test_env(num_envs=1):
     ], dim=1)
 
     env.orientations = determine_orientations(_envs)
+    print(env.orientations)
 
     return env
 
@@ -114,7 +116,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             }
             observations, reward, done, info = env.step(actions)
 
-            env.reset(done['__all__'])
+            env.reset(done['__all__'], return_observations=False)
             env.check_consistency()
             print()
 
@@ -176,8 +178,6 @@ class TestMultiSnakeEnv(unittest.TestCase):
     def test_edge_collision(self):
         env = get_test_env()
         env.food_on_death_prob = 1
-
-        # Add food so agent_0 eats it and grows
         env.foods[0, 0, 1, 1] = 1
 
         all_actions = {
@@ -273,10 +273,12 @@ class TestMultiSnakeEnv(unittest.TestCase):
         self.assertGreaterEqual(env.foods[:, 0].sum().item(), 2)
 
     def test_eat_food(self):
-        env = get_test_env()
+        num_envs = 1
+        env = get_test_env(num_envs=num_envs)
+        env.render_args = {'num_rows': 1, 'num_cols': 2, 'size': 256}
 
         # Add food
-        env.foods[0, 0, 9, 7] = 1
+        env.foods[:, 0, 9, 7] = 1
 
         all_actions = {
             'agent_0': torch.tensor([1, 2, 1, 1, 0, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
@@ -287,7 +289,8 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
         for i in range(6):
             actions = {
-                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+                agent: agent_actions[i].repeat(num_envs) for agent, agent_actions in all_actions.items()
+                # agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
             observations, rewards, dones, info = env.step(actions)
@@ -295,7 +298,12 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
             print_or_render(env)
 
-            print(i, rewards)
+            print(i)
+            print('actions')
+            pprint(actions)
+            print('rewards')
+            pprint(rewards)
+            print()
 
             # Check reward given when expected
             if i == 0:
@@ -444,15 +452,15 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env = MultiSnake(num_envs=1, num_snakes=2, size=size, manual_setup=True, boost=True)
         env.foods[:, 0, 1, 1] = 1
         # Snake 1
-        env.heads[:, 0, 5, 5] = 1
-        env.bodies[:, 0, 5, 5] = 3
-        env.bodies[:, 0, 4, 5] = 2
-        env.bodies[:, 0, 4, 4] = 1
+        env.heads[0, 0, 5, 5] = 1
+        env.bodies[0, 0, 5, 5] = 3
+        env.bodies[0, 0, 4, 5] = 2
+        env.bodies[0, 0, 4, 4] = 1
         # Snake 2
-        env.heads[:, 0, 8, 7] = 1
-        env.bodies[:, 0, 8, 7] = 3
-        env.bodies[:, 0, 8, 8] = 2
-        env.bodies[:, 0, 8, 9] = 1
+        env.heads[1, 0, 8, 7] = 1
+        env.bodies[1, 0, 8, 7] = 3
+        env.bodies[1, 0, 8, 8] = 2
+        env.bodies[1, 0, 8, 9] = 1
 
         # Get orientations manually
         _envs = torch.cat([
@@ -484,7 +492,6 @@ class TestMultiSnakeEnv(unittest.TestCase):
             observations, rewards, dones, info = env.step(actions)
 
             env.reset(dones['__all__'])
-            print(dones)
 
             env.check_consistency()
 
@@ -499,8 +506,8 @@ class TestMultiSnakeEnv(unittest.TestCase):
                     head(_env)[0, 0].flatten().argmax() // size, head(_env)[0, 0].flatten().argmax() % size
                 ])
 
-                # if i_agent == 0:
-                #     self.assertTrue(torch.equal(expected_head_positions[i], head_position))
+                if i_agent == 0:
+                    self.assertTrue(torch.equal(expected_head_positions[i], head_position))
 
             print_or_render(env)
 
@@ -614,7 +621,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             env.check_consistency()
 
     def test_partial_observations(self):
-        num_envs = 2
+        num_envs = 256
         num_snakes = 4
         observation_mode = 'partial_3'
         env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=size, manual_setup=False, boost=True,

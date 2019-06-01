@@ -235,7 +235,7 @@ for i_step in count(1):
 
     observations, reward, done, info = env.step(actions)
 
-    env.reset(done['__all__'])
+    env.reset(done['__all__'], return_observations=False)
     env.check_consistency()
 
     if args.agent != 'random' and args.train:
