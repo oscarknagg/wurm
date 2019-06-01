@@ -570,13 +570,11 @@ class MultiSnake(object):
             if boost_cost_agents.sum() > 0:
                 t0 = time()
                 boost_cost_envs = boost_cost_agents.view(self.num_envs, self.num_snakes).any(dim=1)
-                n_boost_cost_envs = boost_cost_envs.sum().item()
-                tail_locations = self.bodies[boost_cost_agents] == 1
-                agent_to_boost_cost_env_index = (boost_cost_envs.cumsum(dim=0) - 1).repeat_interleave(self.num_snakes, 0)[boost_cost_agents]
-                agent_to_boost_cost_env_index = F.one_hot(agent_to_boost_cost_env_index, n_boost_cost_envs)
-                # m: boosted snake index, i: arbitrary, n: environment index, (h, w): positional indices
-                food_addition = torch.einsum('mihw,mn->nihw', [tail_locations.float(), agent_to_boost_cost_env_index.float()])
-                self.foods[boost_cost_envs] += food_addition
+                tail_locations = self.bodies == 1
+                tail_locations[~boost_cost_agents] = 0
+                self.foods += tail_locations\
+                    .view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).gt(EPS).float()
+
                 self.bodies[boost_cost_agents] = \
                     self._decay_bodies(self.bodies[boost_cost_agents])
                 self.rewards -= boost_cost_agents.float()
