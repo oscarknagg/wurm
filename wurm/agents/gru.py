@@ -53,8 +53,8 @@ class GRUAgent(nn.Module):
         x = F.adaptive_max_pool2d(x, (1, 1)).view(x.size(0), -1)
         x = self.feedforward(x)
 
-        h_new = self.recurrent_module(x, h)
+        h = self.recurrent_module(x, h)
 
-        values = self.value_head(h_new)
-        action_probabilities = self.policy_head(x)
-        return F.softmax(action_probabilities, dim=-1), values, h_new
+        values = self.value_head(h)
+        action_probabilities = self.policy_head(h)
+        return F.softmax(action_probabilities, dim=-1), values, h
