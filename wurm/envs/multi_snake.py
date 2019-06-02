@@ -182,41 +182,40 @@ class MultiSnake(object):
         return img
 
     def _get_env_images(self):
-        # Regular snakes
-        layers = {
-            self.foods.gt(EPS).squeeze(1): self.food_colour,
-        }
+        agent_colours = torch.tensor([
+            [0, 192, 0]
+        ], device=self.device).repeat((self.num_envs*self.num_snakes, 1))
+        agent_colours = agent_colours
 
-        bodies_per_env = self.bodies.view(self.num_envs, self.num_snakes, self.size, self.size)
-        heads_per_env = self.heads.view(self.num_envs, self.num_snakes, self.size, self.size)
-        boosts_per_env = self.boost_this_step.view(self.num_envs, self.num_snakes)
-        for i in range(self.num_snakes):
-            if boosts_per_env[:, i].sum().item() > 0:
-                boosted_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
-                                                 device=self.device)
-                boosted_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8,
-                                                device=self.device)
+        intensity_factor = (self.bodies.gt(EPS).float() * 1 / 3) + (self.heads.gt(EPS).float() * 1 / 3)
+        intensity_factor *= (1 + 0.5*self.boost_this_step)[:, None, None, None].expand_as(intensity_factor).float()
+        intensity_factor = intensity_factor.squeeze(1)
 
-                boosted_bodies[boosts_per_env[:, i]] = bodies_per_env[boosts_per_env[:, i], i].gt(EPS)
-                boosted_heads[boosts_per_env[:, i]] = heads_per_env[boosts_per_env[:, i], i].gt(EPS)
+        body_colours = torch.einsum('nhw,nc->nchw', [intensity_factor, agent_colours.float()])
 
-                layers.update({
-                    boosted_bodies: (self.agent_colours[i % self.num_colours].float() * (2 / 3)).short(),
-                    boosted_heads: (self.agent_colours[i % self.num_colours].float() * (4 / 3)).short(),
-                })
+        img = body_colours\
+            .reshape(self.num_envs, self.num_snakes, 3, self.size, self.size)\
+            .sum(dim=1)\
+            .short()
 
-            regular_bodies = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
-            regular_heads = torch.zeros((self.num_envs, self.size, self.size), dtype=torch.uint8, device=self.device)
-            regular_bodies[~boosts_per_env[:, i]] = bodies_per_env[~boosts_per_env[:, i], i].gt(EPS)
-            regular_heads[~boosts_per_env[:, i]] = heads_per_env[~boosts_per_env[:, i], i].gt(EPS)
+        food_colours = torch.einsum('nihw,ic->nchw', [self.foods.gt(EPS).float(), self.food_colour.unsqueeze(0).float()])
+        img += food_colours.short()
 
-            layers.update({
-                regular_bodies: self.agent_colours[i % self.num_colours] / 2,
-                regular_heads: self.agent_colours[i % self.num_colours],
-            })
+        # Convert to NHWC axes for easier indexing here
+        img = img.permute((0, 2, 3, 1))
 
-        # Get RBG Tensor NCHW
-        img = self._make_generic_rgb(layers)
+        black_colour = torch.zeros(3, device=self.device, dtype=torch.short)
+        black_colour = black_colour[None, None, None, :]
+        white_colour = torch.ones(3, device=self.device, dtype=torch.short) * 255
+
+        black_colour_mask = (img == black_colour).all(dim=-1, keepdim=True)
+        img[black_colour_mask.squeeze(-1), :] = white_colour
+
+        # Convert back to NCHW axes
+        img = img.permute((0, 3, 1, 2))
+
+        # Black boundaries
+        img[self.edge_locations_mask.expand_as(img).byte()] = 0
 
         return img
 
