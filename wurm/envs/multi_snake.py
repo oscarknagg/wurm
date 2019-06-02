@@ -137,12 +137,13 @@ class MultiSnake(object):
         self.food_colour = torch.tensor((255, 0, 0), dtype=torch.short, device=self.device)
         self.edge_colour = torch.tensor((0, 0, 0), dtype=torch.short, device=self.device)
 
-        self.agent_colours = torch.tensor([
-            [13, 92, 167],  # Blue ish
-            [86, 163, 49],  # Green
-            [133, 83, 109],  # Red-ish
-            [135, 135, 4],   # Yellow ish
-        ], device=self.device, dtype=torch.short)
+        # self.agent_colours = torch.tensor([
+        #     [13, 92, 167],  # Blue ish
+        #     [86, 163, 49],  # Green
+        #     [133, 83, 109],  # Red-ish
+        #     [135, 135, 4],   # Yellow ish
+        # ], device=self.device, dtype=torch.short)
+        self.agent_colours = self.get_n_colours(self.num_envs*self.num_snakes)
         self.num_colours = self.agent_colours.shape[0]
 
         self.info = {}
@@ -155,8 +156,13 @@ class MultiSnake(object):
         self.edge_locations_mask[:, :, -1:, :] = 1
         self.edge_locations_mask[:, :, :, -1:] = 1
 
-    def get_subenv(self, i: int) -> torch.Tensor:
-        return torch.cat([self.foods, self.heads[i:i+1], self.bodies[i:i+1]], dim=1)
+    def get_n_colours(self, n: int) -> torch.Tensor:
+        colours = torch.rand((n, 3), device=self.device)
+        colours[:, 0] /= 1.5  # Reduce red
+        colours /= colours.norm(2, dim=1, keepdim=True)
+        colours *= 192
+        colours = colours.short()
+        return colours
 
     def _log(self, msg: str):
         if self.verbose > 0:
@@ -182,10 +188,10 @@ class MultiSnake(object):
         return img
 
     def _get_env_images(self):
-        agent_colours = torch.tensor([
-            [0, 192, 0]
-        ], device=self.device).repeat((self.num_envs*self.num_snakes, 1))
-        agent_colours = agent_colours
+        # agent_colours = torch.tensor([
+        #     [0, 192, 0]
+        # ], device=self.device).repeat((self.num_envs*self.num_snakes, 1))
+        agent_colours = self.agent_colours
 
         intensity_factor = (self.bodies.gt(EPS).float() * 1 / 3) + (self.heads.gt(EPS).float() * 1 / 3)
         intensity_factor *= (1 + 0.5*self.boost_this_step)[:, None, None, None].expand_as(intensity_factor).float()
@@ -766,6 +772,10 @@ class MultiSnake(object):
         # Reset done trackers
         self.env_lifetimes[done] = 0
         self.dones[agent_dones] = 0
+
+        # Change agent colours each death
+        new_colours = self.get_n_colours(self.dones.sum().item())
+        self.agent_colours[self.dones] = new_colours
 
         if self.respawn_mode == 'any':
             t0 = time()
