@@ -164,7 +164,7 @@ render_args = {
     'num_cols': args.render_cols,
 }
 if args.env == 'snake':
-    env = MultiSnake(num_envs=args.num_envs, num_snakes=args.num_agents, food_on_death_prob=args.food_on_death,
+    env = MultiSnake(num_envs=args.n_envs, num_snakes=args.n_agents, food_on_death_prob=args.food_on_death,
                      size=args.size, device=args.device, render_args=render_args, boost=args.boost,
                      boost_cost_prob=args.boost_cost, dtype=dtype, food_rate=args.food_rate,
                      respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_mode=observation_type)
@@ -235,7 +235,7 @@ for i_step in count(1):
 
     observations, reward, done, info = env.step(actions)
 
-    env.reset(done['__all__'])
+    env.reset(done['__all__'], return_observations=False)
     env.check_consistency()
 
     if args.agent != 'random' and args.train:
@@ -289,16 +289,16 @@ for i_step in count(1):
     ###########
     t = time() - t0
     num_episodes += done['__all__'].sum().item()
-    num_steps += args.num_envs
+    num_steps += args.n_envs
 
     ewm_tracker(
-        fps=args.num_envs/(time()-t_i)
+        fps=args.n_envs/(time()-t_i)
     )
 
     if args.save_video:
         # If there is just one env save each episode to a different file
         # Otherwise save the whole video at the end
-        if args.num_envs == 1:
+        if args.n_envs == 1:
             if done['__all__']:
                 # Save video and make a new recorder
                 recorder.close()
@@ -326,17 +326,18 @@ for i_step in count(1):
         'edge_collisions': instantaneous_edge,
     }
     if args.env == 'snake':
-        instantaneous_self = torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
-        instanteous_sizes = env._bodies.view(env.num_envs, env.num_snakes, -1).max(dim=-1)[0]
+        instantaneous_snake = torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
+        instanteous_sizes = env.bodies.view(env.num_envs, env.num_snakes, -1).max(dim=-1)[0]
         living_sizes = instanteous_sizes[currently_alive].mean().item()
         living_sizes = 0 if np.isnan(living_sizes) else living_sizes
         instantaneous_snake_collision = \
             torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
-        instaneous_boosts = torch.stack([v for k, v in env.boost_this_step.items()])
+        # instaneous_boosts = torch.stack([v for k, v in env.boost_this_step.items()])
+        instaneous_boosts = env.boost_this_step.view(env.num_snakes, env.num_envs)
         living_boosts = instaneous_boosts[currently_alive.t()].float().mean().item()
         living_boosts = 0 if np.isnan(living_boosts) else living_boosts
         ewm_tracker(
-            snake_collisions=instantaneous_self,
+            snake_collisions=instantaneous_snake,
             avg_size=living_sizes,
             boost_rate=living_boosts
         )
