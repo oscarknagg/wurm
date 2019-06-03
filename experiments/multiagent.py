@@ -70,7 +70,7 @@ args = parser.parse_args()
 excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
                  'render_window_size', 'render_rows', 'render_cols', 'save_video', 'env', 'coord_conv',
                  'norm_returns', 'dtype', 'food_mode', 'respawn_mode', 'boost', 'warm_start',
-                 # 'flicker'
+                 'flicker'
                  ]
 included_args = ['n_envs', 'n_agents', 'n_species', 'lr', 'gamma', 'update_steps', 'food_rate', 'boost_cost', 'entropy',
                  'food_on_death']
@@ -229,10 +229,8 @@ hidden_states = {}
 if not args.warm_start:
     observations = env.reset()
 
-hidden_states_ = torch.zeros((args.n_envs*args.n_agents, 64), device=args.device)
-# hidden_states = {f'agent_{i}': torch.zeros((args.n_envs, 64), device=args.device) for i in range(args.n_agents)}
-stupid_list_of_hiddens = [torch.zeros((args.n_envs*args.n_agents, 64), device=args.device), ]
-tensor_of_hiddens = torch.zeros((args.update_steps + 2, args.n_envs*args.n_agents, 64), device=args.device)
+# hidden_states_ = torch.zeros((args.n_envs*args.n_agents, 64), device=args.device)
+hidden_states = {f'agent_{i}': torch.zeros((args.n_envs, 64), device=args.device) for i in range(args.n_agents)}
 torch.autograd.set_detect_anomaly(True)
 for i_step in count(1):
     t_i = time()
@@ -251,26 +249,8 @@ for i_step in count(1):
     probs = {}
     entropies = {}
     for agent, obs in observations.items():
-        if args.flicker is not None:
-            if not (i_step % args.flicker == 0):
-                # Hide all but every n-th observation
-                obs[:] = 0
-
         if agent_type == 'gru':
-            # probs_, value_, hidden_states[agent] = model(obs, hidden_states[agent])
-            # hidden_states[agent] = hidden_states_.clone()
-
-            probs_, value_, hidden_states_ = model(obs, hidden_states_)
-
-            # probs_, value_, hidden_states_ = model(obs, stupid_list_of_hiddens[-1])
-            # stupid_list_of_hiddens.append(hidden_states_.clone())
-            # print(i_step, [np.round(i.sum().item(), 3) for i in stupid_list_of_hiddens])
-
-            # probs_, value_, hidden_states_ = model(obs, tensor_of_hiddens[(i_step - 1) % args.update_steps])
-            # tensor_of_hiddens[i_step % (args.update_steps + 1)].copy_(hidden_states_)
-            # print('Read from ', (i_step - 1) % args.update_steps)
-            # print('Wrote to ', i_step % (args.update_steps + 1))
-            # print(tensor_of_hiddens.sum(dim=(1, 2)))
+            probs_, value_, hidden_states[agent] = model(obs, hidden_states[agent])
         else:
             probs_, value_ = model(obs)
 
@@ -287,11 +267,11 @@ for i_step in count(1):
 
     if args.agent == 'gru':
         with torch.no_grad():
-            hidden_states_[done['agent_0']].mul_(0)
-        # reset hidden states
-        # for _agent, _done in done.items():
-        #     if _agent != '__all__':
-        #         hidden_states[_agent][_done] = 0
+            # hidden_states_[done['agent_0']].mul_(0)
+            # reset hidden states
+            for _agent, _done in done.items():
+                if _agent != '__all__':
+                    hidden_states[_agent][_done].mul_(0)
 
     if args.agent != 'random' and args.train:
         # Flatten (num_envs, num_agents) tensor to (num_envs*num_agents, )
@@ -311,39 +291,22 @@ for i_step in count(1):
             done=all_dones,
             entropy=all_entropies
         )
-        # if agent_type == 'gru':
-        #     all_hiddens = torch.stack([v for k, v in hidden_states.items()]).view(-1, 64)
-        #     trajectories.append(hidden_state=all_hiddens)
 
     ##########################
     # Advantage actor-critic #
     ##########################
     if args.agent != 'random' and args.train and i_step % args.update_steps == 0:
-        # print('='*10, 'A2C', '='*10)
         with torch.no_grad():
             all_obs = torch.stack([v for k, v in observations.items()]).view(
                 -1, in_channels, observation_size, observation_size).detach()
 
-            if args.flicker is not None:
-                if not ((i_step + 1) % args.flicker == 0):
-                    # Hide all but every n-th observation
-                    all_obs[:] = 0
-
             if agent_type == 'gru':
-                # all_hiddens = torch.stack([v for k, v in hidden_states.items()]).view(
-                #     -1, 64)
-
-                all_hiddens = hidden_states_
-
-                # all_hiddens = stupid_list_of_hiddens[-1]
-
-                # all_hiddens = tensor_of_hiddens[-1]
+                all_hiddens = torch.stack([v for k, v in hidden_states.items()]).view(
+                    -1, 64)
 
                 _, bootstrap_values, _ = model(all_obs, all_hiddens)
             else:
                 _, bootstrap_values = model(all_obs)
-
-        # bootstrap_values = torch.zeros((512, 1), device=args.device)
 
         value_loss, policy_loss = a2c.loss(
             bootstrap_values.detach(),
@@ -362,11 +325,7 @@ for i_step in count(1):
         optimizer.step()
 
         trajectories.clear()
-        hidden_states_ = hidden_states_.detach()
-        # hidden_states = {}
-        tensor_of_hiddens[0].copy_(tensor_of_hiddens[-1])
-        stupid_list_of_hiddens = [stupid_list_of_hiddens[-1]]
-        # print()
+        hidden_states = {k: v.detach() for k, v in hidden_states.items()}
 
     ###########
     # Logging #

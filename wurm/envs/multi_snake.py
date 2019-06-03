@@ -714,7 +714,7 @@ class MultiSnake(object):
         ], dim=1)
 
         living_envs = _envs[~self.dones]
-        snake_consistency(living_envs)
+        snake_consistency(living_envs.round())
 
         # Check no overlapping snakes
         # Sum of bodies in each square of each env should be no more than 1
