@@ -69,6 +69,7 @@ class MultiSnake(object):
                  food_mode: str = 'only_one',
                  food_rate: float = 5e-4,
                  respawn_mode: str = 'all',
+                 reward_on_death: int = -1,
                  verbose: int = 0,
                  render_args: dict = None):
         """Initialise the environments
@@ -124,6 +125,7 @@ class MultiSnake(object):
         self.food_rate = food_rate
         self.max_food = 10
         self.max_env_lifetime = 5000
+        self.reward_on_death = -1
 
         # Rendering parameters
         self.viewer = None
@@ -486,6 +488,7 @@ class MultiSnake(object):
             self.info[f'edge_collision_{i}'] = torch.zeros(self.num_envs, dtype=torch.uint8, device=self.device)
 
         snake_sizes = self.bodies.view(self.num_envs*self.num_snakes, -1).max(dim=-1)[0]
+        done_at_start = self.dones.clone()
 
         move_directions = torch.stack([v for k, v in move_directions.items()]).t().flatten()
         move_directions = self.sanitize_movements(movements=move_directions, orientations=self.orientations)
@@ -670,6 +673,10 @@ class MultiSnake(object):
 
         # Add food if there is none in the environment
         self._add_food()
+
+        # Give negative reward on death
+        died_this_step = self.dones & (~done_at_start)
+        self.rewards += died_this_step.float() * self.reward_on_death
 
         # Apply rounding to stop numerical errors accumulating
         self.foods.round_()

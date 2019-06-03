@@ -194,11 +194,21 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
             observations, rewards, dones, info = env.step(actions)
             env.check_consistency()
-            print(i, dones)
+            print(i)
+            pprint(dones)
+            pprint(rewards)
 
             print_or_render(env)
             print('='*30)
 
+            # Check negative reward on death
+            if i == 4:
+                self.assertEqual(rewards['agent_0'].item(), env.reward_on_death)
+
+            if i == 2:
+                self.assertEqual(rewards['agent_1'].item(), env.reward_on_death)
+
+            # Check dones
             if i >= 4:
                 self.assertEqual(dones['agent_0'].item(), 1)
             else:
