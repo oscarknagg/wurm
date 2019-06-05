@@ -579,15 +579,14 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env = get_test_env(num_envs=1)
         env.boost = True
         env.foods[:, 0, 1, 5] = 1
-        print('=====')
-        print(env.self_colour/2)
-        print(env.self_colour)
         all_actions = {
             'agent_0': torch.tensor([4, 1, 2]).unsqueeze(1).long().to(DEFAULT_DEVICE),
             'agent_1': torch.tensor([0, 1, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         print_or_render(env)
+
+        body_colours = []
 
         for i in range(all_actions['agent_0'].shape[0]):
             actions = {
@@ -596,12 +595,22 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
             observations, rewards, dones, info = env.step(actions)
 
-            env.reset(dones['__all__'])
+            env.reset(dones['__all__'], return_observations=False)
+
+            img = env.render(mode='rgb_array')
+
+            # Get the colour of agent 1s body from the render
+            body_colours.append(img[127, 127, :])
 
             env.check_consistency()
 
             print_or_render(env)
-            print(env.boost_this_step)
+
+        # Check that body appears brighter when boosting
+        self.assertGreater(
+            np.linalg.norm(body_colours[0]),
+            np.linalg.norm(body_colours[1]),
+        )
 
     def test_respawn_mode_any(self):
         # Create an env where there is no room to respawn and see if we get an exception
@@ -633,14 +642,14 @@ class TestMultiSnakeEnv(unittest.TestCase):
     def test_partial_observations(self):
         num_envs = 256
         num_snakes = 4
-        observation_mode = 'partial_3'
-        env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=size, manual_setup=False, boost=True,
+        observation_mode = 'partial_5'
+        env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=25, manual_setup=False, boost=True,
                          observation_mode=observation_mode,
                          render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
                          )
         env.check_consistency()
 
-        # render_envs = True
+        render_envs = True
         observations = env._observe(observation_mode)
         if render_envs:
             fig, axes = plt.subplots(2, 2)

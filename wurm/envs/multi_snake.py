@@ -124,6 +124,7 @@ class MultiSnake(object):
         self.food_mode = food_mode
         self.food_rate = food_rate
         self.max_food = 10
+        # self.max_food = self.num_snakes * 10
         self.max_env_lifetime = 5000
         self.reward_on_death = -1
 
@@ -190,13 +191,10 @@ class MultiSnake(object):
         return img
 
     def _get_env_images(self):
-        # agent_colours = torch.tensor([
-        #     [0, 192, 0]
-        # ], device=self.device).repeat((self.num_envs*self.num_snakes, 1))
         agent_colours = self.agent_colours
 
         intensity_factor = (self.bodies.gt(EPS).float() * 1 / 3) + (self.heads.gt(EPS).float() * 1 / 3)
-        intensity_factor *= (1 + 0.5*self.boost_this_step)[:, None, None, None].expand_as(intensity_factor).float()
+        intensity_factor *= (1 + 0.5*self.boost_this_step.float())[:, None, None, None].expand_as(intensity_factor)
         intensity_factor = intensity_factor.squeeze(1)
 
         body_colours = torch.einsum('nhw,nc->nchw', [intensity_factor, agent_colours.float()])
@@ -732,7 +730,6 @@ class MultiSnake(object):
             .max(dim=-1)[0]\
             .gt(1)
         if torch.any(overlapping_bodies):
-            # print(self.heads[overlapping_bodies.repeat_interleave(self.num_snakes, 0)][:self.num_snakes])
             for i in self.bodies[overlapping_bodies.repeat_interleave(self.num_snakes, 0)][:self.num_snakes]:
                 print(i)
             print('-'*10)
@@ -870,9 +867,6 @@ class MultiSnake(object):
             ),
             random_directions_onehot
         ]).unsqueeze(1)
-        # print(new_bodies.shape)
-        # envs[:, 2 * (snake_channel + 1), :, :] = bodies
-        # envs[:, self.body_channels[snake_channel], :, :] = bodies
 
         # Create heads at end of bodies
         snake_sizes = new_bodies.view(n, -1).max(dim=1)[0]
