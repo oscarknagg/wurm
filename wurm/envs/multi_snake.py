@@ -782,11 +782,10 @@ class MultiSnake(object):
         self.agent_colours[self.dones] = new_colours
 
         if self.respawn_mode == 'any':
-            t0 = time()
-            num_done = self.dones.sum().item()
             if torch.any(self.dones):
+                t0 = time()
                 any_done_in_env = self.dones.view(self.num_envs, self.num_snakes).any(dim=1)
-                n_any_done_envs = any_done_in_env.sum().item()
+
                 # Only spawn the first dead snake from each env
                 # i.e. only spawn one snake per step
                 first_done_per_env = (self.dones.view(self.num_envs, self.num_snakes).cumsum(dim=1) == 1).flatten() & self.dones
@@ -824,6 +823,7 @@ class MultiSnake(object):
         successfully_spawned = torch.zeros(n, dtype=torch.uint8, device=self.device)
 
         # Expand pathing because you can't put a snake right next to another snake
+        t0 = time()
         pathing = (F.conv2d(
             pathing.to(dtype=self.dtype),
             torch.ones((1, 1, 3, 3), dtype=self.dtype, device=self.device),
@@ -835,6 +835,7 @@ class MultiSnake(object):
         pathing[:, :, -l:, :] = 1
         pathing[:, :, :, -l:] = 1
         available_locations = ~pathing
+        self._log(f'Respawn location calculation: {1000 * (time() - t0)}ms')
 
         any_available_locations = available_locations.view(n, -1).max(dim=1)[0].byte()
         if exception_on_failure:
@@ -844,6 +845,7 @@ class MultiSnake(object):
 
         successfully_spawned |= any_available_locations
 
+        t0 = time()
         body_seed_indices = drop_duplicates(torch.nonzero(available_locations), 0)
         # Body seeds is a tensor that contains all zeros except where a snake will be spawned
         # Shape: (n, 1, self.size, self.size)
@@ -851,13 +853,17 @@ class MultiSnake(object):
             body_seed_indices.t(), torch.ones(len(body_seed_indices)), available_locations.shape,
             device=self.device, dtype=self.dtype
         )
+        self._log(f'Choose spawn locations: {1000 * (time() - t0)}ms')
 
+        t0 = time()
         # Choose random starting directions
         random_directions = torch.randint(4, (n,), device=self.device)
         random_directions_onehot = torch.empty((n, 4), dtype=self.dtype, device=self.device)
         random_directions_onehot.zero_()
         random_directions_onehot.scatter_(1, random_directions.unsqueeze(-1), 1)
+        self._log(f'Choose spawn directions: {1000 * (time() - t0)}ms')
 
+        t0 = time()
         # Create bodies
         new_bodies = torch.einsum('bchw,bc->bhw', [
             F.conv2d(
@@ -867,7 +873,9 @@ class MultiSnake(object):
             ),
             random_directions_onehot
         ]).unsqueeze(1)
+        self._log(f'Create bodies: {1000 * (time() - t0)}ms')
 
+        t0 = time()
         # Create heads at end of bodies
         snake_sizes = new_bodies.view(n, -1).max(dim=1)[0]
         # Only create heads where there is a snake. This catches an edge case where there is no room
@@ -875,6 +883,7 @@ class MultiSnake(object):
         snake_sizes[snake_sizes == 0] = -1
         snake_size_mask = snake_sizes[:, None, None, None].expand((n, 1, self.size, self.size))
         new_heads = (new_bodies == snake_size_mask).to(dtype=self.dtype)
+        self._log(f'Create heads: {1000 * (time() - t0)}ms')
 
         return new_bodies, new_heads, random_directions, successfully_spawned
 
