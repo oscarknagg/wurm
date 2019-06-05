@@ -18,7 +18,7 @@ class A2C(object):
     def __init__(self,
                  gamma: float,
                  value_loss_fn: Callable = F.smooth_l1_loss,
-                 normalise_returns: bool = True,
+                 normalise_returns: bool = False,
                  dtype: torch.dtype = torch.float):
         self.gamma = gamma
         self.normalise_returns = normalise_returns

@@ -55,7 +55,7 @@ parser.add_argument('--save-model', default=True, type=lambda x: x.lower()[0] ==
 parser.add_argument('--save-logs', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--device', default='cuda', type=str)
-parser.add_argument('--norm-returns', default=True, type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--norm-returns', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--boost-cost', type=float, default=0.25)
 parser.add_argument('--food-on-death', type=float, default=0.33)
 parser.add_argument('--food-mode', type=str, default='random_rate')
@@ -199,39 +199,31 @@ a2c = A2C(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=dtype)
 # Run agent in environment #
 ############################
 t0 = time()
-hidden_states = {}
-# if args.warm_start:
-#     # Run all agents for warm_start steps before training
-#     observations = env.reset()
-#     for i in range(args.warm_start):
-#         actions = {}
-#         for agent, obs in observations.items():
-#             if agent_type == 'gru':
-#                 # if not trajectories._hiddens:
-#                 #     inner_hidden = None
-#                 # else:
-#                 #     inner_hidden = trajectories._hiddens[-1]
-#                 #
-#                 # print(inner_hidden.shape, obs.shape)
-#                 # probs_, value_, hidden_states_ = model(obs, inner_hidden)
-#                 probs_, value_, hidden_states_ = model(obs, hidden_states.get(agent))
-#                 hidden_states[agent] = hidden_states_#.clone()
-#             else:
-#                 probs_, value_ = model(obs)
-#             action_distribution = Categorical(probs_)
-#             actions[agent] = action_distribution.sample().clone().long()
-#
-#         observations, reward, done, info = env.step(actions)
-#
-#         env.reset(done['__all__'])
-#         env.check_consistency()
+hidden_states = {f'agent_{i}': torch.zeros((args.n_envs, 64), device=args.device) for i in range(args.n_agents)}
+if args.warm_start:
+    # Run all agents for warm_start steps before training
+    observations = env.reset()
+    for i in range(args.warm_start):
+        actions = {}
+        for agent, obs in observations.items():
+            if agent_type == 'gru':
+                probs_, value_, hidden_states[agent] = model(obs, hidden_states.get(agent))
+            else:
+                probs_, value_ = model(obs)
+            action_distribution = Categorical(probs_)
+            actions[agent] = action_distribution.sample().clone().long()
+
+        observations, reward, done, info = env.step(actions)
+
+        env.reset(done['__all__'])
+        env.check_consistency()
+
+        if not args.train:
+            hidden_states = {k: v.detach() for k, v in hidden_states.items()}
 
 if not args.warm_start:
     observations = env.reset()
 
-# hidden_states_ = torch.zeros((args.n_envs*args.n_agents, 64), device=args.device)
-hidden_states = {f'agent_{i}': torch.zeros((args.n_envs, 64), device=args.device) for i in range(args.n_agents)}
-torch.autograd.set_detect_anomaly(True)
 for i_step in count(1):
     t_i = time()
     if args.render:
@@ -291,6 +283,9 @@ for i_step in count(1):
             done=all_dones,
             entropy=all_entropies
         )
+
+    if not args.train:
+        hidden_states = {k: v.detach() for k, v in hidden_states.items()}
 
     ##########################
     # Advantage actor-critic #
