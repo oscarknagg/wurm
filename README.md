@@ -1,9 +1,20 @@
 # wurm
 
-Vectorised implementation of the classic mobile game, Snake, as a
-reinforcement learning environment.
+Vectorised and massively scalable implementation of a snake-like game
+as a reinforcement learning environment. The environment is highly
+customisable and can be run in either single-agent (classic snake)
+or multi-agent (gridworld http://slither.io/) mode.
 
-See this Medium article for a discussion of what you can do with this repo:
+### Multi-agent
+
+Experiments ongoing! Here are some prelimiary results.
+
+![Results](https://media.giphy.com/media/9DatBqefTicuQHVYVd/giphy.gif)
+
+### Single agent
+
+See this Medium article for a discussion of how to solve the single
+agent mode of this environment.
 
 https://medium.com/@oknagg/learning-to-play-snake-at-1-million-fps-4aae8d36d2f1
 
