@@ -4,8 +4,9 @@ from itertools import count
 from collections import namedtuple
 import argparse
 from time import time, sleep
-from pprint import pprint
+from pprint import pprint, pformat
 import os
+import git
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
 
 import torch
@@ -16,7 +17,7 @@ from torch.distributions import Categorical
 
 from wurm.envs import SingleSnake, SimpleGridworld, MultiSnake
 from wurm import agents
-from wurm.utils import env_consistency, CSVLogger, ExponentialMovingAverageTracker
+from wurm.utils import CSVLogger, ExponentialMovingAverageTracker
 from wurm.rl import A2C, TrajectoryStore
 from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
@@ -192,7 +193,12 @@ episode_length = 0
 num_episodes = 0
 num_steps = 0
 if args.save_logs:
-    logger = CSVLogger(filename=f'{PATH}/logs/{save_file}.csv')
+    repo = git.Repo(search_parent_directories=True)
+    sha = repo.head.object.hexsha
+    comment = f'Git commit: {sha}\n'
+    comment += 'Input args:\n'
+    comment += pformat(args.__dict__)
+    logger = CSVLogger(filename=f'{PATH}/logs/{save_file}.csv', header_comment=comment)
 if args.save_video:
     os.makedirs(PATH + f'/videos/{save_file}', exist_ok=True)
     recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/0.mp4')
@@ -418,6 +424,7 @@ for i_step in count(1):
             log_string += 'Boost: {:.2e}\t'.format(ewm_tracker['boost_rate'])
 
         log_string += 'FPS: {:.2e}\t'.format(ewm_tracker['fps'])
+        log_string += 'Coeff: {:.2e}'.format(entropy_coeff)
 
         print(log_string)
 

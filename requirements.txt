@@ -1,6 +1,7 @@
 certifi==2019.3.9
 chardet==3.0.4
 future==0.17.1
+GitPython==2.1.11
 gym==0.12.1
 idna==2.8
 numpy==1.16.3
