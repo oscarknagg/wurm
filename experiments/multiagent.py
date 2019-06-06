@@ -48,6 +48,7 @@ parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--gamma', default=0.99, type=float)
 parser.add_argument('--update-steps', default=20, type=int)
 parser.add_argument('--entropy', default=0.0, type=float)
+parser.add_argument('--entropy-min', default=None, type=float)
 parser.add_argument('--total-steps', default=float('inf'), type=float)
 parser.add_argument('--total-episodes', default=float('inf'), type=float)
 parser.add_argument('--save-location', type=str, default=None)
@@ -74,6 +75,10 @@ excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 's
                  ]
 included_args = ['n_envs', 'n_agents', 'n_species', 'lr', 'gamma', 'update_steps', 'food_rate', 'boost_cost', 'entropy',
                  'food_on_death']
+
+
+entropy_coeff = args.entropy
+
 if args.r is None:
     excluded_args += ['r', ]
 if args.total_steps == float('inf'):
@@ -233,6 +238,14 @@ for i_step in count(1):
     if args.save_video:
         recorder.capture_frame()
 
+    ########################
+    # Hyperparam annealing #
+    ########################
+    if args.entropy_min is not None:
+        # Per tick entropy annealing
+        entropy_delta = (args.entropy - args.entropy_min) / args.total_steps
+        entropy_coeff -= entropy_delta * args.n_envs
+
     #############################
     # Interact with environment #
     #############################
@@ -314,7 +327,7 @@ for i_step in count(1):
         entropy_loss = - trajectories.entropies.mean()
 
         optimizer.zero_grad()
-        loss = value_loss + policy_loss + args.entropy * entropy_loss
+        loss = value_loss + policy_loss + entropy_coeff * entropy_loss
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
         optimizer.step()
