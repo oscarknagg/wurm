@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from collections import Iterable, OrderedDict
+from pprint import pformat
 import numpy as np
 import csv
 import os
@@ -239,12 +240,14 @@ class CSVLogger(object):
         filename: filename of the csv file, e.g. 'run/log.csv'.
         separator: string used to separate elements in the csv file.
         append: True: append if file exists (useful for continuing training). False: overwrite existing file.
+        header_comment: A possibly multi line string to put at the top of the CSV file
         """
 
-    def __init__(self, filename: str, separator: str = ',', append: bool = False):
+    def __init__(self, filename: str, separator: str = ',', append: bool = False, header_comment: str = None):
         self.sep = separator
         self.filename = filename
         self.append = append
+        self.header_comment = header_comment
         self.writer = None
         self.keys = None
         self.append_header = True
@@ -279,10 +282,18 @@ class CSVLogger(object):
             else:
                 return k
 
+        def comment_out(s, comment='#'):
+            return comment + s.replace('\n', f'\n{comment}')
+
         if self.keys is None:
             self.keys = sorted(logs.keys())
 
         if not self.writer:
+            # Write the initial comment
+            if self.append_header:
+                print(comment_out(self.header_comment), file=self.csv_file)
+
+            # Write the column names
             class CustomDialect(csv.excel):
                 delimiter = self.sep
 
