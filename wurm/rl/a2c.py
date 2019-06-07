@@ -19,9 +19,13 @@ class A2C(object):
                  gamma: float,
                  value_loss_fn: Callable = F.smooth_l1_loss,
                  normalise_returns: bool = False,
+                 use_gae: bool = False,
+                 gae_lambda: float = None,
                  dtype: torch.dtype = torch.float):
         self.gamma = gamma
         self.normalise_returns = normalise_returns
+        self.use_gae = use_gae
+        self.gae_lambda = gae_lambda
         self.value_loss_fn = value_loss_fn
         self.dtype = dtype
 
@@ -41,11 +45,22 @@ class A2C(object):
             log_probs: Log probabilities of actions taken during trajectory. Shape: (num_envs, num_steps)
             dones: Done masks for trajectory states. Shape: (num_envs, num_steps)
         """
-        R = bootstrap_values * (~dones[-1]).to(self.dtype)
         returns = []
-        for r, d in zip(reversed(rewards), reversed(dones)):
-            R = r + self.gamma * R * (~d).to(self.dtype)
-            returns.insert(0, R)
+        if self.use_gae:
+            gae = 0
+            for t in reversed(range(rewards.size(0))):
+                if t == rewards.size(0) - 1:
+                    delta = rewards[t] + self.gamma * bootstrap_values * (~dones[t]).to(self.dtype) - values[t]
+                else:
+                    delta = rewards[t] + self.gamma * values[t+1] * (~dones[t]).to(self.dtype) - values[t]
+                gae = delta + self.gamma * self.gae_lambda * (~dones[t]).to(self.dtype) * gae
+                R = gae + values[t]
+                returns.insert(0, R)
+        else:
+            R = bootstrap_values * (~dones[-1]).to(self.dtype)
+            for r, d in zip(reversed(rewards), reversed(dones)):
+                R = r + self.gamma * R * (~d).to(self.dtype)
+                returns.insert(0, R)
 
         returns = torch.stack(returns)
 
