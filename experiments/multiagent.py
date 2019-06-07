@@ -48,6 +48,7 @@ parser.add_argument('--render-cols', default=1, type=int)
 parser.add_argument('--render-rows', default=1, type=int)
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--gamma', default=0.99, type=float)
+parser.add_argument('--gae-lambda', default=None, type=float)
 parser.add_argument('--update-steps', default=20, type=int)
 parser.add_argument('--entropy', default=0.0, type=float)
 parser.add_argument('--entropy-min', default=None, type=float)
@@ -59,6 +60,7 @@ parser.add_argument('--save-logs', default=True, type=lambda x: x.lower()[0] == 
 parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--norm-returns', default=False, type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--bootstrapping', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--boost-cost', type=float, default=0.25)
 parser.add_argument('--food-on-death', type=float, default=0.33)
 parser.add_argument('--reward-on-death', type=float, default=-1)
@@ -74,13 +76,14 @@ args = parser.parse_args()
 excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
                  'render_window_size', 'render_rows', 'render_cols', 'save_video', 'env', 'coord_conv',
                  'norm_returns', 'dtype', 'food_mode', 'respawn_mode', 'boost', 'warm_start',
-                 'flicker', 'entropy_min'
+                 'flicker', 'entropy_min', 'update_steps', 'bootstrapping'
                  ]
-included_args = ['n_envs', 'n_agents', 'n_species', 'lr', 'gamma', 'update_steps', 'food_rate', 'boost_cost', 'entropy',
-                 'food_on_death']
-
+# included_args = ['n_envs', 'n_agents', 'n_species', 'lr', 'gamma', 'update_steps', 'food_rate', 'boost_cost', 'entropy',
+#                  'food_on_death']
+included_args = ['n_envs', 'n_agents', 'lr', 'gamma', 'update_steps', 'entropy', 'norm_returns', 'gae_lambda']
 
 entropy_coeff = args.entropy
+value_loss_coeff = 0.5
 
 if args.r is None:
     excluded_args += ['r', ]
@@ -88,7 +91,8 @@ if args.total_steps == float('inf'):
     excluded_args += ['total_steps']
 if args.total_episodes == float('inf'):
     excluded_args += ['total_episodes']
-argsdict = {k: v for k, v in args.__dict__.items() if k not in excluded_args}
+# argsdict = {k: v for k, v in args.__dict__.items() if k not in excluded_args}
+argsdict = {k: v for k, v in args.__dict__.items() if k in included_args}
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
 
@@ -206,8 +210,6 @@ if args.env == 'snake':
                      boost_cost_prob=args.boost_cost, dtype=dtype, food_rate=args.food_rate,
                      respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_mode=observation_type,
                      reward_on_death=args.reward_on_death)
-    print('Reward on death')
-    print(env.reward_on_death)
 else:
     raise ValueError('Unrecognised environment')
 
@@ -229,7 +231,8 @@ if args.save_video:
     os.makedirs(PATH + f'/videos/{save_file}', exist_ok=True)
     recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/0.mp4')
 
-a2c = A2C(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=dtype)
+a2c = A2C(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=dtype,
+          use_gae=args.gae_lambda is not None, gae_lambda=args.gae_lambda)
 
 
 ############################
@@ -244,7 +247,7 @@ if args.warm_start:
         actions = {}
         for i, (agent, obs)in enumerate(observations.items()):
             # Get the model for the corresponding species
-            model = models[i // args.n_species]
+            model = models[i * args.n_species // args.n_agents]
             if agent_type == 'gru':
                 probs_, value_, hidden_states[agent] = model(obs, hidden_states.get(agent))
             else:
@@ -289,7 +292,7 @@ for i_step in count(1):
     probs = {}
     entropies = {}
     for i, (agent, obs) in enumerate(observations.items()):
-        model = models[i // args.n_species]
+        model = models[i * args.n_species // args.n_agents]
         if agent_type == 'gru':
             probs_, value_, hidden_states[agent] = model(obs, hidden_states.get(agent))
         else:
@@ -341,30 +344,21 @@ for i_step in count(1):
     ##########################
     if args.agent != 'random' and args.train and i_step % args.update_steps == 0:
         with torch.no_grad():
-            all_obs = torch.stack([v for k, v in observations.items()]).view(
-                -1, in_channels, observation_size, observation_size).detach()
+            bootstrap_values = []
+            for i, (agent, obs) in enumerate(observations.items()):
+                model = models[i * args.n_species // args.n_agents]
+                if agent_type == 'gru':
+                    _, _bootstraps, _ = model(obs, hidden_states.get(agent))
+                else:
+                    _, _bootstraps = model(obs)
 
-            if agent_type == 'gru':
-                all_hiddens = torch.stack([v for k, v in hidden_states.items()]).view(
-                    -1, 64)
+                bootstrap_values.append(_bootstraps)
 
-                _, bootstrap_values, _ = model(all_obs, all_hiddens)
-            else:
-                _, bootstrap_values = model(all_obs)
+            bootstrap_values = torch.stack(bootstrap_values).view(args.n_envs*args.n_agents, 1).detach()
 
-            # bootstrap_values = []
-            # for i, (agent, obs) in enumerate(observations.items()):
-            #     model = models[i // args.n_species]
-            #     if agent_type == 'gru':
-            #         _, _bootstraps, _ = model(obs, hidden_states.get(agent))
-            #     else:
-            #         _, _bootstraps = model(obs)
-            #
-            #     bootstrap_values.append(_bootstraps)
-            #
-            # bootstrap_values = torch.stack(bootstrap_values).view(args.n_envs*args.n_agents, 1).detach()
+        if not args.bootstrapping:
+            bootstrap_values = torch.zeros_like(bootstrap_values)
 
-        bootstrap_values = torch.zeros_like(bootstrap_values)
         # print('bootstrap_values', bootstrap_values.shape)
         value_loss, policy_loss = a2c.loss(
             bootstrap_values.detach(),
@@ -379,7 +373,7 @@ for i_step in count(1):
         # optimizer.zero_grad()
         for opt in optimizers:
             opt.zero_grad()
-        loss = value_loss + policy_loss + entropy_coeff * entropy_loss
+        loss = value_loss_coeff *value_loss + policy_loss + entropy_coeff * entropy_loss
         loss.backward()
         # nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
         for model in models:
@@ -411,24 +405,6 @@ for i_step in count(1):
                 recorder.close()
                 recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/{num_episodes}.mp4')
 
-    # currently_alive = ~torch.stack([v for k, v in done.items() if k.startswith('agent_')]).t()
-    # instantaneous_reward = torch.stack([r for a, r in reward.items()])
-    # living_reward_rate = instantaneous_reward[currently_alive.t()].mean().item()
-    # living_reward_rate = 0 if np.isnan(living_reward_rate) else living_reward_rate
-    # instantaneous_entropy = torch.stack([r for a, r in entropies.items()])
-    # living_entropy = instantaneous_entropy[currently_alive.t()].mean().item()
-    # living_entropy = 0 if np.isnan(living_entropy) else living_entropy
-    # instantaneous_edge = torch.stack([v for k, v in info.items() if k.startswith('edge_collision_')]).float().mean().item()
-    # ewm_tracker(
-    #     reward_rate=living_reward_rate,
-    #     entropy=living_entropy,
-    #     edge_collisions=instantaneous_edge,
-    # )
-    #
-    # instanteous_sizes = env.bodies.view(env.num_envs, env.num_snakes, -1).max(dim=-1)[0]
-    # living_sizes = instanteous_sizes[currently_alive].mean().item()
-    # living_sizes = 0 if np.isnan(living_sizes) else living_sizes
-
     logs = {
         't': t,
         'steps': num_steps,
@@ -451,42 +427,6 @@ for i_step in count(1):
 
     ewm_tracker(**logs)
 
-    # logs = {
-    #     't': t,
-    #     'steps': num_steps,
-    #     'episodes': num_episodes,
-    #     'reward_rate': living_reward_rate,
-    #     'policy_entropy': living_entropy,
-    #     'edge_collisions': instantaneous_edge,
-    # }
-    # if args.env == 'snake':
-    #     instantaneous_snake = torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
-    #     instanteous_sizes = env.bodies.view(env.num_envs, env.num_snakes, -1).max(dim=-1)[0]
-    #     living_sizes = instanteous_sizes[currently_alive].mean().item()
-    #     living_sizes = 0 if np.isnan(living_sizes) else living_sizes
-    #     instantaneous_snake_collision = \
-    #         torch.stack([v for k, v in info.items() if k.startswith('snake_collision_')]).float().mean().item()
-    #     # instaneous_boosts = torch.stack([v for k, v in env.boost_this_step.items()])
-    #     instaneous_boosts = env.boost_this_step.view(env.num_snakes, env.num_envs)
-    #     living_boosts = instaneous_boosts[currently_alive.t()].float().mean().item()
-    #     living_boosts = 0 if np.isnan(living_boosts) else living_boosts
-    #     ewm_tracker(
-    #         snake_collisions=instantaneous_snake,
-    #         avg_size=living_sizes,
-    #         boost_rate=living_boosts
-    #     )
-    #     logs.update({
-    #         'avg_size': living_sizes,
-    #         'snake_collisions': instantaneous_snake_collision,
-    #         'boost_rate': living_boosts
-    #     })
-
-    # if args.agent != 'random' and args.train and i_step > args.update_steps:
-    #     logs.update({
-    #         'value_loss': value_loss,
-    #         'policy_loss': policy_loss,
-    #         'entropy_loss': entropy_loss,
-    #     })
 
     if i_step % PRINT_INTERVAL == 0:
         # pprint(info)
