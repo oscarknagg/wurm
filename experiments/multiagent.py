@@ -78,9 +78,7 @@ excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 's
                  'norm_returns', 'dtype', 'food_mode', 'respawn_mode', 'boost', 'warm_start',
                  'flicker', 'entropy_min', 'update_steps', 'bootstrapping'
                  ]
-# included_args = ['n_envs', 'n_agents', 'n_species', 'lr', 'gamma', 'update_steps', 'food_rate', 'boost_cost', 'entropy',
-#                  'food_on_death']
-included_args = ['n_envs', 'n_agents', 'lr', 'gamma', 'update_steps', 'entropy', 'norm_returns', 'gae_lambda']
+included_args = ['n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy']
 
 entropy_coeff = args.entropy
 value_loss_coeff = 0.5
@@ -91,7 +89,6 @@ if args.total_steps == float('inf'):
     excluded_args += ['total_steps']
 if args.total_episodes == float('inf'):
     excluded_args += ['total_episodes']
-# argsdict = {k: v for k, v in args.__dict__.items() if k not in excluded_args}
 argsdict = {k: v for k, v in args.__dict__.items() if k in included_args}
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
@@ -144,7 +141,6 @@ else:
     num_actions = 4
 
 # Create agent(s)
-# if args.n_agents % args.n_species
 models: List[nn.Module] = []
 if agent_type == 'relational':
     for i in range(args.n_species):
@@ -359,7 +355,6 @@ for i_step in count(1):
         if not args.bootstrapping:
             bootstrap_values = torch.zeros_like(bootstrap_values)
 
-        # print('bootstrap_values', bootstrap_values.shape)
         value_loss, policy_loss = a2c.loss(
             bootstrap_values.detach(),
             trajectories.rewards,
@@ -370,15 +365,12 @@ for i_step in count(1):
 
         entropy_loss = - trajectories.entropies.mean()
 
-        # optimizer.zero_grad()
         for opt in optimizers:
             opt.zero_grad()
         loss = value_loss_coeff *value_loss + policy_loss + entropy_coeff * entropy_loss
         loss.backward()
-        # nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
         for model in models:
             nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
-        # optimizer.step()
         for opt in optimizers:
             opt.step()
 
@@ -427,9 +419,7 @@ for i_step in count(1):
 
     ewm_tracker(**logs)
 
-
     if i_step % PRINT_INTERVAL == 0:
-        # pprint(info)
         log_string = '[{:02d}:{:02d}:{:02d}]\t'.format(int((t // 3600)), int((t // 60) % 60), int(t % 60))
         log_string += 'Steps {:.2f}e6\t'.format(num_steps / 1e6)
         log_string += 'Reward: {:.2e}\t'.format(ewm_tracker['reward_0'])
@@ -440,11 +430,7 @@ for i_step in count(1):
         if args.env == 'snake':
             log_string += 'Collision: {:.2e}\t'.format(ewm_tracker['snake_collisions_0'])
             log_string += 'Size: {:.3}\t'.format(ewm_tracker['size_0'])
-            log_string += 'Boost: {:.2e}\t'.format(ewm_tracker['food_0'])
-        # if args.env == 'snake':
-        #     log_string += 'Size: {:.3}\t'.format(ewm_tracker['avg_size'])
-        #     log_string += 'Collision: {:.2e}\t'.format(ewm_tracker['snake_collisions'])
-        #     log_string += 'Boost: {:.2e}\t'.format(ewm_tracker['boost_rate'])
+            log_string += 'Boost: {:.2e}\t'.format(ewm_tracker['boost_0'])
 
         log_string += 'FPS: {:.2e}\t'.format(ewm_tracker['fps'])
         # log_string += 'Coeff: {:.2e}'.format(entropy_coeff)
