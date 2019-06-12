@@ -26,6 +26,7 @@ from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 LOG_INTERVAL = 1
 MODEL_INTERVAL = 100
 PRINT_INTERVAL = 1000
+HEATMAP_INTERVAL = 100
 MAX_GRAD_NORM = 0.5
 FPS = 10
 
@@ -58,6 +59,7 @@ parser.add_argument('--save-location', type=str, default=None)
 parser.add_argument('--save-model', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--save-logs', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--save-heatmap', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--norm-returns', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--bootstrapping', default=True, type=lambda x: x.lower()[0] == 't')
@@ -294,6 +296,7 @@ if args.warm_start:
 if not args.warm_start:
     observations = env.reset()
 
+head_heatmap = torch.zeros((args.n_agents, args.size, args.size), device=args.device, dtype=torch.float)
 for i_step in count(1):
     t_i = time()
     if args.render:
@@ -474,19 +477,26 @@ for i_step in count(1):
             log_string += 'Boost: {:.2e}\t'.format(ewm_tracker['boost_0'])
 
         log_string += 'FPS: {:.2e}\t'.format(ewm_tracker['fps'])
-        # log_string += 'Coeff: {:.2e}'.format(entropy_coeff)
 
         print(log_string)
 
-    if i_step % MODEL_INTERVAL:
-        if args.save_model:
-            os.makedirs(f'{PATH}/models/', exist_ok=True)
-            for i, model in enumerate(models):
-                torch.save(model.state_dict(), f'{PATH}/models/{save_file}__species={i}.pt')
+    if i_step % MODEL_INTERVAL == 0and args.save_model:
+        os.makedirs(f'{PATH}/models/', exist_ok=True)
+        for i, model in enumerate(models):
+            torch.save(model.state_dict(), f'{PATH}/models/{save_file}__species={i}.pt')
 
-    if i_step % LOG_INTERVAL == 0:
-        if args.save_logs:
-            logger.write(logs)
+    head_heatmap = head_heatmap + env.heads.view(args.n_envs, args.n_agents, args.size, args.size).sum(dim=0).clone()
+    if i_step % HEATMAP_INTERVAL == 0 and args.save_heatmap:
+        os.makedirs(f'{PATH}/heatmaps/{save_file}/', exist_ok=True)
+        np.save(f'{PATH}/heatmaps/{save_file}/{num_steps}.npy', head_heatmap.cpu().numpy())
+        # Add head x and y positions to logging
+
+        # Reset heatmap
+        head_heatmap = torch.zeros((args.n_agents, args.size, args.size), device=args.device, dtype=torch.float)
+
+
+    if i_step % LOG_INTERVAL == 0 and args.save_logs:
+        logger.write(logs)
 
     if num_steps >= args.total_steps or num_episodes >= args.total_episodes:
         break
