@@ -24,9 +24,9 @@ from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
 
 LOG_INTERVAL = 1
-MODEL_INTERVAL = 100
+MODEL_INTERVAL = 1000
 PRINT_INTERVAL = 1000
-HEATMAP_INTERVAL = 100
+HEATMAP_INTERVAL = 1000
 MAX_GRAD_NORM = 0.5
 FPS = 10
 
@@ -456,9 +456,8 @@ for i_step in count(1):
             f'boost_{i}': info[f'boost_{i}'][~done[f'agent_{i}']].float().mean(),
             f'size_{i}': info[f'size_{i}'][~done[f'agent_{i}']].mean(),
             f'done_{i}': done[f'agent_{i}'].float().mean(),
-
-            f'__reward_{i}': reward[f'agent_{i}'].mean(),
-            f'__size_{i}': info[f'size_{i}'].mean(),
+            # Return of an episode is equivalent to the size on death
+            f'return_{i}': info[f'size_{i}'][done[f'agent_{i}']].mean(),
         })
 
     ewm_tracker(**logs)
@@ -493,7 +492,6 @@ for i_step in count(1):
 
         # Reset heatmap
         head_heatmap = torch.zeros((args.n_agents, args.size, args.size), device=args.device, dtype=torch.float)
-
 
     if i_step % LOG_INTERVAL == 0 and args.save_logs:
         logger.write(logs)
