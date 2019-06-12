@@ -71,7 +71,8 @@ class MultiSnake(object):
                  respawn_mode: str = 'all',
                  reward_on_death: int = -1,
                  verbose: int = 0,
-                 render_args: dict = None):
+                 render_args: dict = None,
+                 agent_colours: str = 'random'):
         """Initialise the environments
 
         Args:
@@ -123,8 +124,7 @@ class MultiSnake(object):
         self.boost_cost_prob = boost_cost_prob
         self.food_mode = food_mode
         self.food_rate = food_rate
-        self.max_food = 10
-        # self.max_food = self.num_snakes * 10
+        self.max_food = self.num_snakes * 8
         self.max_env_lifetime = 5000
         self.reward_on_death = reward_on_death
 
@@ -140,7 +140,14 @@ class MultiSnake(object):
         self.food_colour = torch.tensor((255, 0, 0), dtype=torch.short, device=self.device)
         self.edge_colour = torch.tensor((0, 0, 0), dtype=torch.short, device=self.device)
 
-        self.agent_colours = self.get_n_colours(self.num_envs*self.num_snakes)
+        if agent_colours == 'random':
+            self.colour_mode = 'random'
+            self.agent_colours = self.get_n_colours(self.num_envs*self.num_snakes)
+        elif agent_colours == 'fixed':
+            self.colour_mode = 'fixed'
+            self.agent_colours = self.get_n_colours(self.num_snakes).repeat(self.num_envs, 1)
+        else:
+            raise ValueError('agent_colours must in {random, fixed}')
         self.num_colours = self.agent_colours.shape[0]
 
         self.info = {}
@@ -790,9 +797,10 @@ class MultiSnake(object):
         self.env_lifetimes[done] = 0
         self.dones[agent_dones] = 0
 
-        # Change agent colours each death
-        new_colours = self.get_n_colours(self.dones.sum().item())
-        self.agent_colours[self.dones] = new_colours
+        if self.colour_mode == 'random':
+            # Change agent colours each death
+            new_colours = self.get_n_colours(self.dones.sum().item())
+            self.agent_colours[self.dones] = new_colours
 
         if self.respawn_mode == 'any':
             if torch.any(self.dones):
