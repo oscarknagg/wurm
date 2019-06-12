@@ -24,8 +24,8 @@ from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
 
 LOG_INTERVAL = 1
-MODEL_INTERVAL = 10
-PRINT_INTERVAL = 100
+MODEL_INTERVAL = 100
+PRINT_INTERVAL = 1000
 MAX_GRAD_NORM = 0.5
 FPS = 10
 
@@ -36,7 +36,7 @@ parser.add_argument('--n-envs', type=int)
 parser.add_argument('--n-agents', type=int)
 parser.add_argument('--size', type=int)
 parser.add_argument('--agent', type=str)
-parser.add_argument('--observation', type=str)
+parser.add_argument('--obs', type=str)
 parser.add_argument('--n-species', type=int, default=1)
 parser.add_argument('--warm-start', default=0, type=int)
 parser.add_argument('--boost', default=True, type=lambda x: x.lower()[0] == 't')
@@ -63,12 +63,15 @@ parser.add_argument('--norm-returns', default=False, type=lambda x: x.lower()[0]
 parser.add_argument('--bootstrapping', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--boost-cost', type=float, default=0.25)
 parser.add_argument('--food-on-death', type=float, default=0.33)
+parser.add_argument('--food-on-death-min', type=float, default=0.33)
 parser.add_argument('--reward-on-death', type=float, default=-1)
 parser.add_argument('--food-mode', type=str, default='random_rate')
 parser.add_argument('--food-rate', type=float, default=None)
+parser.add_argument('--food-rate-min', type=float, default=None)
 parser.add_argument('--respawn-mode', type=str, default='any')
 parser.add_argument('--dtype', type=str, default='float')
 parser.add_argument('--flicker', type=int, default=None)
+parser.add_argument('--colour-mode', type=str, default='random')
 parser.add_argument('--r', default=None, type=int, help='Repeat number')
 
 args = parser.parse_args()
@@ -78,7 +81,7 @@ excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 's
                  'norm_returns', 'dtype', 'food_mode', 'respawn_mode', 'boost', 'warm_start',
                  'flicker', 'entropy_min', 'update_steps', 'bootstrapping'
                  ]
-included_args = ['n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy']
+included_args = ['n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy', 'agent', 'obs', 'gamma', 'r']
 
 entropy_coeff = args.entropy
 value_loss_coeff = 0.5
@@ -93,10 +96,10 @@ argsdict = {k: v for k, v in args.__dict__.items() if k in included_args}
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
 
-if args.observation == 'full':
+if args.obs == 'full':
     observation_size = args.size
-elif args.observation.startswith('partial_'):
-    observation_size = 2*int(args.observation.split('_')[1]) + 1
+elif args.obs.startswith('partial_'):
+    observation_size = 2*int(args.obs.split('_')[1]) + 1
 else:
     raise RuntimeError
 
@@ -118,21 +121,44 @@ else:
 # Configure Agent #
 ###################
 # Reload/fresh model
-if os.path.exists(args.agent) or os.path.exists(os.path.join(PATH, 'models', args.agent)):
-    # Agent is to be loaded from a file
-    agent_path = args.agent if os.path.exists(args.agent) else os.path.join(PATH, 'models', args.agent)
-    agent_str = args.agent.split('/')[-1][:-3]
-    agent_params = {kv.split('=')[0]: kv.split('=')[1] for kv in agent_str.split('__')}
-    agent_type = agent_params['agent']
-    observation_type = agent_params['observation']
-    reload = True
-    print('Loading agent from file. Agent params:')
-    pprint(agent_params)
+if args.n_species == 1:
+    # The passed path is actually a real file
+    if os.path.exists(args.agent) or os.path.exists(os.path.join(PATH, 'models', args.agent)):
+        # Agent is to be loaded from a file
+        agent_path = args.agent if os.path.exists(args.agent) else os.path.join(PATH, 'models', args.agent)
+        agent_str = args.agent.split('/')[-1][:-3]
+        agent_params = {kv.split('=')[0]: kv.split('=')[1] for kv in agent_str.split('__')}
+        agent_type = agent_params['agent']
+        observation_type = agent_params['obs']
+        reload = True
+        print('Loading agent from file. Agent params:')
+        pprint(agent_params)
+    else:
+        # Creating a new agent
+        agent_type = args.agent
+        observation_type = args.obs
+        reload = False
+elif args.n_species > 1:
+    # The passed path is needs to be suffixed with the species number
+    species_0_path = args.agent+'__species=0.pt'
+    species_0_relative_path = os.path.join(PATH, 'models', args.agent)+'__species=0.pt'
+    if os.path.exists(species_0_path) or os.path.exists(species_0_relative_path):
+        # Agents are to be loaded from a file
+        agent_path = args.agent if species_0_path else os.path.join(PATH, 'models', args.agent)
+        agent_str = args.agent.split('/')[-1]#[:-3]
+        agent_params = {kv.split('=')[0]: kv.split('=')[1] for kv in agent_str.split('__')}
+        agent_type = agent_params['agent']
+        observation_type = agent_params['obs']
+        reload = True
+        print('Loading agent from file. Agent params:')
+        pprint(agent_params)
+    else:
+        # Creating a new agent
+        agent_type = args.agent
+        observation_type = args.obs
+        reload = False
 else:
-    # Creating a new agent
-    agent_type = args.agent
-    observation_type = args.observation
-    reload = False
+    raise ValueError('n_species must be >= 1')
 
 in_channels = 3
 if args.boost:
@@ -171,7 +197,12 @@ else:
     raise ValueError('Unrecognised agent')
 
 if reload:
-    models[0].load_state_dict(torch.load(agent_path))
+    for i in range(args.n_species):
+        model_path = agent_path if args.n_species == 1 else agent_path+f'__species={i}.pt'
+        print('Loading '+model_path)
+        models[i].load_state_dict(
+            torch.load(model_path)
+        )
 
 if args.train:
     for m in models:
@@ -205,7 +236,7 @@ if args.env == 'snake':
                      size=args.size, device=args.device, render_args=render_args, boost=args.boost,
                      boost_cost_prob=args.boost_cost, dtype=dtype, food_rate=args.food_rate,
                      respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_mode=observation_type,
-                     reward_on_death=args.reward_on_death)
+                     reward_on_death=args.reward_on_death, agent_colours=args.colour_mode)
 else:
     raise ValueError('Unrecognised environment')
 
@@ -279,6 +310,16 @@ for i_step in count(1):
         # Per tick entropy annealing
         entropy_delta = (args.entropy - args.entropy_min) / args.total_steps
         entropy_coeff -= entropy_delta * args.n_envs
+
+    if args.food_rate_min is not None:
+        # Per tick entropy annealing
+        food_delta = (args.food_rate - args.food_rate_min) / args.total_steps
+        env.food_rate -= food_delta * args.n_envs
+
+    if args.food_on_death_min is not None:
+        # Per tick entropy annealing
+        food_on_death_delta = (args.food_on_death - args.food_on_death_min) / args.total_steps
+        env.food_on_death_prob -= food_on_death_delta * args.n_envs
 
     #############################
     # Interact with environment #
