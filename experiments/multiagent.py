@@ -9,6 +9,7 @@ from pprint import pprint, pformat
 import os
 import git
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
+import gc
 
 import torch
 import torch.nn as nn
@@ -18,10 +19,17 @@ from torch.distributions import Categorical
 
 from wurm.envs import SingleSnake, SimpleGridworld, MultiSnake
 from wurm import agents
-from wurm.utils import CSVLogger, ExponentialMovingAverageTracker
+from wurm.utils import CSVLogger, ExponentialMovingAverageTracker, print_alive_tensors
 from wurm.rl import A2C, TrajectoryStore
 from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
+# # memory profiling
+# from wurm.gpu_profile import gpu_profile
+# import sys
+# sys.settrace(gpu_profile)
+# import os
+# # os.environ['CUDA_VISIBLE_DEVICES']='2'
+# os.environ['GPU_DEBUG']='2'
 
 LOG_INTERVAL = 1
 MODEL_INTERVAL = 1000
@@ -65,10 +73,10 @@ parser.add_argument('--norm-returns', default=False, type=lambda x: x.lower()[0]
 parser.add_argument('--bootstrapping', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--boost-cost', type=float, default=0.25)
 parser.add_argument('--food-on-death', type=float, default=0.33)
-parser.add_argument('--food-on-death-min', type=float, default=0.33)
+parser.add_argument('--food-on-death-min', type=float, default=None)
 parser.add_argument('--reward-on-death', type=float, default=-1)
 parser.add_argument('--food-mode', type=str, default='random_rate')
-parser.add_argument('--food-rate', type=float, default=None)
+parser.add_argument('--food-rate', type=float, default=3e-4)
 parser.add_argument('--food-rate-min', type=float, default=None)
 parser.add_argument('--respawn-mode', type=str, default='any')
 parser.add_argument('--dtype', type=str, default='float')
@@ -213,6 +221,8 @@ else:
     torch.no_grad()
     for m in models:
         m.eval()
+        for param in m.parameters():
+            param.requires_grad = False
 
 print(models[0])
 
@@ -498,6 +508,27 @@ for i_step in count(1):
 
     if num_steps >= args.total_steps or num_episodes >= args.total_episodes:
         break
+    #
+    # tensor_count = 0
+    # grad_tensor_count = 0
+    # for obj in gc.get_objects():
+    #     try:
+    #         if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+    #             tensor_count += 1
+    #             if obj.requires_grad and isinstance(obj, torch.Tensor):
+    #                 print(type(obj), obj.size(), obj.requires_grad)
+    #                 grad_tensor_count += 1
+    #     except:
+    #         pass
+    #
+    # print('-'*100)
+    # print('Tensor count = ', tensor_count)
+    # print('Grad Tensor count = ', grad_tensor_count)
+    # print('-'*100)
+    #
+    # if i_step == 2:
+    #     break
+
 
 if args.save_video:
     recorder.close()
