@@ -9,7 +9,6 @@ from pprint import pprint, pformat
 import os
 import git
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
-import gc
 
 import torch
 import torch.nn as nn
@@ -23,14 +22,8 @@ from wurm.utils import CSVLogger, ExponentialMovingAverageTracker, print_alive_t
 from wurm.rl import A2C, TrajectoryStore
 from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
 
-# # memory profiling
-# from wurm.gpu_profile import gpu_profile
-# import sys
-# sys.settrace(gpu_profile)
-# import os
-# # os.environ['CUDA_VISIBLE_DEVICES']='2'
-# os.environ['GPU_DEBUG']='2'
 
+VALUE_LOSS_COEFF = 0.5
 LOG_INTERVAL = 1
 MODEL_INTERVAL = 1000
 PRINT_INTERVAL = 1000
@@ -70,7 +63,6 @@ parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] =
 parser.add_argument('--save-heatmap', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--norm-returns', default=False, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--bootstrapping', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--boost-cost', type=float, default=0.25)
 parser.add_argument('--food-on-death', type=float, default=0.33)
 parser.add_argument('--food-on-death-min', type=float, default=None)
@@ -89,12 +81,11 @@ args = parser.parse_args()
 excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
                  'render_window_size', 'render_rows', 'render_cols', 'save_video', 'env', 'coord_conv',
                  'norm_returns', 'dtype', 'food_mode', 'respawn_mode', 'boost', 'warm_start',
-                 'flicker', 'entropy_min', 'update_steps', 'bootstrapping'
+                 'flicker', 'entropy_min', 'update_steps',
                  ]
-included_args = ['n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy', 'agent', 'obs', 'gamma', 'r']
+included_args = ['n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy', 'agent', 'obs', 'r']
 
 entropy_coeff = args.entropy
-value_loss_coeff = 0.5
 
 if args.r is None:
     excluded_args += ['r', ]
@@ -176,7 +167,9 @@ if args.boost:
 else:
     num_actions = 4
 
-# Create agent(s)
+###################
+# Create agent(s) #
+###################
 models: List[nn.Module] = []
 if agent_type == 'relational':
     for i in range(args.n_species):
@@ -232,7 +225,6 @@ if args.agent != 'random' and args.train:
         optimizers.append(
             optim.Adam(models[i].parameters(), lr=args.lr, weight_decay=1e-5)
         )
-eps = np.finfo(np.float32).eps.item()
 
 
 #################
@@ -306,7 +298,9 @@ if args.warm_start:
 if not args.warm_start:
     observations = env.reset()
 
-head_heatmap = torch.zeros((args.n_agents, args.size, args.size), device=args.device, dtype=torch.float)
+if args.save_heatmap:
+    head_heatmap = torch.zeros((args.n_agents, args.size, args.size), device=args.device, dtype=torch.float, requires_grad=False)
+
 for i_step in count(1):
     t_i = time()
     if args.render:
@@ -406,9 +400,6 @@ for i_step in count(1):
 
             bootstrap_values = torch.stack(bootstrap_values).view(args.n_envs*args.n_agents, 1).detach()
 
-        if not args.bootstrapping:
-            bootstrap_values = torch.zeros_like(bootstrap_values)
-
         value_loss, policy_loss = a2c.loss(
             bootstrap_values.detach(),
             trajectories.rewards,
@@ -421,7 +412,7 @@ for i_step in count(1):
 
         for opt in optimizers:
             opt.zero_grad()
-        loss = value_loss_coeff *value_loss + policy_loss + entropy_coeff * entropy_loss
+        loss = VALUE_LOSS_COEFF * value_loss + policy_loss + entropy_coeff * entropy_loss
         loss.backward()
         for model in models:
             nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
@@ -458,16 +449,16 @@ for i_step in count(1):
     }
     for i in range(args.n_agents):
         logs.update({
-            f'reward_{i}': reward[f'agent_{i}'][~done[f'agent_{i}']].mean(),
-            f'policy_entropy_{i}': entropies[f'agent_{i}'][~done[f'agent_{i}']].mean(),
-            f'food_{i}': info[f'food_{i}'][~done[f'agent_{i}']].mean(),
-            f'edge_collisions_{i}': info[f'edge_collision_{i}'].float().mean(),
-            f'snake_collisions_{i}': info[f'snake_collision_{i}'].float().mean(),
-            f'boost_{i}': info[f'boost_{i}'][~done[f'agent_{i}']].float().mean(),
-            f'size_{i}': info[f'size_{i}'][~done[f'agent_{i}']].mean(),
-            f'done_{i}': done[f'agent_{i}'].float().mean(),
+            f'reward_{i}': reward[f'agent_{i}'][~done[f'agent_{i}']].mean().item(),
+            f'policy_entropy_{i}': entropies[f'agent_{i}'][~done[f'agent_{i}']].mean().item(),
+            f'food_{i}': info[f'food_{i}'][~done[f'agent_{i}']].mean().item(),
+            f'edge_collisions_{i}': info[f'edge_collision_{i}'].float().mean().item(),
+            f'snake_collisions_{i}': info[f'snake_collision_{i}'].float().mean().item(),
+            f'boost_{i}': info[f'boost_{i}'][~done[f'agent_{i}']].float().mean().item(),
+            f'size_{i}': info[f'size_{i}'][~done[f'agent_{i}']].mean().item(),
+            f'done_{i}': done[f'agent_{i}'].float().mean().item(),
             # Return of an episode is equivalent to the size on death
-            f'return_{i}': info[f'size_{i}'][done[f'agent_{i}']].mean(),
+            f'return_{i}': info[f'size_{i}'][done[f'agent_{i}']].mean().item(),
         })
 
     ewm_tracker(**logs)
@@ -494,41 +485,20 @@ for i_step in count(1):
         for i, model in enumerate(models):
             torch.save(model.state_dict(), f'{PATH}/models/{save_file}__species={i}.pt')
 
-    head_heatmap = head_heatmap + env.heads.view(args.n_envs, args.n_agents, args.size, args.size).sum(dim=0).clone()
-    if i_step % HEATMAP_INTERVAL == 0 and args.save_heatmap:
-        os.makedirs(f'{PATH}/heatmaps/{save_file}/', exist_ok=True)
-        np.save(f'{PATH}/heatmaps/{save_file}/{num_steps}.npy', head_heatmap.cpu().numpy())
-        # Add head x and y positions to logging
-
-        # Reset heatmap
-        head_heatmap = torch.zeros((args.n_agents, args.size, args.size), device=args.device, dtype=torch.float)
+    if args.save_heatmap:
+        head_heatmap += env.heads.view(args.n_envs, args.n_agents, args.size, args.size).sum(dim=0).clone()
+        if i_step % HEATMAP_INTERVAL == 0:
+            os.makedirs(f'{PATH}/heatmaps/{save_file}/', exist_ok=True)
+            np.save(f'{PATH}/heatmaps/{save_file}/{num_steps}.npy', head_heatmap.cpu().numpy())
+            # Reset heatmap
+            head_heatmap = torch.zeros((args.n_agents, args.size, args.size),
+                                       device=args.device, dtype=torch.float, requires_grad=False)
 
     if i_step % LOG_INTERVAL == 0 and args.save_logs:
         logger.write(logs)
 
     if num_steps >= args.total_steps or num_episodes >= args.total_episodes:
         break
-    #
-    # tensor_count = 0
-    # grad_tensor_count = 0
-    # for obj in gc.get_objects():
-    #     try:
-    #         if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-    #             tensor_count += 1
-    #             if obj.requires_grad and isinstance(obj, torch.Tensor):
-    #                 print(type(obj), obj.size(), obj.requires_grad)
-    #                 grad_tensor_count += 1
-    #     except:
-    #         pass
-    #
-    # print('-'*100)
-    # print('Tensor count = ', tensor_count)
-    # print('Grad Tensor count = ', grad_tensor_count)
-    # print('-'*100)
-    #
-    # if i_step == 2:
-    #     break
-
 
 if args.save_video:
     recorder.close()
