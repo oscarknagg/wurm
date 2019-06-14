@@ -34,7 +34,8 @@ class A2C(object):
              rewards: torch.Tensor,
              values: torch.Tensor,
              log_probs: torch.Tensor,
-             dones: torch.Tensor):
+             dones: torch.Tensor,
+             return_returns: bool = False):
         """Calculate A2C loss.
 
         Args:
@@ -71,4 +72,8 @@ class A2C(object):
         advantages = returns - values
         policy_loss = - (advantages.detach() * log_probs).mean()
 
-        return value_loss, policy_loss
+        ret = (value_loss, policy_loss)
+        if return_returns:
+            ret += returns
+
+        return ret
