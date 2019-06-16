@@ -37,7 +37,7 @@ parser.add_argument('--env', type=str)
 parser.add_argument('--n-envs', type=int)
 parser.add_argument('--n-agents', type=int)
 parser.add_argument('--size', type=int)
-parser.add_argument('--agent', type=str)
+parser.add_argument('--agent', type=str, nargs='+')
 parser.add_argument('--obs', type=str)
 parser.add_argument('--n-species', type=int, default=1)
 parser.add_argument('--warm-start', default=0, type=int)
@@ -117,50 +117,7 @@ if args.save_location is None:
 else:
     save_file = args.save_location
 
-
-###################
-# Configure Agent #
-###################
-# Reload/fresh model
-if args.n_species == 1:
-    # The passed path is actually a real file
-    if os.path.exists(args.agent) or os.path.exists(os.path.join(PATH, 'models', args.agent)):
-        # Agent is to be loaded from a file
-        agent_path = args.agent if os.path.exists(args.agent) else os.path.join(PATH, 'models', args.agent)
-        agent_str = args.agent.split('/')[-1][:-3]
-        agent_params = {kv.split('=')[0]: kv.split('=')[1] for kv in agent_str.split('__')}
-        agent_type = agent_params['agent']
-        observation_type = agent_params['obs']
-        reload = True
-        print('Loading agent from file. Agent params:')
-        pprint(agent_params)
-    else:
-        # Creating a new agent
-        agent_type = args.agent
-        observation_type = args.obs
-        reload = False
-elif args.n_species > 1:
-    # The passed path is needs to be suffixed with the species number
-    species_0_path = args.agent+'__species=0.pt'
-    species_0_relative_path = os.path.join(PATH, 'models', args.agent)+'__species=0.pt'
-    if os.path.exists(species_0_path) or os.path.exists(species_0_relative_path):
-        # Agents are to be loaded from a file
-        agent_path = args.agent if species_0_path else os.path.join(PATH, 'models', args.agent)
-        agent_str = args.agent.split('/')[-1]#[:-3]
-        agent_params = {kv.split('=')[0]: kv.split('=')[1] for kv in agent_str.split('__')}
-        agent_type = agent_params['agent']
-        observation_type = agent_params['obs']
-        reload = True
-        print('Loading agent from file. Agent params:')
-        pprint(agent_params)
-    else:
-        # Creating a new agent
-        agent_type = args.agent
-        observation_type = args.obs
-        reload = False
-else:
-    raise ValueError('n_species must be >= 1')
-
+# In channels
 in_channels = 3
 if args.boost:
     num_actions = 8  # each direction with/without boost
@@ -170,41 +127,62 @@ else:
 ###################
 # Create agent(s) #
 ###################
+# Quick hack to make it easier to input all of the species trained in one particular experiment
+if len(args.agent) == 1:
+    species_0_path = args.agent[0]+'__species=0.pt'
+    species_0_relative_path = os.path.join(PATH, 'models', args.agent[0])+'__species=0.pt'
+    if os.path.exists(species_0_path) or os.path.exists(species_0_relative_path):
+        agent_path = args.agent[0] if species_0_path else os.path.join(PATH, 'models', args.agent)
+        args.agent = [agent_path + f'__species={i}.pt' for i in range(args.n_species)]
+
 models: List[nn.Module] = []
-if agent_type == 'relational':
-    for i in range(args.n_species):
+for i in range(args.n_species):
+    # Check for existence of model file
+    model_path = args.agent[i]
+    model_relative_path = os.path.join(PATH, 'models', args.agent[i])
+
+    # Get agent params
+    if os.path.exists(model_path) or os.path.exists(model_relative_path):
+        agent_str = args.agent[i].split('/')[-1][:-3]
+        agent_params = {kv.split('=')[0]: kv.split('=')[1] for kv in agent_str.split('__')}
+        agent_type = agent_params['agent']
+        observation_type = agent_params['obs']
+        reload = True
+    else:
+        agent_type = args.agent[i]
+        observation_type = args.obs
+        reload = False
+
+    # Create model class
+    if agent_type == 'relational':
         models.append(
             agents.RelationalAgent(
-                num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32, num_relational=2,
+                num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
+                num_relational=2,
                 num_attention_heads=2, relational_dim=32, num_feedforward=1, feedforward_dim=64, residual=True
             ).to(device=args.device, dtype=dtype)
         )
-elif agent_type == 'conv':
-    for i in range(args.n_species):
+    elif agent_type == 'conv':
         models.append(
             agents.ConvAgent(
                 num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                 num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=dtype)
         )
-elif agent_type == 'gru':
-    for i in range(args.n_species):
+    elif agent_type == 'gru':
         models.append(
             agents.GRUAgent(
                 num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
                 num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=dtype)
         )
-elif agent_type == 'random':
-    for i in range(args.n_species):
+    elif agent_type == 'random':
         models.append(agents.RandomAgent(num_actions=num_actions, device=args.device))
-else:
-    raise ValueError('Unrecognised agent')
+    else:
+        raise ValueError('Unrecognised agent type.')
 
-if reload:
-    for i in range(args.n_species):
-        model_path = agent_path if args.n_species == 1 else agent_path+f'__species={i}.pt'
-        print('Loading '+model_path)
+    # Load state dict if reload
+    if reload:
         models[i].load_state_dict(
-            torch.load(model_path)
+            torch.load(args.agent[i])
         )
 
 if args.train:
@@ -219,7 +197,7 @@ else:
 
 print(models[0])
 
-if args.agent != 'random' and args.train:
+if agent_type != 'random' and args.train:
     optimizers: List[optim.Adam] = []
     for i in range(args.n_species):
         optimizers.append(
