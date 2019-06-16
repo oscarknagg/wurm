@@ -9,6 +9,7 @@ from pprint import pprint, pformat
 import os
 import git
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
+import json
 
 import torch
 import torch.nn as nn
@@ -36,10 +37,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--env', type=str)
 parser.add_argument('--n-envs', type=int)
 parser.add_argument('--n-agents', type=int)
+parser.add_argument('--n-species', type=int, default=1)
 parser.add_argument('--size', type=int)
 parser.add_argument('--agent', type=str, nargs='+')
 parser.add_argument('--obs', type=str)
-parser.add_argument('--n-species', type=int, default=1)
 parser.add_argument('--warm-start', default=0, type=int)
 parser.add_argument('--boost', default=True, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--train', default=True, type=lambda x: x.lower()[0] == 't')
@@ -233,7 +234,8 @@ if args.save_logs:
     repo = git.Repo(search_parent_directories=True)
     sha = repo.head.object.hexsha
     comment = f'Git commit: {sha}\n'
-    comment += 'Input args:\n'
+    comment += f'Args: {json.dumps(args.__dict__)}\n'
+    comment += 'Prettier args:\n'
     comment += pformat(args.__dict__)
     logger = CSVLogger(filename=f'{PATH}/logs/{save_file}.csv', header_comment=comment)
 if args.save_video:
