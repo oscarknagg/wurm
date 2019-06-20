@@ -66,7 +66,7 @@ class TrajectoryStore(object):
 
     @property
     def log_probs(self):
-        return torch.stack(self._log_probs).unsqueeze(-1)
+        return torch.stack(self._log_probs)
 
     @property
     def rewards(self):
