@@ -67,6 +67,7 @@ for i, players in enumerate(random_matchups):
     save_location += f'__r={i}'
     save_location = save_location.replace('-', '_')
     eval_command += f'\t--save-location {save_location}'
+    eval_command += f'\t--save-model False'
 
     print(eval_command)
     os.system(eval_command)
