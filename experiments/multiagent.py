@@ -21,7 +21,18 @@ from wurm.envs import SingleSnake, SimpleGridworld, MultiSnake
 from wurm import agents
 from wurm.utils import CSVLogger, ExponentialMovingAverageTracker, print_alive_tensors
 from wurm.rl import A2C, TrajectoryStore
+from wurm.agents.discriminator import ConvDiscriminator
 from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
+
+
+def flatten_dict(d, take_every=1):
+    flattened = []
+    for i, (k, v) in enumerate(d.items()):
+        if i % take_every == 0:
+            flattened.append(v)
+
+    flattened = torch.stack(flattened).view(-1, 1)
+    return flattened
 
 
 VALUE_LOSS_COEFF = 0.5
@@ -64,6 +75,7 @@ parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] =
 parser.add_argument('--save-heatmap', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--norm-returns', default=False, type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--share-backbone', default=False, type=lambda x: x.lower()[0] == 't')
 parser.add_argument('--boost-cost', type=float, default=0.25)
 parser.add_argument('--food-on-death', type=float, default=0.33)
 parser.add_argument('--food-on-death-min', type=float, default=None)
@@ -75,6 +87,7 @@ parser.add_argument('--respawn-mode', type=str, default='any')
 parser.add_argument('--dtype', type=str, default='float')
 parser.add_argument('--flicker', type=int, default=None)
 parser.add_argument('--colour-mode', type=str, default='random')
+parser.add_argument('--diayn', default=0, type=float)
 parser.add_argument('--r', default=None, type=int, help='Repeat number')
 
 args = parser.parse_args()
@@ -84,7 +97,8 @@ excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 's
                  'norm_returns', 'dtype', 'food_mode', 'respawn_mode', 'boost', 'warm_start',
                  'flicker', 'entropy_min', 'update_steps',
                  ]
-included_args = ['n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy', 'agent', 'obs', 'r']
+included_args = ['n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy', 'agent', 'obs',
+                 'r', 'share_backbone']
 
 entropy_coeff = args.entropy
 
@@ -95,6 +109,8 @@ if args.total_steps == float('inf'):
 if args.total_episodes == float('inf'):
     excluded_args += ['total_episodes']
 argsdict = {k: v for k, v in args.__dict__.items() if k in included_args}
+if 'agent' in argsdict.keys():
+    argsdict['agent'] = argsdict['agent'][0]
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
 
@@ -128,6 +144,14 @@ else:
 ###################
 # Create agent(s) #
 ###################
+# If we share the network backbone between species then only create one network with n_species heads
+if args.share_backbone:
+    num_heads = args.n_species
+    num_models = 1
+else:
+    num_heads = 1
+    num_models = args.n_species
+
 # Quick hack to make it easier to input all of the species trained in one particular experiment
 if len(args.agent) == 1:
     species_0_path = args.agent[0]+'__species=0.pt'
@@ -135,9 +159,11 @@ if len(args.agent) == 1:
     if os.path.exists(species_0_path) or os.path.exists(species_0_relative_path):
         agent_path = args.agent[0] if species_0_path else os.path.join(PATH, 'models', args.agent)
         args.agent = [agent_path + f'__species={i}.pt' for i in range(args.n_species)]
+    else:
+        args.agent = [args.agent[0], ] * args.n_agents
 
 models: List[nn.Module] = []
-for i in range(args.n_species):
+for i in range(num_models):
     # Check for existence of model file
     model_path = args.agent[i]
     model_relative_path = os.path.join(PATH, 'models', args.agent[i])
@@ -155,25 +181,19 @@ for i in range(args.n_species):
         reload = False
 
     # Create model class
-    if agent_type == 'relational':
-        models.append(
-            agents.RelationalAgent(
-                num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
-                num_relational=2,
-                num_attention_heads=2, relational_dim=32, num_feedforward=1, feedforward_dim=64, residual=True
-            ).to(device=args.device, dtype=dtype)
-        )
-    elif agent_type == 'conv':
+    if agent_type == 'conv':
         models.append(
             agents.ConvAgent(
                 num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
-                num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=dtype)
+                num_residual_convs=2, num_feedforward=1, feedforward_dim=64,
+                num_heads=num_heads).to(device=args.device, dtype=dtype)
         )
     elif agent_type == 'gru':
         models.append(
             agents.GRUAgent(
                 num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
-                num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=dtype)
+                num_residual_convs=2, num_feedforward=1, feedforward_dim=64,
+                num_heads=num_heads).to(device=args.device, dtype=dtype)
         )
     elif agent_type == 'random':
         models.append(agents.RandomAgent(num_actions=num_actions, device=args.device))
@@ -200,10 +220,19 @@ print(models[0])
 
 if agent_type != 'random' and args.train:
     optimizers: List[optim.Adam] = []
-    for i in range(args.n_species):
+    for i in range(num_models):
         optimizers.append(
             optim.Adam(models[i].parameters(), lr=args.lr, weight_decay=1e-5)
         )
+
+#########
+# DIAYN #
+#########
+if args.diayn > 0:
+    discriminator = ConvDiscriminator(
+        num_species=args.n_species, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
+        num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=dtype)
+    discrim_opt = optim.Adam(discriminator.parameters(), lr=args.lr, weight_decay=1e-5)
 
 
 #################
@@ -258,11 +287,17 @@ if args.warm_start:
         actions = {}
         for i, (agent, obs)in enumerate(observations.items()):
             # Get the model for the corresponding species
-            model = models[i * args.n_species // args.n_agents]
+            species_idx = i * args.n_species // args.n_agents
+            model = models[0 if args.share_backbone else species_idx]
             if agent_type == 'gru':
                 probs_, value_, hidden_states[agent] = model(obs, hidden_states.get(agent))
             else:
                 probs_, value_ = model(obs)
+
+            if args.share_backbone:
+                # In this case we need to select the correct head of the network
+                probs_ = probs_[:, species_idx]
+                value_ = value_[:, species_idx]
 
             action_distribution = Categorical(probs_)
             actions[agent] = action_distribution.sample().clone().long()
@@ -282,6 +317,7 @@ if args.save_heatmap:
     head_heatmap = torch.zeros((args.n_agents, args.size, args.size), device=args.device, dtype=torch.float, requires_grad=False)
 
 for i_step in count(1):
+    logs = {}
     t_i = time()
     if args.render:
         env.render()
@@ -316,11 +352,19 @@ for i_step in count(1):
     probs = {}
     entropies = {}
     for i, (agent, obs) in enumerate(observations.items()):
-        model = models[i * args.n_species // args.n_agents]
+        # Get the model for the corresponding species
+        species_idx = i * args.n_species // args.n_agents
+        model = models[0 if args.share_backbone else species_idx]
         if agent_type == 'gru':
             probs_, value_, hidden_states[agent] = model(obs, hidden_states.get(agent))
         else:
             probs_, value_ = model(obs)
+
+        if args.share_backbone:
+            # In this case we need to select the correct head of the network
+            # print(i_step, i, species_idx, probs_.shape)
+            probs_ = probs_[:, species_idx]
+            value_ = value_[:, species_idx]
 
         action_distribution = Categorical(probs_)
         actions[agent] = action_distribution.sample().clone().long()
@@ -333,31 +377,42 @@ for i_step in count(1):
     env.reset(done['__all__'], return_observations=False)
     env.check_consistency()
 
+    if args.diayn > 0:
+        # DIAYN
+        discrim_opt.zero_grad()
+        discrim_loss = 0
+        for i, (agent, obs) in enumerate(observations.items()):
+            species_idx = i * args.n_species // args.n_agents
+            species_label = torch.tensor([species_idx,]*args.n_envs,
+                                         device=args.device, dtype=torch.long, requires_grad=False)
+            # Optimise discriminator
+            species_predictions = discriminator(observations[agent])
+            discrim = F.cross_entropy(species_predictions, species_label, reduction='none')
+            # Add pseudo reward
+            with torch.no_grad():
+                reward[agent] -= args.diayn * discrim
+
+            logs.update({f'diversity_loss_{i}': discrim.mean().item()})
+            discrim_loss += discrim.mean()
+
+        discrim_loss.backward()
+        discrim_opt.step()
+
     if args.agent == 'gru':
         with torch.no_grad():
-            # hidden_states_[done['agent_0']].mul_(0)
             # reset hidden states
             for _agent, _done in done.items():
                 if _agent != '__all__':
                     hidden_states[_agent][_done].mul_(0)
 
     if args.agent != 'random' and args.train:
-        # Flatten (num_envs, num_agents) tensor to (num_envs*num_agents, )
-        # and then append to trajectory store
-        all_actions = torch.stack([v for k, v in actions.items()]).view(-1, 1)
-        all_log_probs = torch.stack([v for k, v in probs.items()]).view(-1)
-        all_values = torch.stack([v for k, v in values.items()]).view(-1, 1)
-        all_entropies = torch.stack([v for k, v in entropies.items()]).view(-1, 1)
-        all_rewards = torch.stack([v for k, v in reward.items()]).view(-1, 1)
-        all_dones = torch.stack([v for k, v in done.items() if k.startswith('agent_')]).view(-1, 1)
-
         trajectories.append(
-            action=all_actions,
-            log_prob=all_log_probs,
-            value=all_values,
-            reward=all_rewards,
-            done=all_dones,
-            entropy=all_entropies
+            action=flatten_dict(actions),
+            log_prob=flatten_dict(probs),
+            value=flatten_dict(values),
+            reward=flatten_dict(reward),
+            done=flatten_dict({k: v for k, v in done.items() if k.startswith('agent_')}),
+            entropy=flatten_dict(entropies)
         )
 
     if not args.train:
@@ -370,11 +425,17 @@ for i_step in count(1):
         with torch.no_grad():
             bootstrap_values = []
             for i, (agent, obs) in enumerate(observations.items()):
-                model = models[i * args.n_species // args.n_agents]
+                # Get the model for the corresponding species
+                species_idx = i * args.n_species // args.n_agents
+                model = models[0 if args.share_backbone else species_idx]
                 if agent_type == 'gru':
                     _, _bootstraps, _ = model(obs, hidden_states.get(agent))
                 else:
                     _, _bootstraps = model(obs)
+
+                if args.share_backbone:
+                    # In this case we need to select the correct head of the network
+                    _bootstraps = _bootstraps[:, species_idx]
 
                 bootstrap_values.append(_bootstraps)
 
@@ -422,11 +483,11 @@ for i_step in count(1):
                 recorder.close()
                 recorder = VideoRecorder(env, path=PATH + f'/videos/{save_file}/{num_episodes}.mp4')
 
-    logs = {
+    logs.update({
         't': t,
         'steps': num_steps,
         'episodes': num_episodes,
-    }
+    })
     for i in range(args.n_agents):
         logs.update({
             f'reward_{i}': reward[f'agent_{i}'][~done[f'agent_{i}']].mean().item(),
@@ -447,6 +508,7 @@ for i_step in count(1):
         log_string = '[{:02d}:{:02d}:{:02d}]\t'.format(int((t // 3600)), int((t // 60) % 60), int(t % 60))
         log_string += 'Steps {:.2f}e6\t'.format(num_steps / 1e6)
         log_string += 'Reward: {:.2e}\t'.format(ewm_tracker['reward_0'])
+        log_string += 'Food: {:.2e}\t'.format(ewm_tracker['food_0'])
         log_string += 'Entropy: {:.2e}\t'.format(ewm_tracker['policy_entropy_0'])
         log_string += 'Done: {:.2e}\t'.format(ewm_tracker['done_0'])
         log_string += 'Edge: {:.2e}\t'.format(ewm_tracker['edge_collisions_0'])
