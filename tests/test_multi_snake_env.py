@@ -6,7 +6,7 @@ import numpy as np
 from pprint import pprint
 import matplotlib.pyplot as plt
 
-from wurm.envs import MultiSnake
+from wurm.envs import Slither
 from wurm.utils import head, body, food, determine_orientations
 from config import DEFAULT_DEVICE
 
@@ -19,7 +19,7 @@ torch.random.manual_seed(1)
 
 
 def get_test_env(num_envs=1):
-    env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=True)
+    env = Slither(num_envs=num_envs, num_snakes=2, size=size, manual_setup=True)
 
     for i in range(num_envs):
         # Snake 1
@@ -67,9 +67,9 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_envs = 100
         num_steps = 100
         # Create some environments and run random actions for N steps, checking for consistency at each step
-        env = MultiSnake(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, verbose=True,
-                         render_args={'num_rows': 5, 'num_cols': 5, 'size': 128},
-                         )
+        env = Slither(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, verbose=True,
+                      render_args={'num_rows': 5, 'num_cols': 5, 'size': 128},
+                      )
         env.check_consistency()
 
         all_actions = {
@@ -97,11 +97,11 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_steps = 200
         num_snakes = 4
         # Create some environments and run random actions for N steps, checking for consistency at each step
-        env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=25, manual_setup=False, boost=True, verbose=True,
-                         render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
-                         respawn_mode='any', food_mode='random_rate', boost_cost_prob=0.25,
-                         observation_mode='partial_5', food_on_death_prob=0.33, food_rate=2.5e-4
-                         )
+        env = Slither(num_envs=num_envs, num_snakes=num_snakes, size=25, manual_setup=False, boost=True, verbose=True,
+                      render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
+                      respawn_mode='any', food_mode='random_rate', boost_cost_prob=0.25,
+                      observation_mode='partial_5', food_on_death_prob=0.33, food_rate=2.5e-4
+                      )
         env.check_consistency()
 
         all_actions = {
@@ -337,7 +337,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
     def test_create_envs(self):
         # Create a large number of environments and check consistency
-        env = MultiSnake(num_envs=512, num_snakes=2, size=size, manual_setup=False)
+        env = Slither(num_envs=512, num_snakes=2, size=size, manual_setup=False)
         env.check_consistency()
 
         _envs = torch.cat([
@@ -459,7 +459,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
     def test_cant_boost_until_size_4(self):
         # Create a size 3 snake and try boosting with it
-        env = MultiSnake(num_envs=1, num_snakes=2, size=size, manual_setup=True, boost=True)
+        env = Slither(num_envs=1, num_snakes=2, size=size, manual_setup=True, boost=True)
         env.foods[:, 0, 1, 1] = 1
         # Snake 1
         env.heads[0, 0, 5, 5] = 1
@@ -558,7 +558,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_envs = 50
         num_steps = 10
         num_snakes = 4
-        env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=size, manual_setup=False, boost=True)
+        env = Slither(num_envs=num_envs, num_snakes=num_snakes, size=size, manual_setup=False, boost=True)
         env.check_consistency()
 
         all_actions = {
@@ -643,10 +643,10 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_envs = 256
         num_snakes = 4
         observation_mode = 'partial_5'
-        env = MultiSnake(num_envs=num_envs, num_snakes=num_snakes, size=25, manual_setup=False, boost=True,
-                         observation_mode=observation_mode,
-                         render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
-                         )
+        env = Slither(num_envs=num_envs, num_snakes=num_snakes, size=25, manual_setup=False, boost=True,
+                      observation_mode=observation_mode,
+                      render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
+                      )
         env.check_consistency()
 
         # render_envs = True

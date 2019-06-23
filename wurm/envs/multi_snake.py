@@ -10,12 +10,13 @@ from PIL import Image
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
 from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
 from wurm.utils import determine_orientations, drop_duplicates, env_consistency, snake_consistency, head, body, food
+from .core import MultiagentVecEnv
 
 
 Spec = namedtuple('Spec', ['reward_threshold'])
 
 
-class MultiSnake(object):
+class Slither(MultiagentVecEnv):
     """Batched snake environment.
 
     The dynamics of this environment aim to emulate that of the mobile phone game "Snake".
@@ -459,7 +460,7 @@ class MultiSnake(object):
     def _to_per_agent_dict(self, tensor: torch.Tensor, key: str):
         return {f'{key}_{i}': d for i, d in enumerate(tensor.clone().view(self.num_envs, self.num_snakes).t().unbind())}
 
-    def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[Dict[str, torch.Tensor], dict, dict, dict]:
+    def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor], dict]:
         if len(actions) != self.num_snakes:
             raise RuntimeError('Must have a Tensor of actions for each snake')
 

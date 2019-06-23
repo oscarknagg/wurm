@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from time import time
 import argparse
-from wurm.envs import MultiSnake
+from wurm.envs import Slither
 from config import DEFAULT_DEVICE
 
 
@@ -18,8 +18,8 @@ num_steps = 10
 fps = []
 
 for n in num_envs:
-    env = MultiSnake(num_envs=n, num_snakes=args.num_agents, size=args.size, manual_setup=False, boost=True,
-                     verbose=False, device='cuda', respawn_mode='any')
+    env = Slither(num_envs=n, num_snakes=args.num_agents, size=args.size, manual_setup=False, boost=True,
+                  verbose=False, device='cuda', respawn_mode='any')
 
     all_actions = {
         f'agent_{i}': torch.randint(8, size=(num_steps, n)).long().to(DEFAULT_DEVICE) for i in range(args.num_agents)
