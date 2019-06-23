@@ -94,9 +94,9 @@ class LaserTag(MultiagentVecEnv):
             # Backwards is reverse of the orientation direction
             directions[actions == self.move_back] = directions[actions == self.move_back] + 2
             # Right is orientation +1
-            directions[actions == self.move_back] = directions[actions == self.move_back] + 1
+            directions[actions == self.move_right] = directions[actions == self.move_right] + 1
             # Left is orientation -1
-            directions[actions == self.move_back] = directions[actions == self.move_back] + 3
+            directions[actions == self.move_left] = directions[actions == self.move_left] + 3
             # Keep in range(4)
             directions.fmod_(4)
             self.agents[has_moved] = move_pixels(self.agents[has_moved], directions[has_moved])

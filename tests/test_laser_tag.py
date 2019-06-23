@@ -38,6 +38,20 @@ def render(env):
 
 
 class TestLaserTag(unittest.TestCase):
+    def _test_action_sequence(self, env, all_actions, expected_orientations, expected_x, expected_y):
+        render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+            render(env)
+            self.assertTrue(torch.equal(env.x.cpu(), expected_x[i]))
+            self.assertTrue(torch.equal(env.y.cpu(), expected_y[i]))
+            self.assertTrue(torch.equal(env.orientations.cpu(), expected_orientations[i]))
+
     def test_basic_movement(self):
         """2 agents rotate completely on the spot then move in a circle."""
         env = get_test_env(num_envs=1)
@@ -59,19 +73,49 @@ class TestLaserTag(unittest.TestCase):
             [7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 7],
         ]).t()
 
-        render(env)
+        self._test_action_sequence(env, all_actions, expected_orientations, expected_x, expected_y)
 
-        for i in range(all_actions['agent_0'].shape[0]):
-            actions = {
-                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
-            }
+    def test_move_backward(self):
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([3, 4]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([3, 4]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+        expected_x = torch.tensor([
+            [2, 1],
+            [6, 7],
+        ]).t()
+        expected_y = torch.tensor([
+            [1, 1],
+            [7, 7],
+        ]).t()
+        expected_orientations = torch.tensor([
+            [0, 0],
+            [2, 2],
+        ]).t()
 
-            observations, rewards, dones, info = env.step(actions)
-            self.assertTrue(torch.equal(env.x.cpu(), expected_x[i]))
-            self.assertTrue(torch.equal(env.y.cpu(), expected_y[i]))
-            self.assertTrue(torch.equal(env.orientations.cpu(), expected_orientations[i]))
+        self._test_action_sequence(env, all_actions, expected_orientations, expected_x, expected_y)
 
-            render(env)
+    def test_strafe(self):
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([6, 5]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([6, 5]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+        expected_x = torch.tensor([
+            [1, 1],
+            [7, 7],
+        ]).t()
+        expected_y = torch.tensor([
+            [2, 1],
+            [6, 7],
+        ]).t()
+        expected_orientations = torch.tensor([
+            [0, 0],
+            [2, 2],
+        ]).t()
+
+        self._test_action_sequence(env, all_actions, expected_orientations, expected_x, expected_y)
 
     def test_render(self):
         env = get_test_env()
