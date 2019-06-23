@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
-from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
+from wurm._filters import ORIENTATION_DELTAS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
 from wurm.utils import determine_orientations, head, food, body, drop_duplicates
 
 
@@ -222,7 +222,7 @@ class SingleSnake(object):
         actions.add_((mask * 2).long()).fmod_(4)
 
         # Create head position deltas
-        head_deltas = F.conv2d(head(self.envs), ORIENTATION_FILTERS.to(self.device), padding=1)
+        head_deltas = F.conv2d(head(self.envs), ORIENTATION_DELTAS.to(self.device), padding=1)
         # Select the head position delta corresponding to the correct action
         actions_onehot = torch.FloatTensor(self.num_envs, 4).to(self.device)
         actions_onehot.zero_()

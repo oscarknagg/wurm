@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
-from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
+from wurm._filters import ORIENTATION_DELTAS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
 from wurm.utils import determine_orientations, drop_duplicates, env_consistency, snake_consistency, head, body, food
 from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb
 
@@ -320,7 +320,7 @@ class Slither(MultiagentVecEnv):
     def _move_heads(self, heads: torch.Tensor, directions: torch.Tensor) -> torch.Tensor:
         """Takes in heads and directions, returns updated heads"""
         # Create head position deltas
-        filters = ORIENTATION_FILTERS.to(dtype=self.dtype, device=self.device)
+        filters = ORIENTATION_DELTAS.to(dtype=self.dtype, device=self.device)
         head_deltas = F.conv2d(
             heads,
             filters,

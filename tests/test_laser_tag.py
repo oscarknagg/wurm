@@ -16,6 +16,7 @@ def get_test_env(num_envs=2):
     for i in range(num_envs):
         env.agents[2*i, :, 1, 1] = 1
         env.agents[2*i + 1, :, 7, 7] = 1
+        env.orientations = torch.tensor([0, 2]*num_envs, dtype=torch.long, device=env.device, requires_grad=False)
 
     env.pathing[:, :, 3, 3] = 1
     env.pathing[:, :, 3, 5] = 1

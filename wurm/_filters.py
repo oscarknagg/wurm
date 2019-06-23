@@ -4,7 +4,7 @@ import torch
 from config import DEFAULT_DEVICE
 
 
-ORIENTATION_FILTERS = torch.tensor([
+ORIENTATION_DELTAS = torch.tensor([
     [
         [0, 1, 0],
         [0, -1, 0],
@@ -23,6 +23,30 @@ ORIENTATION_FILTERS = torch.tensor([
     [
         [0, 0, 0],
         [1, -1, 0],
+        [0, 0, 0],
+    ],
+]).unsqueeze(1).float()
+
+
+ORIENTATION_FILTERS = torch.tensor([
+    [
+        [0, 1, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+    ],
+    [
+        [0, 0, 0],
+        [0, 0, 1],
+        [0, 0, 0],
+    ],
+    [
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 1, 0],
+    ],
+    [
+        [0, 0, 0],
+        [1, 0, 0],
         [0, 0, 0],
     ],
 ]).unsqueeze(1).float()

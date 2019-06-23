@@ -2,7 +2,9 @@ import torch
 from typing import Dict, Optional
 import numpy as np
 from gym.envs.classic_control import rendering
+import torch.nn.functional as F
 
+from wurm._filters import ORIENTATION_FILTERS
 from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb
 from config import DEFAULT_DEVICE, EPS
 
@@ -91,26 +93,38 @@ class LaserTag(MultiagentVecEnv):
             raise ValueError('Render mode not recognised.')
 
     def _get_env_images(self) -> torch.Tensor:
-        # Black background, pathing is grey
+        # Black background
         img = torch.zeros((self.num_envs, 3, self.size, self.size), device=self.device, dtype=torch.short)
-        img[self.pathing.expand_as(img)] += 127
 
-        # Add colours for agents
-        locations = (self.agents > EPS).squeeze().float()
-        body_colours = torch.einsum('nhw,nc->nchw', [locations, self.agent_colours.float()])\
-            .reshape(self.num_envs, self.num_agents, 3, self.size, self.size)\
+        # Add slight highlight for orientation
+        locations = (self.agents > EPS).float()
+        filters = ORIENTATION_FILTERS.to(dtype=self.dtype, device=self.device)
+        orientation_highlights = F.conv2d(
+            locations,
+            filters,
+            padding=1
+        ) * 31
+        directions_onehot = F.one_hot(self.orientations, 4).to(self.dtype)
+        orientation_highlights = torch.einsum('bchw,bc->bhw', [orientation_highlights, directions_onehot])\
+            .view(self.num_envs, self.num_agents, 1, self.size, self.size)\
             .sum(dim=1)\
             .short()
-        print(img.shape, body_colours.shape)
-        print(img.dtype, body_colours.dtype)
-        print(img.device, body_colours.device)
+        img += orientation_highlights.expand_as(img)
+
+        # Add colours for agents
+        body_colours = torch.einsum('nhw,nc->nchw', [locations.squeeze(), self.agent_colours.float()])\
+            .view(self.num_envs, self.num_agents, 3, self.size, self.size)\
+            .sum(dim=1)\
+            .short()
         img += body_colours
+
+        # Walls are grey
+        img[self.pathing.expand_as(img)] = 127
 
         return img
 
     def _get_n_colours(self, n: int) -> torch.Tensor:
         colours = torch.rand((n, 3), device=self.device)
-        colours[:, 0] /= 1.5  # Reduce red
         colours /= colours.norm(2, dim=1, keepdim=True)
         colours *= 192
         colours = colours.short()

@@ -10,7 +10,7 @@ import os
 import io
 
 from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL
-from wurm._filters import ORIENTATION_FILTERS
+from wurm._filters import ORIENTATION_DELTAS
 
 
 """
@@ -56,7 +56,7 @@ def determine_orientations(envs: torch.Tensor) -> torch.Tensor:
 
     # Convolve with 4 predetermined filters one of which will be more activated
     # because it lines up with the orientation of the snake
-    responses = F.conv2d(necks, ORIENTATION_FILTERS.to(device=envs.device, dtype=envs.dtype), padding=1)
+    responses = F.conv2d(necks, ORIENTATION_DELTAS.to(device=envs.device, dtype=envs.dtype), padding=1)
 
     # Find which filter
     responses = responses.view(n, 4, -1)
