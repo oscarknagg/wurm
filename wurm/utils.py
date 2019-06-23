@@ -1,9 +1,11 @@
 import torch
 import torch.nn.functional as F
 from collections import Iterable, OrderedDict
+from typing import List, Tuple
 from pprint import pformat
 import numpy as np
 import csv
+import gc
 import os
 import io
 
@@ -336,3 +338,49 @@ class ExponentialMovingAverageTracker(object):
 
     def __getitem__(self, item):
         return self.smoothed_values[item]
+
+
+def print_alive_tensors():
+    """Prints the tensors that are currently alive in memory.
+
+    Useful for debugging memory leaks.
+    """
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                print(type(obj), obj.size())
+        except:
+            pass
+
+
+def autograd_graph(tensor: torch.Tensor) -> Tuple[
+            List[torch.autograd.Function],
+            List[Tuple[torch.autograd.Function, torch.autograd.Function]]
+        ]:
+    """Recursively retrieves the autograd graph for a particular tensor.
+    # Arguments
+        tensor: The Tensor to retrieve the autograd graph for
+    # Returns
+        nodes: List of torch.autograd.Functions that are the nodes of the autograd graph
+        edges: List of (Function, Function) tuples that are the edges between the nodes of the autograd graph
+    """
+    nodes, edges = list(), list()
+
+    def _add_nodes(tensor):
+        if tensor not in nodes:
+            nodes.append(tensor)
+
+            if hasattr(tensor, 'next_functions'):
+                for f in tensor.next_functions:
+                    if f[0] is not None:
+                        edges.append((f[0], tensor))
+                        _add_nodes(f[0])
+
+            if hasattr(tensor, 'saved_tensors'):
+                for t in tensor.saved_tensors:
+                    edges.append((t, tensor))
+                    _add_nodes(t)
+
+    _add_nodes(tensor.grad_fn)
+
+    return nodes, edges

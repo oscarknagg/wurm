@@ -1,5 +1,5 @@
 from time import time, sleep
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 from collections import namedtuple, OrderedDict
 import torch
 from torch.nn import functional as F
@@ -71,7 +71,8 @@ class MultiSnake(object):
                  respawn_mode: str = 'all',
                  reward_on_death: int = -1,
                  verbose: int = 0,
-                 render_args: dict = None):
+                 render_args: dict = None,
+                 agent_colours: str = 'random'):
         """Initialise the environments
 
         Args:
@@ -123,10 +124,9 @@ class MultiSnake(object):
         self.boost_cost_prob = boost_cost_prob
         self.food_mode = food_mode
         self.food_rate = food_rate
-        self.max_food = 10
-        # self.max_food = self.num_snakes * 10
+        self.max_food = self.num_snakes * 8
         self.max_env_lifetime = 5000
-        self.reward_on_death = -1
+        self.reward_on_death = reward_on_death
 
         # Rendering parameters
         self.viewer = None
@@ -140,13 +140,14 @@ class MultiSnake(object):
         self.food_colour = torch.tensor((255, 0, 0), dtype=torch.short, device=self.device)
         self.edge_colour = torch.tensor((0, 0, 0), dtype=torch.short, device=self.device)
 
-        # self.agent_colours = torch.tensor([
-        #     [13, 92, 167],  # Blue ish
-        #     [86, 163, 49],  # Green
-        #     [133, 83, 109],  # Red-ish
-        #     [135, 135, 4],   # Yellow ish
-        # ], device=self.device, dtype=torch.short)
-        self.agent_colours = self.get_n_colours(self.num_envs*self.num_snakes)
+        if agent_colours == 'random':
+            self.colour_mode = 'random'
+            self.agent_colours = self.get_n_colours(self.num_envs*self.num_snakes)
+        elif agent_colours == 'fixed':
+            self.colour_mode = 'fixed'
+            self.agent_colours = self.get_n_colours(self.num_snakes).repeat(self.num_envs, 1)
+        else:
+            raise ValueError('agent_colours must in {random, fixed}')
         self.num_colours = self.agent_colours.shape[0]
 
         self.info = {}
@@ -284,7 +285,7 @@ class MultiSnake(object):
             mode = self.observation_mode
 
         if mode == 'full':
-            return {f'agent_{i}': self._observe_agent(i) for i in range(self.num_snakes)}
+            return OrderedDict([(f'agent_{i}', self._observe_agent(i)) for i in range(self.num_snakes)])
         elif mode.startswith('partial_'):
             # Get full batch of images
             t0 = time()
@@ -325,10 +326,9 @@ class MultiSnake(object):
 
             self._log(f'Head cropping: {1000 * (time() - t0)}ms')
 
-            dict_observations = {}
-            for i in range(self.num_snakes):
-                dict_observations[f'agent_{i}'] = observations[:, i].clone()
-
+            dict_observations = OrderedDict([
+                (f'agent_{i}', observations[:, i].clone()) for i in range(self.num_snakes)
+            ])
             return dict_observations
         else:
             raise ValueError('Unrecognised observation mode.')
@@ -459,7 +459,7 @@ class MultiSnake(object):
     def _to_per_agent_dict(self, tensor: torch.Tensor, key: str):
         return {f'{key}_{i}': d for i, d in enumerate(tensor.clone().view(self.num_envs, self.num_snakes).t().unbind())}
 
-    def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[dict, dict, dict, dict]:
+    def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[Dict[str, torch.Tensor], dict, dict, dict]:
         if len(actions) != self.num_snakes:
             raise RuntimeError('Must have a Tensor of actions for each snake')
 
@@ -474,6 +474,7 @@ class MultiSnake(object):
         # Clear info
         snake_collision_tracker = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.uint8, device=self.device)
         edge_collision_tracker = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.uint8, device=self.device)
+        food_consumption_tracker = torch.zeros(self.num_envs * self.num_snakes, dtype=self.dtype, device=self.device)
         self.rewards = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.float, device=self.device)
         self.info = {}
         move_directions = dict()
@@ -523,7 +524,9 @@ class MultiSnake(object):
             decay_mask[boosted_agents] &= food_overlap[boosted_agents].view(n_boosted, -1).sum(dim=-1).lt(EPS)
             self.bodies[decay_mask] = \
                 self._decay_bodies(self.bodies[decay_mask])
-            self.rewards[boosted_agents] += food_overlap[boosted_agents].view(n_boosted, -1).sum(dim=-1).gt(EPS).float()
+            eaten_food = food_overlap[boosted_agents].view(n_boosted, -1).sum(dim=-1).gt(EPS).float()
+            self.rewards[boosted_agents] += eaten_food
+            food_consumption_tracker[boosted_agents] += eaten_food
             self._log(f'Growth/decay: {1000 * (time() - t0)}ms')
 
             t0 = time()
@@ -559,17 +562,18 @@ class MultiSnake(object):
             edge_collision_tracker[boosted_agents] |= edge_collisions
             self._log(f'Edges: {1000 * (time() - t0)}ms')
 
-            t0 = time()
-            # Create food at dead snake locations
-            _bodies = self.bodies.clone()
-            _bodies[~self.dones] = 0
-            dead = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True)
-            _bodies = self.bodies.clone()
-            _bodies[self.dones] = 0
-            living = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).gt(EPS)
-            food_on_death = self._food_from_death(dead, living).float()
-            self.foods += food_on_death
-            self._log(f'Deaths: {1000 * (time() - t0)}ms')
+            if self.food_on_death_prob > 0:
+                t0 = time()
+                # Create food at dead snake locations
+                _bodies = self.bodies.clone()
+                _bodies[~self.dones] = 0
+                dead = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True)
+                _bodies = self.bodies.clone()
+                _bodies[self.dones] = 0
+                living = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).gt(EPS)
+                food_on_death = self._food_from_death(dead, living).float()
+                self.foods += food_on_death
+                self._log(f'Deaths: {1000 * (time() - t0)}ms')
 
             # Apply boost cost
             boost_cost_agents = boosted_agents & (torch.rand(self.num_envs*self.num_snakes, device=self.device) < self.boost_cost_prob)
@@ -622,7 +626,9 @@ class MultiSnake(object):
         # Decay bodies of all snakes that haven't eaten food
         decay_mask = food_overlap.view(self.num_envs*self.num_snakes, -1).sum(dim=-1).lt(EPS)
         self.bodies[decay_mask] = self._decay_bodies(self.bodies[decay_mask])
-        self.rewards += (~decay_mask).float()
+        eaten_food = food_overlap.view(self.num_envs*self.num_snakes, -1).sum(dim=-1).gt(EPS).float()
+        self.rewards += eaten_food
+        food_consumption_tracker += eaten_food
         self._log(f'Growth/decay: {1000*(time() - t0)}ms')
 
         t0 = time()
@@ -653,17 +659,18 @@ class MultiSnake(object):
         edge_collision_tracker |= edge_collisions
         self._log(f'Edges: {1000 * (time() - t0)}ms')
 
-        t0 = time()
-        # Create food at dead snake locations
-        _bodies = self.bodies.clone()
-        _bodies[~self.dones] = 0
-        dead = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True)
-        _bodies = self.bodies.clone()
-        _bodies[self.dones] = 0
-        living = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).gt(EPS)
-        food_on_death = self._food_from_death(dead, living).float()
-        self.foods += food_on_death
-        self._log(f'Deaths: {1000 * (time() - t0)}ms')
+        if self.food_on_death_prob > 0:
+            t0 = time()
+            # Create food at dead snake locations
+            _bodies = self.bodies.clone()
+            _bodies[~self.dones] = 0
+            dead = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True)
+            _bodies = self.bodies.clone()
+            _bodies[self.dones] = 0
+            living = _bodies.view(self.num_envs, self.num_snakes, self.size, self.size).sum(dim=1, keepdim=True).gt(EPS)
+            food_on_death = self._food_from_death(dead, living).float()
+            self.foods += food_on_death
+            self._log(f'Deaths: {1000 * (time() - t0)}ms')
 
         # Delete done snakes
         self.bodies[self.dones] = 0
@@ -674,7 +681,8 @@ class MultiSnake(object):
 
         # Give negative reward on death
         died_this_step = self.dones & (~done_at_start)
-        self.rewards += died_this_step.float() * self.reward_on_death
+        death_rewards = died_this_step.float() * self.reward_on_death
+        self.rewards += death_rewards
 
         # Apply rounding to stop numerical errors accumulating
         self.foods.round_()
@@ -706,6 +714,18 @@ class MultiSnake(object):
         self.info.update({
             f'edge_collision_{i}': d for i, d in
             enumerate(edge_collision_tracker.clone().view(self.num_envs, self.num_snakes).t().unbind())
+        })
+        self.info.update({
+            f'food_{i}': d for i, d in
+            enumerate(food_consumption_tracker.clone().view(self.num_envs, self.num_snakes).t().unbind())
+        })
+        self.info.update({
+            f'boost_{i}': d for i, d in
+            enumerate(self.boost_this_step.clone().view(self.num_envs, self.num_snakes).t().unbind())
+        })
+        self.info.update({
+            f'size_{i}': d for i, d in
+            enumerate(snake_sizes.clone().view(self.num_envs, self.num_snakes).t().unbind())
         })
 
         return observations, rewards, dones, self.info
@@ -748,7 +768,7 @@ class MultiSnake(object):
         if not dead_all_zeros:
             raise RuntimeError(f'Dead snake contains non-zero elements.')
 
-    def reset(self, done: torch.Tensor = None, return_observations: bool = True):
+    def reset(self, done: torch.Tensor = None, return_observations: bool = True) -> Optional[Dict[str, torch.Tensor]]:
         """Resets environments in which the snake has died
 
         Args:
@@ -777,9 +797,10 @@ class MultiSnake(object):
         self.env_lifetimes[done] = 0
         self.dones[agent_dones] = 0
 
-        # Change agent colours each death
-        new_colours = self.get_n_colours(self.dones.sum().item())
-        self.agent_colours[self.dones] = new_colours
+        if self.colour_mode == 'random':
+            # Change agent colours each death
+            new_colours = self.get_n_colours(self.dones.sum().item())
+            self.agent_colours[self.dones] = new_colours
 
         if self.respawn_mode == 'any':
             if torch.any(self.dones):

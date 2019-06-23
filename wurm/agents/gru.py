@@ -14,7 +14,8 @@ class GRUAgent(nn.Module):
                  num_feedforward: int,
                  feedforward_dim: int,
                  num_actions: int,
-                 conv_channels: int = 16):
+                 conv_channels: int = 16,
+                 num_heads: int = 1):
         super(GRUAgent, self).__init__()
         self.in_channels = in_channels
         self.num_initial_convs = num_initial_convs
@@ -23,6 +24,7 @@ class GRUAgent(nn.Module):
         self.feedforward_dim = feedforward_dim
         self.conv_channels = conv_channels
         self.num_actions = num_actions
+        self.num_heads = num_heads
 
         initial_convs = [ConvBlock(self.in_channels, self.conv_channels, residual=False), ]
         for _ in range(self.num_initial_convs - 1):
@@ -42,8 +44,8 @@ class GRUAgent(nn.Module):
 
         self.feedforward = nn.Sequential(*feedforwards)
 
-        self.value_head = nn.Linear(self.feedforward_dim, 1)
-        self.policy_head = nn.Linear(self.feedforward_dim, self.num_actions)
+        self.value_head = nn.Linear(self.feedforward_dim, num_heads)
+        self.policy_head = nn.Linear(self.feedforward_dim, self.num_actions * num_heads)
 
         self.recurrent_module = nn.GRUCell(feedforward_dim, feedforward_dim)
 
@@ -57,4 +59,7 @@ class GRUAgent(nn.Module):
 
         values = self.value_head(h)
         action_probabilities = self.policy_head(h)
-        return F.softmax(action_probabilities, dim=-1), values, h
+        if self.num_heads == 1:
+            return F.softmax(action_probabilities, dim=-1), values, h
+        else:
+            return F.softmax(action_probabilities.view(-1, self.num_heads, self.num_actions), dim=-1), values, h

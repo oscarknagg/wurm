@@ -15,7 +15,7 @@ print_envs = False
 render_envs = False
 render_sleep = 1
 size = 12
-torch.random.manual_seed(0)
+torch.random.manual_seed(1)
 
 
 def get_test_env(num_envs=1):
@@ -649,7 +649,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                          )
         env.check_consistency()
 
-        render_envs = True
+        # render_envs = True
         observations = env._observe(observation_mode)
         if render_envs:
             fig, axes = plt.subplots(2, 2)
