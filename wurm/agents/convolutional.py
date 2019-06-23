@@ -42,7 +42,8 @@ class ConvAgent(nn.Module):
                  num_feedforward: int,
                  feedforward_dim: int,
                  num_actions: int,
-                 conv_channels: int = 16):
+                 conv_channels: int = 16,
+                 num_heads: int = 1):
         super(ConvAgent, self).__init__()
         self.in_channels = in_channels
         self.num_initial_convs = num_initial_convs
@@ -51,6 +52,7 @@ class ConvAgent(nn.Module):
         self.feedforward_dim = feedforward_dim
         self.conv_channels = conv_channels
         self.num_actions = num_actions
+        self.num_heads = num_heads
 
         initial_convs = [ConvBlock(self.in_channels, self.conv_channels, residual=False), ]
         for _ in range(self.num_initial_convs - 1):
@@ -70,8 +72,8 @@ class ConvAgent(nn.Module):
 
         self.feedforward = nn.Sequential(*feedforwards)
 
-        self.value_head = nn.Linear(self.feedforward_dim, 1)
-        self.policy_head = nn.Linear(self.feedforward_dim, self.num_actions)
+        self.value_head = nn.Linear(self.feedforward_dim, num_heads)
+        self.policy_head = nn.Linear(self.feedforward_dim, self.num_actions * num_heads)
 
     def forward(self, x: torch.Tensor) -> (torch.Tensor, torch.Tensor):
         x = self.initial_conv_blocks(x)
