@@ -4,10 +4,11 @@ import torch
 from time import sleep
 
 from wurm.envs import LaserTag
-
+from config import DEFAULT_DEVICE
 
 render_envs = True
 size = 9
+render_sleep = 1
 
 
 def get_test_env(num_envs=2):
@@ -30,9 +31,47 @@ def get_test_env(num_envs=2):
     return env
 
 
+def render(env):
+    if render_envs:
+        env.render()
+        sleep(render_sleep)
+
+
 class TestLaserTag(unittest.TestCase):
     def test_basic_movement(self):
-        pass
+        """2 agents rotate completely on the spot then move in a circle."""
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([1, 1, 1, 1, 3, 2, 3, 2, 3, 2, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([2, 2, 2, 2, 3, 2, 3, 2, 3, 2, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        expected_orientations = torch.tensor([
+            [1, 2, 3, 0, 0, 3, 3, 2, 2, 1, 1],
+            [1, 0, 3, 2, 2, 1, 1, 0, 0, 3, 3],
+        ]).t()
+        expected_x = torch.tensor([
+            [1, 1, 1, 1, 2, 2, 2, 2, 1, 1, 1],
+            [7, 7, 7, 7, 6, 6, 6, 6, 7, 7, 7],
+        ]).t()
+        expected_y = torch.tensor([
+            [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 1],
+            [7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 7],
+        ]).t()
+
+        render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+            self.assertTrue(torch.equal(env.x.cpu(), expected_x[i]))
+            self.assertTrue(torch.equal(env.y.cpu(), expected_y[i]))
+            self.assertTrue(torch.equal(env.orientations.cpu(), expected_orientations[i]))
+
+            render(env)
 
     def test_render(self):
         env = get_test_env()

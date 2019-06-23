@@ -1,29 +1,36 @@
 from abc import ABC, abstractmethod
 import torch
-from gym.envs.classic_control import rendering
+import torch.nn.functional as F
 from typing import Optional, Dict, Tuple, Any
 import numpy as np
 from PIL import Image
 
+from wurm._filters import ORIENTATION_DELTAS
 
 class VecEnv(ABC):
+    @abstractmethod
     def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, dict):
         raise NotImplementedError
 
+    @abstractmethod
     def reset(self) -> Optional[torch.Tensor]:
         raise NotImplementedError
 
+    @abstractmethod
     def render(self, mode: str = 'human', env: Optional[int] = None) -> Any:
         raise NotImplementedError
 
 
 class MultiagentVecEnv(ABC):
+    @abstractmethod
     def step(self, actions: Dict[str, torch.Tensor]) -> (Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor], dict):
         raise NotImplementedError
 
+    @abstractmethod
     def reset(self, done: torch.Tensor = None, return_observations: bool = True) -> Optional[Dict[str, torch.Tensor]]:
         raise NotImplementedError
 
+    @abstractmethod
     def render(self, mode: str = 'human', env: Optional[int] = None) -> Any:
         raise NotImplementedError
 
@@ -87,3 +94,23 @@ def build_render_rgb(
     ))
 
     return img
+
+
+def move_pixels(pixels: torch.Tensor, directions: torch.Tensor) -> torch.Tensor:
+    """Takes in pixels and directions, returns updated heads
+
+    Args:
+        pixels:
+        directions:
+    """
+    # Create head position deltas
+    filters = ORIENTATION_DELTAS.to(dtype=pixels.dtype, device=pixels.device)
+    head_deltas = F.conv2d(
+        pixels,
+        filters,
+        padding=1
+    )
+    directions_onehot = F.one_hot(directions, 4).to(pixels.dtype)
+    head_deltas = torch.einsum('bchw,bc->bhw', [head_deltas, directions_onehot]).unsqueeze(1)
+    pixels += head_deltas
+    return pixels

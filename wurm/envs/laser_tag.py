@@ -5,7 +5,7 @@ from gym.envs.classic_control import rendering
 import torch.nn.functional as F
 
 from wurm._filters import ORIENTATION_FILTERS
-from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb
+from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb, move_pixels
 from config import DEFAULT_DEVICE, EPS
 
 
@@ -25,6 +25,15 @@ class LaserTag(MultiagentVecEnv):
         6: Move left
         7: Fire laser
     """
+    no_op = 0
+    rotate_right = 1
+    rotate_left = 2
+    move_forward = 3
+    move_back = 4
+    move_right = 5
+    move_left = 6
+    fire = 7
+
     def __init__(self,
                  num_envs: int,
                  num_agents: int,
@@ -56,8 +65,8 @@ class LaserTag(MultiagentVecEnv):
         self.pathing[:, :, :, -1:] = 1
         self.orientations = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device,
                                         requires_grad=False)
-        self.x = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
-        self.y = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
+        # self.x = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
+        # self.y = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
         self.hp = torch.ones((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
 
         # Environment outputs
@@ -67,6 +76,30 @@ class LaserTag(MultiagentVecEnv):
     def step(self, actions: Dict[str, torch.Tensor]) -> (Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor], dict):
         check_multi_vec_env_actions(actions, self.num_envs, self.num_agents)
         info = {}
+        actions = torch.stack([v for k, v in actions.items()]).t().flatten()
+
+        # Update orientations
+        self.orientations[actions == self.rotate_right] += 1
+        self.orientations[actions == self.rotate_left] += 3
+        self.orientations.fmod_(4)
+
+        # Movement
+        has_moved = actions == self.move_forward
+        has_moved |= actions == self.move_back
+        has_moved |= actions == self.move_right
+        has_moved |= actions == self.move_left
+        if torch.any(has_moved):
+            # Default movement is in the orientation direction
+            directions = self.orientations.clone()
+            # Backwards is reverse of the orientation direction
+            directions[actions == self.move_back] = directions[actions == self.move_back] + 2
+            # Right is orientation +1
+            directions[actions == self.move_back] = directions[actions == self.move_back] + 1
+            # Left is orientation -1
+            directions[actions == self.move_back] = directions[actions == self.move_back] + 3
+            # Keep in range(4)
+            directions.fmod_(4)
+            self.agents[has_moved] = move_pixels(self.agents[has_moved], directions[has_moved])
 
         observations = self._observe()
 
@@ -131,6 +164,12 @@ class LaserTag(MultiagentVecEnv):
         return colours
 
     def _observe(self) -> Dict[str, torch.Tensor]:
-        raise NotImplementedError
+        return {f'agent_{i}': torch.zeros((self.num_envs, 1)) for i in range(self.num_agents)}
 
+    @property
+    def x(self):
+        return self.agents.view(self.num_envs*self.num_agents, -1).argmax(dim=1) // self.size
 
+    @property
+    def y(self):
+        return self.agents.view(self.num_envs*self.num_agents, -1).argmax(dim=1) % self.size
