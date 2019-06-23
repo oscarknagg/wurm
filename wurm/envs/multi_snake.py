@@ -10,7 +10,7 @@ from PIL import Image
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
 from wurm._filters import ORIENTATION_FILTERS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
 from wurm.utils import determine_orientations, drop_duplicates, env_consistency, snake_consistency, head, body, food
-from .core import MultiagentVecEnv
+from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb
 
 
 Spec = namedtuple('Spec', ['reward_threshold'])
@@ -227,36 +227,14 @@ class Slither(MultiagentVecEnv):
 
         return img
 
-    def render(self, mode: str = 'human', env: int = None):
+    def render(self, mode: str = 'human', env: Optional[int] = None):
         if self.viewer is None:
             self.viewer = rendering.SimpleImageViewer()
 
         img = self._get_env_images()
-        # Convert to numpy
-        img = img.cpu().numpy()
-
-        # Rearrange images depending on number of envs
-        if self.num_envs == 1 or env is not None:
-            num_cols = num_rows = 1
-            img = img[env or 0]
-            img = np.transpose(img, (1, 2, 0))
-        else:
-            num_rows = self.render_args['num_rows']
-            num_cols = self.render_args['num_cols']
-            # Make a 2x2 grid of images
-            output = np.zeros((self.size * num_rows, self.size * num_cols, 3))
-            for i in range(num_rows):
-                for j in range(num_cols):
-                    output[
-                    i * self.size:(i + 1) * self.size, j * self.size:(j + 1) * self.size, :
-                    ] = np.transpose(img[i * num_cols + j], (1, 2, 0))
-
-            img = output
-
-        img = np.array(Image.fromarray(img.astype(np.uint8)).resize(
-            (self.render_args['size'] * num_cols,
-             self.render_args['size'] * num_rows)
-        ))
+        img = build_render_rgb(img=img, num_envs=self.num_envs, env_size=self.size, env=env,
+                               num_rows=self.render_args['num_rows'], num_cols=self.render_args['num_cols'],
+                               render_size=self.render_args['size'])
 
         if mode == 'human':
             self.viewer.imshow(img)
@@ -461,16 +439,7 @@ class Slither(MultiagentVecEnv):
         return {f'{key}_{i}': d for i, d in enumerate(tensor.clone().view(self.num_envs, self.num_snakes).t().unbind())}
 
     def step(self, actions: Dict[str, torch.Tensor]) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor], dict]:
-        if len(actions) != self.num_snakes:
-            raise RuntimeError('Must have a Tensor of actions for each snake')
-
-        for agent, act in actions.items():
-            if act.dtype not in (torch.short, torch.int, torch.long):
-                raise TypeError('actions Tensor must be an integer type i.e. '
-                                '{torch.ShortTensor, torch.IntTensor, torch.LongTensor}')
-
-            if act.shape[0] != self.num_envs:
-                raise RuntimeError('Must have the same number of actions as environments.')
+        check_multi_vec_env_actions(actions, self.num_envs, self.num_snakes)
 
         # Clear info
         snake_collision_tracker = torch.zeros(self.num_envs * self.num_snakes, dtype=torch.uint8, device=self.device)
