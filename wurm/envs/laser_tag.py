@@ -89,6 +89,10 @@ class LaserTag(MultiagentVecEnv):
         has_moved |= actions == self.move_right
         has_moved |= actions == self.move_left
         if torch.any(has_moved):
+            # Keep the original positions so we can reset if an agent does a move
+            # that's disallowed by pathing.
+            original_agents = self.agents.clone()
+
             # Default movement is in the orientation direction
             directions = self.orientations.clone()
             # Backwards is reverse of the orientation direction
@@ -100,6 +104,12 @@ class LaserTag(MultiagentVecEnv):
             # Keep in range(4)
             directions.fmod_(4)
             self.agents[has_moved] = move_pixels(self.agents[has_moved], directions[has_moved])
+
+            # Check pathing
+            overlap = self.pathing & (self.agents > EPS)
+            reset_due_to_pathing = overlap.view(self.num_envs*self.num_agents, -1).any(dim=1)
+            if torch.any(reset_due_to_pathing):
+                self.agents[reset_due_to_pathing] = original_agents[reset_due_to_pathing]
 
         observations = self._observe()
 

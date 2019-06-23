@@ -50,7 +50,8 @@ class TestLaserTag(unittest.TestCase):
             render(env)
             self.assertTrue(torch.equal(env.x.cpu(), expected_x[i]))
             self.assertTrue(torch.equal(env.y.cpu(), expected_y[i]))
-            self.assertTrue(torch.equal(env.orientations.cpu(), expected_orientations[i]))
+            if expected_orientations is not None:
+                self.assertTrue(torch.equal(env.orientations.cpu(), expected_orientations[i]))
 
     def test_basic_movement(self):
         """2 agents rotate completely on the spot then move in a circle."""
@@ -116,6 +117,23 @@ class TestLaserTag(unittest.TestCase):
         ]).t()
 
         self._test_action_sequence(env, all_actions, expected_orientations, expected_x, expected_y)
+
+    def test_pathing(self):
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([0, 5, 6, 6, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([4, 3, 0, 3, 2, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+        expected_x = torch.tensor([
+            [1, 1, 1, 1, 2, 2, 2],
+            [7, 6, 6, 5, 5, 5, 5],
+        ]).t()
+        expected_y = torch.tensor([
+            [1, 1, 2, 3, 3, 3, 3],
+            [7, 7, 7, 7, 7, 6, 6]
+        ]).t()
+
+        self._test_action_sequence(env, all_actions, None, expected_x, expected_y)
 
     def test_render(self):
         env = get_test_env()
