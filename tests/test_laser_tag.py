@@ -135,6 +135,25 @@ class TestLaserTag(unittest.TestCase):
 
         self._test_action_sequence(env, all_actions, None, expected_x, expected_y)
 
+    def test_firing(self):
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([7, 6, 7, 6, 7, 2, 7]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 7, 2, 7, 0, 0, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        render(env)
+        print('-'*50)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+            render(env)
+            print('-' * 50)
+
     def test_render(self):
         env = get_test_env()
 

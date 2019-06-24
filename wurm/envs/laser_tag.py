@@ -5,6 +5,7 @@ from gym.envs.classic_control import rendering
 import torch.nn.functional as F
 
 from wurm._filters import ORIENTATION_FILTERS
+from wurm.utils import rotate_image_batch
 from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb, move_pixels
 from config import DEFAULT_DEVICE, EPS
 
@@ -133,33 +134,57 @@ class LaserTag(MultiagentVecEnv):
         # Lasers
         has_fired = actions == self.fire
         if torch.any(has_fired):
-            print(self.orientations)
-            coords = get_coords(self.agents)
             lasers = torch.ones((self.num_envs*self.num_agents, 1, self.size, self.size), dtype=torch.uint8, device=self.device)
             lasers[~has_fired] = 0
 
-            # xy = self.agents * coords
-            # xy = xy.view(self.num_envs*self.num_agents, 2, -1).sum(dim=2).reshape(self.num_envs*self.num_agents, -1)
-
-            print(self.x[0], self.y[0])
-
-            # Handle orientation 0
             orientation_0 = self.orientations == 0
-            lasers[orientation_0] &= coords[orientation_0, 0:1] >= self.x[orientation_0, None, None, None].float()
-            lasers[orientation_0] &= coords[orientation_0, 1:2] == self.y[orientation_0, None, None, None].float()
-            in_front_mask = (coords[orientation_0] >= self.y[orientation_0, None, None, None].float()).all(dim=1)
-            trimmed_pathing = self.pathing.repeat_interleave(self.num_agents, 0)[orientation_0] & in_front_mask
-            block = trimmed_pathing.cumsum(dim=2).cumsum(dim=3) > EPS
-            lasers[orientation_0] &= ~block
+            if torch.any(orientation_0 & has_fired):
+                lasers[orientation_0 & has_fired] = self._do_lasers(
+                    agents=self.agents[orientation_0 & has_fired],
+                    pathing=self.pathing.repeat_interleave(self.num_agents, 0)[orientation_0 & has_fired]
+                )
+
+            x = [
+                (1, 270, 90),
+                (2, 180, 180),
+                (3, 90, 270),
+            ]
+
+            for orientation, rotation, reverse_rotation in x:
+                _orientation = self.orientations == orientation
+                if torch.any(_orientation & has_fired):
+                    _lasers = self._do_lasers(
+                        agents=rotate_image_batch(self.agents[_orientation & has_fired], degree=rotation),
+                        pathing=rotate_image_batch(
+                            self.pathing.repeat_interleave(self.num_agents, 0)[_orientation & has_fired]),
+                    )
+                    lasers[_orientation & has_fired] = rotate_image_batch(_lasers, reverse_rotation)
 
             # For rendering
             self.lasers += (lasers & ~(self.agents > EPS)).float()
 
         observations = self._observe()
 
-        print('-'*50)
-
         return observations, self.rewards, self.dones, info
+
+    def _do_lasers(self, agents: torch.Tensor, pathing: torch.Tensor) -> torch.Tensor:
+        n = agents.size(0)
+        coords = get_coords(agents)
+        lasers = torch.ones((n, 1, self.size, self.size), dtype=torch.uint8,
+                            device=self.device)
+
+        xy = agents * coords
+        x, y = xy.view(n, 2, -1).sum(dim=2).reshape(n, -1).unbind(dim=1)
+
+        # Handle orientation 0
+        lasers &= coords[:, 0:1] >= x[:, None, None, None].float()
+        lasers &= coords[:, 1:2] == y[:, None, None, None].float()
+        in_front_mask = (coords >= y[:, None, None, None].float()).all(dim=1)
+        trimmed_pathing = pathing & in_front_mask
+        block = trimmed_pathing.cumsum(dim=2).cumsum(dim=3) > EPS
+        lasers &= ~block
+
+        return lasers
 
     def reset(self, done: torch.Tensor = None, return_observations: bool = True) -> Optional[Dict[str, torch.Tensor]]:
         pass
