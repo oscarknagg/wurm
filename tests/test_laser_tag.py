@@ -4,7 +4,9 @@ import torch
 from time import sleep
 
 from wurm.envs import LaserTag
+from tests._laser_trajectories import expected_laser_trajectories
 from config import DEFAULT_DEVICE
+
 
 render_envs = True
 size = 9
@@ -143,7 +145,6 @@ class TestLaserTag(unittest.TestCase):
         }
 
         render(env)
-        print('-'*50)
 
         for i in range(all_actions['agent_0'].shape[0]):
             actions = {
@@ -151,8 +152,9 @@ class TestLaserTag(unittest.TestCase):
             }
 
             observations, rewards, dones, info = env.step(actions)
+            # Laser trajectories were verified manually then saved to another file because they are very verbose
+            self.assertTrue(torch.equal(env.lasers, expected_laser_trajectories[i]))
             render(env)
-            print('-' * 50)
 
     def test_render(self):
         env = get_test_env()

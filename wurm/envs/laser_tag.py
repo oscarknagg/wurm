@@ -29,16 +29,6 @@ class LaserTag(MultiagentVecEnv):
 
     This environment is meant to be a slightly extended version of the laser tag multiagent
     environment from Deepmind's paper: https://arxiv.org/pdf/1711.00832.pdf
-
-    Actions:
-        0: No-op
-        1: Rotate right
-        2: Rotate left
-        3: Move forward
-        4: Move back
-        5: Move right
-        6: Move left
-        7: Fire laser
     """
     no_op = 0
     rotate_right = 1
@@ -82,8 +72,6 @@ class LaserTag(MultiagentVecEnv):
         self.pathing[:, :, :, -1:] = 1
         self.orientations = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device,
                                         requires_grad=False)
-        # self.x = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
-        # self.y = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
         self.hp = torch.ones((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
 
         # Environment outputs
