@@ -384,3 +384,18 @@ def autograd_graph(tensor: torch.Tensor) -> Tuple[
     _add_nodes(tensor.grad_fn)
 
     return nodes, edges
+
+
+def rotate_image_batch(img: torch.Tensor, degree: int = 0) -> torch.Tensor:
+    n, c, h, w = img.size()
+
+    if degree == 0:
+        rot = img
+    elif degree == 90:
+        rot = img.transpose(3, 2).flip(3)
+    elif degree == 180:
+        rot = img.flip(2).flip(3)
+    else:
+        rot = img.transpose(3, 2).flip(2)
+
+    return rot
