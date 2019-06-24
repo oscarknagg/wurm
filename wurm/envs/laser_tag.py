@@ -9,6 +9,20 @@ from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rg
 from config import DEFAULT_DEVICE, EPS
 
 
+def get_coords(input_tensor: torch.Tensor) -> torch.Tensor:
+    batch_size, _, x_dim, y_dim = input_tensor.size()
+    xx_channel = torch.arange(x_dim).repeat(1, y_dim, 1)
+    yy_channel = torch.arange(y_dim).repeat(1, x_dim, 1).transpose(1, 2)
+
+    xx_channel = xx_channel.repeat(batch_size, 1, 1, 1).transpose(2, 3)
+    yy_channel = yy_channel.repeat(batch_size, 1, 1, 1).transpose(2, 3)
+    ret = torch.cat([
+            xx_channel.type_as(input_tensor),
+            yy_channel.type_as(input_tensor)], dim=1)
+
+    return ret
+
+
 class LaserTag(MultiagentVecEnv):
     """Laser tag environment.
 
@@ -57,6 +71,8 @@ class LaserTag(MultiagentVecEnv):
         # Environment tensors
         self.agents = torch.zeros((num_envs*num_agents, 1, size, size), dtype=self.dtype, device=self.device,
                                   requires_grad=False)
+        self.lasers = torch.zeros((num_envs * num_agents, 1, size, size), dtype=self.dtype, device=self.device,
+                                  requires_grad=False)
         self.pathing = torch.zeros((num_envs, 1, size, size), dtype=torch.uint8, device=self.device,
                                    requires_grad=False)
         self.pathing[:, :, :1, :] = 1
@@ -77,6 +93,9 @@ class LaserTag(MultiagentVecEnv):
         check_multi_vec_env_actions(actions, self.num_envs, self.num_agents)
         info = {}
         actions = torch.stack([v for k, v in actions.items()]).t().flatten()
+
+        # Reset stuff
+        self.lasers.fill_(0)
 
         # Update orientations
         self.orientations[actions == self.rotate_right] += 1
@@ -111,7 +130,34 @@ class LaserTag(MultiagentVecEnv):
             if torch.any(reset_due_to_pathing):
                 self.agents[reset_due_to_pathing] = original_agents[reset_due_to_pathing]
 
+        # Lasers
+        has_fired = actions == self.fire
+        if torch.any(has_fired):
+            print(self.orientations)
+            coords = get_coords(self.agents)
+            lasers = torch.ones((self.num_envs*self.num_agents, 1, self.size, self.size), dtype=torch.uint8, device=self.device)
+            lasers[~has_fired] = 0
+
+            # xy = self.agents * coords
+            # xy = xy.view(self.num_envs*self.num_agents, 2, -1).sum(dim=2).reshape(self.num_envs*self.num_agents, -1)
+
+            print(self.x[0], self.y[0])
+
+            # Handle orientation 0
+            orientation_0 = self.orientations == 0
+            lasers[orientation_0] &= coords[orientation_0, 0:1] >= self.x[orientation_0, None, None, None].float()
+            lasers[orientation_0] &= coords[orientation_0, 1:2] == self.y[orientation_0, None, None, None].float()
+            in_front_mask = (coords[orientation_0] >= self.y[orientation_0, None, None, None].float()).all(dim=1)
+            trimmed_pathing = self.pathing.repeat_interleave(self.num_agents, 0)[orientation_0] & in_front_mask
+            block = trimmed_pathing.cumsum(dim=2).cumsum(dim=3) > EPS
+            lasers[orientation_0] &= ~block
+
+            # For rendering
+            self.lasers += (lasers & ~(self.agents > EPS)).float()
+
         observations = self._observe()
+
+        print('-'*50)
 
         return observations, self.rewards, self.dones, info
 
@@ -153,6 +199,15 @@ class LaserTag(MultiagentVecEnv):
             .sum(dim=1)\
             .short()
         img += orientation_highlights.expand_as(img)
+
+        # Add lasers
+        per_env_lasers = self.lasers.reshape(self.num_envs, self.num_agents, self.size, self.size).sum(dim=1).gt(EPS)
+        # Convert to NHWC axes for easier indexing here
+        img = img.permute((0, 2, 3, 1))
+        laser_colour = torch.tensor([127, 127, 31], device=self.device, dtype=torch.short)
+        img[per_env_lasers] = laser_colour
+        # Convert back to NCHW axes
+        img = img.permute((0, 3, 1, 2))
 
         # Add colours for agents
         body_colours = torch.einsum('nhw,nc->nchw', [locations.squeeze(), self.agent_colours.float()])\
