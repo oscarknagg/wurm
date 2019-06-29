@@ -5,7 +5,7 @@ from gym.envs.classic_control import rendering
 import torch.nn.functional as F
 
 from wurm._filters import ORIENTATION_FILTERS
-from wurm.utils import rotate_image_batch
+from wurm.utils import rotate_image_batch, drop_duplicates
 from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb, move_pixels
 from config import DEFAULT_DEVICE, EPS
 
@@ -72,6 +72,9 @@ class LaserTag(MultiagentVecEnv):
         self.pathing[:, :, :, :1] = 1
         self.pathing[:, :, -1:, :] = 1
         self.pathing[:, :, :, -1:] = 1
+        self.respawns = torch.zeros((num_envs, 1, size, size), dtype=torch.uint8, device=self.device,
+                                    requires_grad=False)
+        # Agent tensors
         self.orientations = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device,
                                         requires_grad=False)
         self.hp = torch.ones(
@@ -85,9 +88,6 @@ class LaserTag(MultiagentVecEnv):
         check_multi_vec_env_actions(actions, self.num_envs, self.num_agents)
         info = {}
         actions = torch.stack([v for k, v in actions.items()]).t().flatten()
-
-        # We need this to calculate rewards later down the line
-        initial_hp = self.hp.clone()
 
         # Reset stuff
         self.lasers.fill_(0)
@@ -200,6 +200,7 @@ class LaserTag(MultiagentVecEnv):
         observations = self._observe()
         dones = {f'agent_{i}': d for i, d in
                  enumerate(self.dones.clone().view(self.num_envs, self.num_agents).t().unbind())}
+        dones['__all__'] = self.dones.view(self.num_envs, self.num_agents).all(dim=1).clone()
         rewards = {f'agent_{i}': d for i, d in
                    enumerate(self.rewards.clone().view(self.num_envs, self.num_agents).t().unbind())}
 
@@ -228,7 +229,7 @@ class LaserTag(MultiagentVecEnv):
         # block = trimmed_pathing.cumsum(dim=2).cumsum(dim=3).gt(EPS)
         # Can I do this without the doing a cumsum twice in each direction?
         # The difficulty is that I need the trajectory to be not continue through single block objects
-        # yet also penetrate 1 block in to them for hit calculations
+        # yet also penetrate 1 block in to them for hit calculations downstream
         block = trimmed_pathing.cumsum(dim=2).cumsum(dim=3).cumsum(dim=2).cumsum(dim=3).gt(1+EPS)
 
         lasers &= ~block
@@ -236,6 +237,43 @@ class LaserTag(MultiagentVecEnv):
         return lasers
 
     def reset(self, done: torch.Tensor = None, return_observations: bool = True) -> Optional[Dict[str, torch.Tensor]]:
+        print(self.dones)
+
+        if torch.any(self.dones):
+            first_done_per_env = (self.dones.view(self.num_envs, self.num_agents).cumsum(
+                dim=1) == 1).flatten() & self.dones
+
+            pathing = self.pathing.clone()
+            pathing |= self.agents\
+                .view(self.num_envs, self.num_agents, self.size, self.size)\
+                .gt(EPS)\
+                .any(dim=1, keepdim=True)
+            pathing = pathing.repeat_interleave(self.num_agents, 0)
+
+            available_respawn_locations = self.respawns.repeat_interleave(self.num_agents, 0)
+            available_respawn_locations &= ~pathing
+
+            pathing = pathing[first_done_per_env]
+            available_respawn_locations = available_respawn_locations[first_done_per_env]
+
+            respawn_indices = drop_duplicates(torch.nonzero(available_respawn_locations), 0)
+
+            new_agents = torch.sparse_coo_tensor(
+                respawn_indices.t(), torch.ones(len(respawn_indices)), available_respawn_locations.shape,
+                device=self.device, dtype=self.dtype
+            ).to_dense()
+
+            # Change orientation randomly
+            new_orientations = torch.randint(0, 4, size=(first_done_per_env.sum().item(), ))
+
+            self.agents[first_done_per_env] = new_agents
+            self.orientations[first_done_per_env] = new_orientations
+            self.dones[first_done_per_env] = False
+
+        if return_observations:
+            return self._observe()
+
+    def _do_respawn(self):
         pass
 
     def render(self, mode: str = 'human', env: Optional[int] = None):
@@ -268,9 +306,9 @@ class LaserTag(MultiagentVecEnv):
             padding=1
         ) * 31
         directions_onehot = F.one_hot(self.orientations, 4).to(self.dtype)
-        orientation_highlights = torch.einsum('bchw,bc->bhw', [orientation_highlights, directions_onehot])\
-            .view(self.num_envs, self.num_agents, 1, self.size, self.size)\
-            .sum(dim=1)\
+        orientation_highlights = torch.einsum('bchw,bc->bhw', [orientation_highlights, directions_onehot]) \
+            .view(self.num_envs, self.num_agents, 1, self.size, self.size) \
+            .sum(dim=1) \
             .short()
         img += orientation_highlights.expand_as(img)
 
@@ -284,9 +322,9 @@ class LaserTag(MultiagentVecEnv):
         img = img.permute((0, 3, 1, 2))
 
         # Add colours for agents
-        body_colours = torch.einsum('nhw,nc->nchw', [locations.squeeze(), self.agent_colours.float()])\
-            .view(self.num_envs, self.num_agents, 3, self.size, self.size)\
-            .sum(dim=1)\
+        body_colours = torch.einsum('nhw,nc->nchw', [locations.squeeze(), self.agent_colours.float()]) \
+            .view(self.num_envs, self.num_agents, 3, self.size, self.size) \
+            .sum(dim=1) \
             .short()
         img += body_colours
 
