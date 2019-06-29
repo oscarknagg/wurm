@@ -126,35 +126,47 @@ class LaserTag(MultiagentVecEnv):
             if torch.any(reset_due_to_pathing):
                 self.agents[reset_due_to_pathing] = original_agents[reset_due_to_pathing]
 
-        # Lasers
         has_fired = actions == self.fire
         if torch.any(has_fired):
+            # Calculate positions of other agents with respect to each agent
+            other = torch.arange(self.num_agents, device=self.device).repeat(self.num_envs)
+            other = ~F.one_hot(other, self.num_agents).byte()
+            agents_ = self.agents \
+                .view(self.num_envs, self.num_agents, self.size, self.size) \
+                .repeat_interleave(self.num_agents, 0) \
+                .float()
+            other_agents = torch.einsum('nshw,ns->nhw', [agents_, other.float()]).unsqueeze(1)
+
+            # Handle lasers
             lasers = torch.ones((self.num_envs*self.num_agents, 1, self.size, self.size), dtype=torch.uint8, device=self.device)
             lasers[~has_fired] = 0
-
             orientation_0 = self.orientations == 0
             if torch.any(orientation_0 & has_fired):
                 lasers[orientation_0 & has_fired] = self._do_lasers(
                     agents=self.agents[orientation_0 & has_fired],
-                    pathing=self.pathing.repeat_interleave(self.num_agents, 0)[orientation_0 & has_fired]
+                    pathing=(self.pathing.repeat_interleave(self.num_agents, 0)[orientation_0 & has_fired] +
+                             other_agents[orientation_0 & has_fired].gt(EPS))
                 )
 
-            x = [
+            orientation_preprocessing = [
+                # (0, 0, 0),
                 (1, 270, 90),
                 (2, 180, 180),
                 (3, 90, 270),
             ]
 
-            # The _do_lasers() method correctly calculates laser positions in a vectorised way for a particular
-            # orientation. Hence I rotate each agent to the correct orientation, apply the algorithm and then
+            # The _do_lasers() method calculates laser positions in a vectorised way but only for a particular
+            # orientation. Hence I rotate each agent to the required orientation, apply the algorithm and then
             # rotate back to original position
-            for orientation, rotation, reverse_rotation in x:
+            for orientation, rotation, reverse_rotation in orientation_preprocessing:
                 _orientation = self.orientations == orientation
                 if torch.any(_orientation & has_fired):
                     _lasers = self._do_lasers(
                         agents=rotate_image_batch(self.agents[_orientation & has_fired], degree=rotation),
                         pathing=rotate_image_batch(
-                            self.pathing.repeat_interleave(self.num_agents, 0)[_orientation & has_fired]),
+                            self.pathing.repeat_interleave(self.num_agents, 0)[_orientation & has_fired] +
+                            other_agents[_orientation & has_fired].gt(EPS)
+                        ),
                     )
                     lasers[_orientation & has_fired] = rotate_image_batch(_lasers, reverse_rotation)
 
@@ -166,8 +178,6 @@ class LaserTag(MultiagentVecEnv):
             self.lasers += (lasers & ~agent_blocking).float()
 
             # Check for hits (https://www.youtube.com/watch?v=RaMIIpc46gM) and update HP
-            other = torch.arange(self.num_agents, device=self.device).repeat(self.num_envs)
-            other = ~F.one_hot(other, self.num_agents).byte()
             lasers_ = lasers \
                 .view(self.num_envs, self.num_agents, self.size, self.size) \
                 .repeat_interleave(self.num_agents, 0) \
@@ -179,11 +189,6 @@ class LaserTag(MultiagentVecEnv):
             self.dones |= self.hp.eq(0)
 
             # Give rewards
-            agents_ = self.agents \
-                .view(self.num_envs, self.num_agents, self.size, self.size) \
-                .repeat_interleave(self.num_agents, 0) \
-                .float()
-            other_agents = torch.einsum('nshw,ns->nhw', [agents_, other.float()]).unsqueeze(1)
             other_agents_hit = other_agents.gt(EPS) & lasers
             reward = other_agents_hit.view(self.num_envs*self.num_agents, -1).sum(dim=-1).float()
             self.rewards += reward
@@ -201,6 +206,12 @@ class LaserTag(MultiagentVecEnv):
         return observations, rewards, dones, info
 
     def _do_lasers(self, agents: torch.Tensor, pathing: torch.Tensor) -> torch.Tensor:
+        """Calculates laser trajectories.
+
+        Args:
+            agents: Tensor of shape (num_agents, ...
+            pathing: Tensor of shape (num_agents, ...
+        """
         n = agents.size(0)
         coords = get_coords(agents)
         lasers = torch.ones((n, 1, self.size, self.size), dtype=torch.uint8,
@@ -214,7 +225,12 @@ class LaserTag(MultiagentVecEnv):
         lasers &= coords[:, 1:2] == y[:, None, None, None].float()
         in_front_mask = (coords >= y[:, None, None, None].float()).all(dim=1)
         trimmed_pathing = pathing & in_front_mask
-        block = trimmed_pathing.cumsum(dim=2).cumsum(dim=3) > EPS
+        # block = trimmed_pathing.cumsum(dim=2).cumsum(dim=3).gt(EPS)
+        # Can I do this without the doing a cumsum twice in each direction?
+        # The difficulty is that I need the trajectory to be not continue through single block objects
+        # yet also penetrate 1 block in to them for hit calculations
+        block = trimmed_pathing.cumsum(dim=2).cumsum(dim=3).cumsum(dim=2).cumsum(dim=3).gt(1+EPS)
+
         lasers &= ~block
 
         return lasers

@@ -8,9 +8,9 @@ from tests._laser_trajectories import expected_laser_trajectories
 from config import DEFAULT_DEVICE
 
 
-render_envs = False
+render_envs = True
 size = 9
-render_sleep = 0.75
+render_sleep = 0.5
 
 
 def get_test_env(num_envs=2):
@@ -202,7 +202,22 @@ class TestLaserTag(unittest.TestCase):
                                    expected_done=expected_done)
 
     def test_cant_shoot_through_agents(self):
-        pass
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, ]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 2, 3, 3, 3, 3, 3, 3, 1, 3, 0, ]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+
+            render(env)
 
     def test_death_and_respawn(self):
         pass
