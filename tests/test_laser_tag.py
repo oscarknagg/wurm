@@ -8,9 +8,9 @@ from tests._laser_trajectories import expected_laser_trajectories
 from config import DEFAULT_DEVICE
 
 
-render_envs = True
+render_envs = False
 size = 9
-render_sleep = 1
+render_sleep = 0.75
 
 
 def get_test_env(num_envs=2):
@@ -40,7 +40,8 @@ def render(env):
 
 
 class TestLaserTag(unittest.TestCase):
-    def _test_action_sequence(self, env, all_actions, expected_orientations, expected_x, expected_y):
+    def _test_action_sequence(self, env, all_actions, expected_orientations=None, expected_x=None, expected_y=None,
+                              expected_hp=None, expected_reward=None, expected_done=None):
         render(env)
 
         for i in range(all_actions['agent_0'].shape[0]):
@@ -50,10 +51,24 @@ class TestLaserTag(unittest.TestCase):
 
             observations, rewards, dones, info = env.step(actions)
             render(env)
-            self.assertTrue(torch.equal(env.x.cpu(), expected_x[i]))
-            self.assertTrue(torch.equal(env.y.cpu(), expected_y[i]))
+
+            if expected_x is not None:
+                self.assertTrue(torch.equal(env.x.cpu(), expected_x[i]))
+            if expected_y is not None:
+                self.assertTrue(torch.equal(env.y.cpu(), expected_y[i]))
             if expected_orientations is not None:
                 self.assertTrue(torch.equal(env.orientations.cpu(), expected_orientations[i]))
+            if expected_hp is not None:
+                self.assertTrue(torch.equal(env.hp.cpu(), expected_hp[i]))
+            if expected_reward is not None:
+                self.assertTrue(torch.equal(env.rewards.cpu(), expected_reward[i]))
+            if expected_done is not None:
+                self.assertTrue(torch.equal(env.dones.cpu(), expected_done[i]))
+
+    def test_random_actions(self):
+        """Tests a very large number of random actions and checks for environment consistency
+        instead of any particular expected trajectory."""
+        pass
 
     def test_basic_movement(self):
         """2 agents rotate completely on the spot then move in a circle."""
@@ -120,7 +135,8 @@ class TestLaserTag(unittest.TestCase):
 
         self._test_action_sequence(env, all_actions, expected_orientations, expected_x, expected_y)
 
-    def test_pathing(self):
+    def test_wall_pathing(self):
+        """Test agents can't walk through walls."""
         env = get_test_env(num_envs=1)
         all_actions = {
             'agent_0': torch.tensor([0, 5, 6, 6, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
@@ -137,7 +153,12 @@ class TestLaserTag(unittest.TestCase):
 
         self._test_action_sequence(env, all_actions, None, expected_x, expected_y)
 
+    def test_agent_agent_pathing(self):
+        """Test agents can't walk through each other."""
+        pass
+
     def test_firing(self):
+        """Tests that laser trajectories are calculated correctly."""
         env = get_test_env(num_envs=1)
         all_actions = {
             'agent_0': torch.tensor([7, 6, 7, 6, 7, 2, 7]).unsqueeze(1).long().to(DEFAULT_DEVICE),
@@ -155,6 +176,39 @@ class TestLaserTag(unittest.TestCase):
             # Laser trajectories were verified manually then saved to another file because they are very verbose
             self.assertTrue(torch.equal(env.lasers, expected_laser_trajectories[i]))
             render(env)
+
+    def test_being_hit(self):
+        """Tests that agent-laser collision is calculated correctly, hp is deducted
+        and reward is given."""
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([0, 0, 0, 0, 0, 0, 0, 0, 7, 7, ]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 2, 3, 3, 3, 3, 3, 3, 0, 0, ]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+        expected_hp = torch.tensor([
+            [2, ] * all_actions['agent_0'].shape[0],
+            [2, ] * (all_actions['agent_0'].shape[0] - 2) + [1, 0],
+        ]).t()
+        expected_reward = torch.tensor([
+            [0, ] * (all_actions['agent_0'].shape[0] - 2) + [1, 1],
+            [0, ] * (all_actions['agent_0'].shape[0] - 2) + [0, 0],
+        ]).t().float()
+        expected_done = torch.tensor([
+            [0, ] * all_actions['agent_0'].shape[0],
+            [0, ] * (all_actions['agent_0'].shape[0] - 1) + [1],
+        ]).t().byte()
+
+        self._test_action_sequence(env, all_actions, expected_hp=expected_hp, expected_reward=expected_reward,
+                                   expected_done=expected_done)
+
+    def test_cant_shoot_through_agents(self):
+        pass
+
+    def test_death_and_respawn(self):
+        pass
+
+    def test_partial_observations(self):
+        pass
 
     def test_render(self):
         env = get_test_env()

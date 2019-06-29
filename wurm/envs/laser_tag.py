@@ -43,12 +43,14 @@ class LaserTag(MultiagentVecEnv):
                  num_envs: int,
                  num_agents: int,
                  size: int,
+                 initial_hp: int = 2,
                  render_args: dict = None,
                  dtype: torch.dtype = torch.float,
                  device: str = DEFAULT_DEVICE):
         self.num_envs = num_envs
         self.num_agents = num_agents
         self.size = size
+        self.initial_hp = initial_hp
         self.dtype = dtype
         self.device = device
 
@@ -72,7 +74,8 @@ class LaserTag(MultiagentVecEnv):
         self.pathing[:, :, :, -1:] = 1
         self.orientations = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device,
                                         requires_grad=False)
-        self.hp = torch.ones((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
+        self.hp = torch.ones(
+            (num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False) * initial_hp
 
         # Environment outputs
         self.rewards = torch.zeros(self.num_envs * self.num_agents, dtype=torch.float, device=self.device)
@@ -83,8 +86,12 @@ class LaserTag(MultiagentVecEnv):
         info = {}
         actions = torch.stack([v for k, v in actions.items()]).t().flatten()
 
+        # We need this to calculate rewards later down the line
+        initial_hp = self.hp.clone()
+
         # Reset stuff
         self.lasers.fill_(0)
+        self.rewards.fill_(0)
 
         # Update orientations
         self.orientations[actions == self.rotate_right] += 1
@@ -138,6 +145,9 @@ class LaserTag(MultiagentVecEnv):
                 (3, 90, 270),
             ]
 
+            # The _do_lasers() method correctly calculates laser positions in a vectorised way for a particular
+            # orientation. Hence I rotate each agent to the correct orientation, apply the algorithm and then
+            # rotate back to original position
             for orientation, rotation, reverse_rotation in x:
                 _orientation = self.orientations == orientation
                 if torch.any(_orientation & has_fired):
@@ -149,11 +159,46 @@ class LaserTag(MultiagentVecEnv):
                     lasers[_orientation & has_fired] = rotate_image_batch(_lasers, reverse_rotation)
 
             # For rendering
-            self.lasers += (lasers & ~(self.agents > EPS)).float()
+            agent_blocking = self.agents \
+                .view(self.num_envs, self.num_agents, self.size, self.size) \
+                .sum(dim=1, keepdim=True) \
+                .repeat_interleave(self.num_agents, 0).gt(EPS)
+            self.lasers += (lasers & ~agent_blocking).float()
+
+            # Check for hits (https://www.youtube.com/watch?v=RaMIIpc46gM) and update HP
+            other = torch.arange(self.num_agents, device=self.device).repeat(self.num_envs)
+            other = ~F.one_hot(other, self.num_agents).byte()
+            lasers_ = lasers \
+                .view(self.num_envs, self.num_agents, self.size, self.size) \
+                .repeat_interleave(self.num_agents, 0) \
+                .float()
+            pathing = torch.einsum('nshw,ns->nhw', [lasers_, other.float()]).unsqueeze(1)
+            hit = (self.agents * pathing).gt(EPS).view(self.num_envs*self.num_agents, -1).any(dim=-1)
+            self.hp -= hit.long()
+            self.hp.relu_()
+            self.dones |= self.hp.eq(0)
+
+            # Give rewards
+            agents_ = self.agents \
+                .view(self.num_envs, self.num_agents, self.size, self.size) \
+                .repeat_interleave(self.num_agents, 0) \
+                .float()
+            other_agents = torch.einsum('nshw,ns->nhw', [agents_, other.float()]).unsqueeze(1)
+            other_agents_hit = other_agents.gt(EPS) & lasers
+            reward = other_agents_hit.view(self.num_envs*self.num_agents, -1).sum(dim=-1).float()
+            self.rewards += reward
+
+            # Kill
+            self.dones |= self.hp.eq(0)
+            self.agents[self.dones] = 0
 
         observations = self._observe()
+        dones = {f'agent_{i}': d for i, d in
+                 enumerate(self.dones.clone().view(self.num_envs, self.num_agents).t().unbind())}
+        rewards = {f'agent_{i}': d for i, d in
+                   enumerate(self.rewards.clone().view(self.num_envs, self.num_agents).t().unbind())}
 
-        return observations, self.rewards, self.dones, info
+        return observations, rewards, dones, info
 
     def _do_lasers(self, agents: torch.Tensor, pathing: torch.Tensor) -> torch.Tensor:
         n = agents.size(0)
