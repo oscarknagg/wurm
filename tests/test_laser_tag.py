@@ -8,7 +8,7 @@ from tests._laser_trajectories import expected_laser_trajectories
 from config import DEFAULT_DEVICE
 
 
-render_envs = True
+render_envs = False
 size = 9
 render_sleep = 0.5
 
@@ -216,6 +216,10 @@ class TestLaserTag(unittest.TestCase):
             }
 
             observations, rewards, dones, info = env.step(actions)
+
+            if i == 10:
+                # This checks that the space behind agent_1 doesn't contain a laser
+                self.assertEqual(env.lasers[0, 0, 7, 1].item(), 0)
 
             render(env)
 
