@@ -18,7 +18,7 @@ num_steps = 10
 fps = []
 
 for n in num_envs:
-    env = Slither(num_envs=n, num_snakes=args.num_agents, size=args.size, manual_setup=False, boost=True,
+    env = Slither(num_envs=n, num_agents=args.num_agents, size=args.size, manual_setup=False, boost=True,
                   verbose=False, device='cuda', respawn_mode='any')
 
     all_actions = {

@@ -14,7 +14,7 @@ class VecEnv(ABC):
         self.num_agents = num_agents
         self.height = height
         self.width = width
-        
+
     @abstractmethod
     def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, dict):
         raise NotImplementedError

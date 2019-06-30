@@ -1,13 +1,12 @@
 import torch
 from typing import Dict, Optional, Tuple
-import numpy as np
 from gym.envs.classic_control import rendering
 import torch.nn.functional as F
 
 from wurm._filters import ORIENTATION_FILTERS
 from wurm.utils import rotate_image_batch, drop_duplicates
-from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb, move_pixels
-from .pathing import PathingGenerator
+from wurm.envs.core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb, move_pixels
+from wurm.envs.laser_tag.maps import LaserTagMapGenerator
 from config import DEFAULT_DEVICE, EPS
 
 
@@ -45,7 +44,7 @@ class LaserTag(MultiagentVecEnv):
                  num_agents: int,
                  height: int,
                  width: int,
-                 pathing_generator: PathingGenerator,
+                 map_generator: LaserTagMapGenerator,
                  manual_setup: bool = False,
                  initial_hp: int = 2,
                  render_args: dict = None,
@@ -53,11 +52,7 @@ class LaserTag(MultiagentVecEnv):
                  dtype: torch.dtype = torch.float,
                  device: str = DEFAULT_DEVICE):
         super(LaserTag, self).__init__(num_envs, num_agents, height, width)
-        # self.num_envs = num_envs
-        # self.num_agents = num_agents
-        # self.height = height
-        # self.width = width
-        self.pathing_generator = pathing_generator
+        self.map_generator = map_generator
         self.initial_hp = initial_hp
         self.dtype = dtype
         self.device = device
@@ -71,11 +66,11 @@ class LaserTag(MultiagentVecEnv):
             self.render_args = render_args
 
         # Environment tensors
-        self.env_lifetimes = torch.zeros((num_envs ), dtype=torch.long, device=self.device, requires_grad=False)
+        self.env_lifetimes = torch.zeros((num_envs), dtype=torch.long, device=self.device, requires_grad=False)
         self.lasers = torch.zeros((num_envs * num_agents, 1, height, width), dtype=self.dtype, device=self.device,
                                   requires_grad=False)
-        self.respawns = torch.ones((num_envs, 1, height, width), dtype=torch.uint8, device=self.device,
-                                    requires_grad=False)
+        self.respawns = self.map_generator.respawns(num_envs)
+
         if not manual_setup:
             self.agents, self.orientations, self.dones, self.hp, self.pathing = self._create_envs(num_envs)
         else:
@@ -327,7 +322,7 @@ class LaserTag(MultiagentVecEnv):
         """
         dones = torch.ones(num_envs*self.num_agents, dtype=torch.uint8, device=self.device)
 
-        pathing = self.pathing_generator.generate(num_envs)
+        pathing = self.map_generator.pathing(num_envs)
         agents = torch.zeros((num_envs * self.num_agents, 1, self.height, self.width), dtype=self.dtype,
                              device=self.device, requires_grad=False)
         orientations = torch.zeros((num_envs * self.num_agents), dtype=torch.long, device=self.device,

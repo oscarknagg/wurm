@@ -244,7 +244,7 @@ render_args = {
     'num_cols': args.render_cols,
 }
 if args.env == 'snake':
-    env = Slither(num_envs=args.n_envs, num_snakes=args.n_agents, food_on_death_prob=args.food_on_death,
+    env = Slither(num_envs=args.n_envs, num_agents=args.n_agents, food_on_death_prob=args.food_on_death,
                   size=args.size, device=args.device, render_args=render_args, boost=args.boost,
                   boost_cost_prob=args.boost_cost, dtype=dtype, food_rate=args.food_rate,
                   respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_mode=observation_type,

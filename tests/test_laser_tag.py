@@ -1,22 +1,21 @@
 import unittest
-import pytest
 import torch
 from time import sleep
 
 from wurm.envs import LaserTag
-from wurm.envs.pathing import Small2, Small3
+from wurm.envs.laser_tag.maps import Small2, Small3, Small4
 from tests._laser_trajectories import expected_laser_trajectories
 from config import DEFAULT_DEVICE
 
 
-render_envs = False
+render_envs = True
 size = 9
 render_sleep = 0.5
 
 
 def get_test_env(num_envs=2):
     # Same as small2 map from the Deepmind paper
-    env = LaserTag(num_envs, 2, height=size, width=size, pathing_generator=Small2(DEFAULT_DEVICE), manual_setup=True)
+    env = LaserTag(num_envs, 2, height=size, width=size, map_generator=Small2(DEFAULT_DEVICE), manual_setup=True)
     for i in range(num_envs):
         env.agents[2*i, :, 1, 1] = 1
         env.agents[2*i + 1, :, 7, 7] = 1
@@ -254,7 +253,9 @@ class TestLaserTag(unittest.TestCase):
             render(env)
 
     def test_asymettric_map(self):
-        env = LaserTag(num_envs=1, num_agents=2, height=9, width=16, pathing_generator=Small3(DEFAULT_DEVICE),
+        # env = LaserTag(num_envs=1, num_agents=2, height=9, width=16, map_generator=Small3(DEFAULT_DEVICE),
+        #                device=DEFAULT_DEVICE)
+        env = LaserTag(num_envs=1, num_agents=2, height=14, width=22, map_generator=Small4(DEFAULT_DEVICE),
                        device=DEFAULT_DEVICE)
         if render_envs:
             env.render()
