@@ -90,7 +90,7 @@ class MultiagentVecEnv(ABC):
 
 def check_multi_vec_env_actions(actions: Dict[str, torch.Tensor], num_envs: int, num_agents: int):
     if len(actions) != num_agents:
-        raise RuntimeError('Must have a Tensor of actions for each snake')
+        raise RuntimeError('Must have a Tensor of actions for each agent.')
 
     for agent, act in actions.items():
         if act.dtype not in (torch.short, torch.int, torch.long):

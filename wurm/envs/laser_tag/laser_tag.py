@@ -49,6 +49,7 @@ class LaserTag(MultiagentVecEnv):
                  height: int,
                  width: int,
                  map_generator: LaserTagMapGenerator,
+                 colour_mode: str = 'random',
                  observation_fn: ObservationFunction = RenderObservations(),
                  manual_setup: bool = False,
                  initial_hp: int = 2,
@@ -58,6 +59,7 @@ class LaserTag(MultiagentVecEnv):
                  device: str = DEFAULT_DEVICE):
         super(LaserTag, self).__init__(num_envs, num_agents, height, width, dtype, device)
         self.map_generator = map_generator
+        self.colour_mode = 'random'
         self.observation_fn = observation_fn
         self.initial_hp = initial_hp
         self.max_env_lifetime = env_lifetime
@@ -97,6 +99,20 @@ class LaserTag(MultiagentVecEnv):
         self.lasers.fill_(0)
         self.rewards.fill_(0)
 
+        # # Calculate positions of other agents with respect to each agent
+        # other = torch.arange(self.num_agents, device=self.device).repeat(self.num_envs)
+        # other = ~F.one_hot(other, self.num_agents).byte()
+        # agents_ = self.agents \
+        #     .view(self.num_envs, self.num_agents, self.height, self.width) \
+        #     .repeat_interleave(self.num_agents, 0) \
+        #     .float()
+        # other_agents = torch.einsum('nshw,ns->nhw', [agents_, other.float()]).unsqueeze(1)
+
+        # Alternate calculation
+        other_agents = self.agents.view(self.num_envs, self.num_agents, self.height, self.width)\
+            .sum(dim=1, keepdim=True).repeat_interleave(self.num_agents, 0)\
+            .gt(EPS) & ~(self.agents.gt(EPS))
+
         # Movement
         has_moved = actions == self.move_forward
         has_moved |= actions == self.move_back
@@ -122,7 +138,7 @@ class LaserTag(MultiagentVecEnv):
             self.agents[has_moved] = move_pixels(self.agents[has_moved], directions[has_moved])
 
             # Check pathing
-            overlap = self.pathing & (self.agents.gt(EPS))
+            overlap = (self.pathing.repeat_interleave(self.num_agents, 0) | other_agents.gt(EPS)) & (self.agents.gt(EPS))
             reset_due_to_pathing = overlap.view(self.num_envs*self.num_agents, -1).any(dim=1)
             if torch.any(reset_due_to_pathing):
                 self.agents[reset_due_to_pathing] = original_agents[reset_due_to_pathing]
@@ -172,7 +188,7 @@ class LaserTag(MultiagentVecEnv):
                         agents=rotate_image_batch(self.agents[_orientation & has_fired], degree=rotation),
                         pathing=rotate_image_batch(
                             self.pathing.repeat_interleave(self.num_agents, 0)[_orientation & has_fired] +
-                            other_agents[_orientation & has_fired].gt(EPS)
+                            other_agents[_orientation & has_fired].gt(EPS), degree=rotation
                         ),
                     )
                     lasers[_orientation & has_fired] = rotate_image_batch(_lasers, reverse_rotation)
@@ -236,9 +252,10 @@ class LaserTag(MultiagentVecEnv):
         # Handle orientation 0
         lasers &= coords[:, 0:1] >= x[:, None, None, None].float()
         lasers &= coords[:, 1:2] == y[:, None, None, None].float()
-        in_front_mask = (coords >= y[:, None, None, None].float()).all(dim=1)
+        in_front_mask = (coords[:, 0:1] >= x[:, None, None, None].float())
+        in_front_mask &= (coords[:, 1:] >= y[:, None, None, None].float())
         trimmed_pathing = pathing & in_front_mask
-        # block = trimmed_pathing.cumsum(dim=2).cumsum(dim=3).gt(EPS)
+
         # Can I do this without the doing a cumsum twice in each direction?
         # The difficulty is that I need the trajectory to be not continue through single block objects
         # yet also penetrate 1 block in to them for hit calculations downstream
@@ -252,6 +269,11 @@ class LaserTag(MultiagentVecEnv):
         # Reset envs that contain no snakes
         if done is None:
             done = self.dones.view(self.num_envs, self.num_agents).all(dim=1)
+
+        if self.colour_mode == 'random':
+            # Change agent colours each death
+            new_colours = self._get_n_colours(self.dones.sum().item())
+            self.agent_colours[self.dones] = new_colours
 
         # Reset any environment which has passed the maximum lifetime. This will also regenerate the pathing
         # map if the pathing generator is randomised
@@ -291,6 +313,26 @@ class LaserTag(MultiagentVecEnv):
 
         if return_observations:
             return self._observe()
+
+    def check_consistency(self):
+        # Overlapping agents
+        overlapping_agents = self.agents.view(self.num_envs, self.num_agents, self.height, self.width) \
+            .gt(EPS) \
+            .sum(dim=1, keepdim=True) \
+            .view(self.num_envs, -1) \
+            .max(dim=-1)[0] \
+            .gt(1)
+        if torch.any(overlapping_agents):
+            raise RuntimeError('Agent-agent overlap')
+
+        # Pathing overlap
+        agent_pathing_overlap = self.pathing.repeat_interleave(self.num_agents, 0) & self.agents.gt(EPS)
+        if torch.any(agent_pathing_overlap):
+            raise RuntimeError('Agent-wall overlap')
+
+        agent_pathing_overlap = self.pathing.repeat_interleave(self.num_agents, 0) & self.lasers.gt(EPS)
+        if torch.any(agent_pathing_overlap):
+            raise RuntimeError('Laser-wall overlap')
 
     def _respawn(self, pathing: torch.Tensor, respawns: torch.Tensor, exception_on_failure: bool):
         """Respawns an agent by picking randomly from allowed locations.
@@ -340,11 +382,12 @@ class LaserTag(MultiagentVecEnv):
             first_done_per_env = (dones.view(num_envs, self.num_agents).cumsum(
                 dim=1) == 1).flatten() & dones
 
-            _pathing = pathing.repeat_interleave(self.num_agents, 0).clone()
+            _pathing = pathing.clone().repeat_interleave(self.num_agents, 0)
             _pathing |= agents \
                 .view(num_envs, self.num_agents, self.height, self.width) \
                 .gt(EPS) \
-                .any(dim=1, keepdim=True)
+                .any(dim=1, keepdim=True)\
+                .repeat_interleave(self.num_agents, 0)
             _pathing = _pathing[first_done_per_env]
 
             available_respawn_locations = self.respawns.repeat_interleave(self.num_agents, 0)

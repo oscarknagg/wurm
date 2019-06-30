@@ -1,4 +1,5 @@
 import unittest
+import pytest
 import torch
 from time import sleep
 import matplotlib.pyplot as plt
@@ -6,13 +7,13 @@ import matplotlib.pyplot as plt
 from wurm.envs import LaserTag
 from wurm.envs.laser_tag.maps import Small2, Small3, Small4
 from wurm import observations
-from tests._laser_trajectories import expected_laser_trajectories
+from tests._laser_trajectories import expected_laser_trajectories_0_2, expected_laser_trajectories_1_3
 from config import DEFAULT_DEVICE
 
 
 render_envs = False
 size = 9
-render_sleep = 0.5
+render_sleep = 0.4
 
 
 def get_test_env(num_envs=2):
@@ -62,6 +63,7 @@ class TestLaserTag(unittest.TestCase):
             }
 
             obs, rewards, dones, info = env.step(actions)
+            env.check_consistency()
             render(env)
 
             if expected_x is not None:
@@ -80,7 +82,25 @@ class TestLaserTag(unittest.TestCase):
     def test_random_actions(self):
         """Tests a very large number of random actions and checks for environment consistency
         instead of any particular expected trajectory."""
-        pass
+        num_envs = 64
+        num_steps = 1000
+        num_agents = 2
+        all_actions = {
+            f'agent_{i}': torch.randint(8, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE) for i in
+            range(num_agents)
+        }
+        obs_fn = observations.FirstPersonCrop(
+            first_person_rotation=True,
+            in_front=9,
+            behind=2,
+            side=4,
+            padding_value=127
+        )
+        env = LaserTag(num_envs=num_envs, num_agents=2, height=9, width=9,
+                       map_generator=Small2(DEFAULT_DEVICE), observation_fn=obs_fn,
+                       device=DEFAULT_DEVICE)
+
+        self._test_action_sequence(env, all_actions)
 
     def test_basic_movement(self):
         """2 agents rotate completely on the spot then move in a circle."""
@@ -167,9 +187,15 @@ class TestLaserTag(unittest.TestCase):
 
     def test_agent_agent_pathing(self):
         """Test agents can't walk through each other."""
-        raise Exception
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([3, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([2, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
 
-    def test_firing(self):
+        self._test_action_sequence(env, all_actions)
+
+    def test_firing_orientations_0_2(self):
         """Tests that laser trajectories are calculated correctly."""
         env = get_test_env(num_envs=1)
         all_actions = {
@@ -186,7 +212,26 @@ class TestLaserTag(unittest.TestCase):
 
             observations, rewards, dones, info = env.step(actions)
             # Laser trajectories were verified manually then saved to another file because they are very verbose
-            self.assertTrue(torch.equal(env.lasers, expected_laser_trajectories[i]))
+            self.assertTrue(torch.equal(env.lasers, expected_laser_trajectories_0_2[i]))
+            render(env)
+
+    def test_firing_orientations_1_3(self):
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([9, 7, 5, 7, 5, 7, 5, 7, 5, 7, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 9, 7, 5, 7, 5, 7, 5, 7, 5, 7]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+            # Laser trajectories were verified manually then saved to another file because they are very verbose
+            self.assertTrue(torch.equal(env.lasers, expected_laser_trajectories_1_3[i]))
             render(env)
 
     def test_being_hit(self):
@@ -279,19 +324,13 @@ class TestLaserTag(unittest.TestCase):
     def test_partial_observations(self):
         obs_fn = observations.FirstPersonCrop(
             first_person_rotation=True,
-            in_front=7,
+            in_front=9,
             behind=2,
-            side=3,
+            side=4,
             padding_value=127
         )
-        # obs_fn = observations.FirstPersonCrop(height=5, width=5)
-
-        # env = LaserTag(num_envs=1, num_agents=2, height=9, width=9,
-        #                map_generator=Small2(DEFAULT_DEVICE), observation_fn=obs_fn,
-        #                device=DEFAULT_DEVICE)
         env = get_test_env(num_envs=1)
 
-        render_envs = True
         agent_obs = obs_fn.observe(env)
         for agent, obs in agent_obs.items():
             if render_envs:
@@ -299,11 +338,15 @@ class TestLaserTag(unittest.TestCase):
                 plt.imshow(obs_npy)
                 plt.show()
 
-        env.render()
-        sleep(5)
+        if render_envs:
+            env.render()
+            sleep(5)
 
     def test_create_envs(self):
-        pass
+        obs_fn = observations.RenderObservations()
+        env = LaserTag(num_envs=16, num_agents=2, height=9, width=9,
+                       map_generator=Small2(DEFAULT_DEVICE), observation_fn=obs_fn,
+                       device=DEFAULT_DEVICE)
 
     def test_render(self):
         env = get_test_env()
