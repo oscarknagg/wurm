@@ -257,7 +257,7 @@ class TestLaserTag(unittest.TestCase):
     def test_asymettric_map(self):
         # env = LaserTag(num_envs=1, num_agents=2, height=9, width=16, map_generator=Small3(DEFAULT_DEVICE),
         #                device=DEFAULT_DEVICE)
-        env = LaserTag(num_envs=1, num_agents=2, height=14, width=22, map_generator=Small4(DEFAULT_DEVICE),
+        env = LaserTag(num_envs=1, num_agents=4, height=14, width=22, map_generator=Small4(DEFAULT_DEVICE),
                        device=DEFAULT_DEVICE)
         if render_envs:
             env.render()

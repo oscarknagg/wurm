@@ -85,6 +85,7 @@ class Slither(MultiagentVecEnv):
         self.on_death = on_death
         self.verbose = verbose
         self.observation_fn = observation_fn
+        self.num_actions = 8 if boost else 4
 
         if render_args is None:
             self.render_args = {'num_rows': 1, 'num_cols': 1, 'size': 256}

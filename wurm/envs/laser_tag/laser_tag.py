@@ -40,6 +40,8 @@ class LaserTag(MultiagentVecEnv):
     move_right = 5
     move_left = 6
     fire = 7
+    move_forward_and_turn_right = 8
+    move_forward_and_turn_left = 9
 
     def __init__(self,
                  num_envs: int,
@@ -59,6 +61,7 @@ class LaserTag(MultiagentVecEnv):
         self.observation_fn = observation_fn
         self.initial_hp = initial_hp
         self.max_env_lifetime = env_lifetime
+        self.num_actions = 10
 
         self.agent_colours = self._get_n_colours(num_envs*num_agents)
         if render_args is None:
@@ -94,16 +97,13 @@ class LaserTag(MultiagentVecEnv):
         self.lasers.fill_(0)
         self.rewards.fill_(0)
 
-        # Update orientations
-        self.orientations[actions == self.rotate_right] += 1
-        self.orientations[actions == self.rotate_left] += 3
-        self.orientations.fmod_(4)
-
         # Movement
         has_moved = actions == self.move_forward
         has_moved |= actions == self.move_back
         has_moved |= actions == self.move_right
         has_moved |= actions == self.move_left
+        has_moved |= actions == self.move_forward_and_turn_right
+        has_moved |= actions == self.move_forward_and_turn_left
         if torch.any(has_moved):
             # Keep the original positions so we can reset if an agent does a move
             # that's disallowed by pathing.
@@ -122,10 +122,15 @@ class LaserTag(MultiagentVecEnv):
             self.agents[has_moved] = move_pixels(self.agents[has_moved], directions[has_moved])
 
             # Check pathing
-            overlap = self.pathing & (self.agents > EPS)
+            overlap = self.pathing & (self.agents.gt(EPS))
             reset_due_to_pathing = overlap.view(self.num_envs*self.num_agents, -1).any(dim=1)
             if torch.any(reset_due_to_pathing):
                 self.agents[reset_due_to_pathing] = original_agents[reset_due_to_pathing]
+
+        # Update orientations
+        self.orientations[(actions == self.rotate_right) | (actions == self.move_forward_and_turn_right)] += 1
+        self.orientations[(actions == self.rotate_left) | (actions == self.move_forward_and_turn_left)] += 3
+        self.orientations.fmod_(4)
 
         has_fired = actions == self.fire
         if torch.any(has_fired):

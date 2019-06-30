@@ -108,3 +108,7 @@ venv.bak/
 
 # Notebooks
 notebooks/*
+
+# Experiment lists
+experiments/experiments*.txt
+
