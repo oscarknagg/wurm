@@ -41,7 +41,8 @@ class FirstPersonCrop(ObservationFunction):
                  first_person_rotation: bool = False,
                  in_front: int = None,
                  behind: int = None,
-                 side: int = None):
+                 side: int = None,
+                 padding_value: int = 0):
         """Crops the full observation in an area around each living agent.
 
         If `first_person_rotation` is False then the observations are a simple oblong crop around agent locations.
@@ -56,7 +57,10 @@ class FirstPersonCrop(ObservationFunction):
             in_front:
             behind:
             side:
+            padding_value:
         """
+        self.padding_value = padding_value
+
         # Check arguments
         if first_person_rotation:
             if not (height is None and width is None):
@@ -125,7 +129,7 @@ class FirstPersonCrop(ObservationFunction):
         # Pad envs so we ge the correct size observation even when agents
         # are close to the edge of the environment
         padding = self.padding * 2
-        padded_img = F.pad(img, padding)
+        padded_img = F.pad(img, padding, value=self.padding_value / 255)
         n_living = (~env.dones).sum().item()
         padded_agents = F.pad(agents, padding)
         agent_area_mask = F.conv2d(
@@ -133,13 +137,6 @@ class FirstPersonCrop(ObservationFunction):
             self.crop_filter,
             padding=self.padding,
         ).round()
-
-        # print(self.crop_filter.size(2) // 2, self.crop_filter.size(3) // 2)
-        # print(self.h_radius, self.w_radius)
-        # print(self.h_diameter, self.w_diameter)
-        # print(self.crop_filter)
-        # print(agent_area_mask)
-        # print(agent_area_mask.shape)
 
         living_observations = padded_img[
             agent_area_mask.expand_as(padded_img).byte()

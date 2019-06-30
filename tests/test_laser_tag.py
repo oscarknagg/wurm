@@ -281,7 +281,8 @@ class TestLaserTag(unittest.TestCase):
             first_person_rotation=True,
             in_front=7,
             behind=2,
-            side=3
+            side=3,
+            padding_value=127
         )
         # obs_fn = observations.FirstPersonCrop(height=5, width=5)
 
