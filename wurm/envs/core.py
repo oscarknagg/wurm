@@ -51,7 +51,8 @@ def check_multi_vec_env_actions(actions: Dict[str, torch.Tensor], num_envs: int,
 def build_render_rgb(
         img: torch.Tensor,
         num_envs: int,
-        env_size: int,
+        env_height: int,
+        env_width: int,
         num_rows: int,
         num_cols: int,
         render_size: int,
@@ -61,7 +62,8 @@ def build_render_rgb(
     Args:
         img: Batch of RGB Tensors of the envs. Shape = (num_envs, 3, env_size, env_size).
         num_envs: Number of envs inside the VecEnv.
-        env_size: Size of VecEnv.
+        env_height: Size of VecEnv.
+        env_width: Size of VecEnv.
         num_rows: Number of rows of envs to view.
         num_cols: Number of columns of envs to view.
         render_size: Pixel size of each viewed env.
@@ -79,18 +81,20 @@ def build_render_rgb(
         num_rows = num_rows
         num_cols = num_cols
         # Make a grid of images
-        output = np.zeros((env_size * num_rows, env_size * num_cols, 3))
+        output = np.zeros((env_height * num_rows, env_width * num_cols, 3))
         for i in range(num_rows):
             for j in range(num_cols):
                 output[
-                i * env_size:(i + 1) * env_size, j * env_size:(j + 1) * env_size, :
+                i * env_height:(i + 1) * env_height, j * env_width:(j + 1) * env_width, :
                 ] = np.transpose(img[i * num_cols + j], (1, 2, 0))
 
         img = output
 
+    ratio = env_width / env_height
+
     img = np.array(Image.fromarray(img.astype(np.uint8)).resize(
-        (render_size * num_cols,
-         render_size * num_rows)
+        (int(render_size * num_cols * ratio),
+         int(render_size * num_rows))
     ))
 
     return img

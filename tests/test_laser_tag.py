@@ -4,18 +4,19 @@ import torch
 from time import sleep
 
 from wurm.envs import LaserTag
+from wurm.envs.pathing import Small3
 from tests._laser_trajectories import expected_laser_trajectories
 from config import DEFAULT_DEVICE
 
 
-render_envs = False
+render_envs = True
 size = 9
 render_sleep = 0.5
 
 
 def get_test_env(num_envs=2):
     # Same as small2 map from the Deepmind paper
-    env = LaserTag(num_envs, 2, size)
+    env = LaserTag(num_envs, 2, height=size, width=size)
     for i in range(num_envs):
         env.agents[2*i, :, 1, 1] = 1
         env.agents[2*i + 1, :, 7, 7] = 1
@@ -29,6 +30,11 @@ def get_test_env(num_envs=2):
     env.pathing[:, :, 4, 6] = 1
     env.pathing[:, :, 5, 3] = 1
     env.pathing[:, :, 5, 5] = 1
+
+    env.respawns[:, :, 1, 1] = 1
+    env.respawns[:, :, 1, 7] = 1
+    env.respawns[:, :, 7, 1] = 1
+    env.respawns[:, :, 7, 7] = 1
 
     return env
 
@@ -224,7 +230,29 @@ class TestLaserTag(unittest.TestCase):
             render(env)
 
     def test_death_and_respawn(self):
-        pass
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([0, 0, 0, 0, 0, 0, 0, 0, 7, 7, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 2, 3, 3, 3, 3, 3, 3, 0, 0, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+        render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+
+            env.reset(dones['__all__'])
+
+            render(env)
+
+    def test_asymettric_map(self):
+        env = LaserTag(num_envs=1, num_agents=2, height=9, width=16, pathing_generator=Small3(DEFAULT_DEVICE),
+                       device=DEFAULT_DEVICE)
+        env.render()
+        sleep(5)
 
     def test_partial_observations(self):
         pass
