@@ -277,20 +277,29 @@ class TestLaserTag(unittest.TestCase):
                 plt.show()
 
     def test_partial_observations(self):
-        obs_h = 5
-        obs_w = 5
-        crop_filter = torch.ones((1, 1, obs_h, obs_w), device=DEFAULT_DEVICE)
-        obs_fn = observations.FirstPersonCrop(crop_filter)
-        env = LaserTag(num_envs=1, num_agents=2, height=9, width=9,
-                       map_generator=Small2(DEFAULT_DEVICE), observation_fn=obs_fn,
-                       device=DEFAULT_DEVICE)
+        obs_fn = observations.FirstPersonCrop(
+            first_person_rotation=True,
+            in_front=7,
+            behind=2,
+            side=3
+        )
+        # obs_fn = observations.FirstPersonCrop(height=5, width=5)
 
+        # env = LaserTag(num_envs=1, num_agents=2, height=9, width=9,
+        #                map_generator=Small2(DEFAULT_DEVICE), observation_fn=obs_fn,
+        #                device=DEFAULT_DEVICE)
+        env = get_test_env(num_envs=1)
+
+        render_envs = True
         agent_obs = obs_fn.observe(env)
         for agent, obs in agent_obs.items():
             if render_envs:
                 obs_npy = obs.permute((2, 3, 1, 0))[:, :, :, 0].cpu().numpy()
                 plt.imshow(obs_npy)
                 plt.show()
+
+        env.render()
+        sleep(5)
 
     def test_create_envs(self):
         pass
