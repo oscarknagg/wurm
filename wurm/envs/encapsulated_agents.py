@@ -52,7 +52,7 @@ class AgentsAsEnvironment(object):
         self.observations = self._env.reset()
         self.npc_hidden_states = {
             f'agent_{i}': torch.zeros((self._env.num_envs, 64), device=self._env.device)
-            for i in range(self._env.num_snakes)
+            for i in range(self._env.num_agents)
         }
 
         self.viewer = None

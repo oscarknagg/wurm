@@ -52,10 +52,11 @@ class LaserTag(MultiagentVecEnv):
                  env_lifetime: int = 1000,
                  dtype: torch.dtype = torch.float,
                  device: str = DEFAULT_DEVICE):
-        self.num_envs = num_envs
-        self.num_agents = num_agents
-        self.height = height
-        self.width = width
+        super(LaserTag, self).__init__(num_envs, num_agents, height, width)
+        # self.num_envs = num_envs
+        # self.num_agents = num_agents
+        # self.height = height
+        # self.width = width
         self.pathing_generator = pathing_generator
         self.initial_hp = initial_hp
         self.dtype = dtype

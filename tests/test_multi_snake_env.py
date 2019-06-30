@@ -19,7 +19,7 @@ torch.random.manual_seed(1)
 
 
 def get_test_env(num_envs=1):
-    env = Slither(num_envs=num_envs, num_snakes=2, size=size, manual_setup=True)
+    env = Slither(num_envs=num_envs, num_agents=2, height=size, width=size, manual_setup=True)
 
     for i in range(num_envs):
         # Snake 1
@@ -36,7 +36,7 @@ def get_test_env(num_envs=1):
         env.bodies[2*i+1, 0, 9, 9] = 1
 
     _envs = torch.cat([
-        env.foods.repeat_interleave(env.num_snakes, dim=0),
+        env.foods.repeat_interleave(env.num_agents, dim=0),
         env.heads,
         env.bodies
     ], dim=1)
@@ -67,7 +67,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_envs = 100
         num_steps = 100
         # Create some environments and run random actions for N steps, checking for consistency at each step
-        env = Slither(num_envs=num_envs, num_snakes=2, size=size, manual_setup=False, verbose=True,
+        env = Slither(num_envs=num_envs, num_agents=2, height=size, width=size, manual_setup=False, verbose=True,
                       render_args={'num_rows': 5, 'num_cols': 5, 'size': 128},
                       )
         env.check_consistency()
@@ -97,8 +97,8 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_steps = 200
         num_snakes = 4
         # Create some environments and run random actions for N steps, checking for consistency at each step
-        env = Slither(num_envs=num_envs, num_snakes=num_snakes, size=25, manual_setup=False, boost=True, verbose=True,
-                      render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
+        env = Slither(num_envs=num_envs, num_agents=num_snakes, height=25, width=25,  manual_setup=False, boost=True,
+                      verbose=True,  render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
                       respawn_mode='any', food_mode='random_rate', boost_cost_prob=0.25,
                       observation_mode='partial_5', food_on_death_prob=0.33, food_rate=2.5e-4
                       )
@@ -162,7 +162,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             observations, rewards, dones, info = env.step(actions)
             env.check_consistency()
 
-            for i_agent in range(env.num_snakes):
+            for i_agent in range(env.num_agents):
                 head_position = torch.tensor([
                     env.heads[i_agent, 0].flatten().argmax() // size, env.heads[i_agent, 0].flatten().argmax() % size
                 ])
@@ -337,11 +337,11 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
     def test_create_envs(self):
         # Create a large number of environments and check consistency
-        env = Slither(num_envs=512, num_snakes=2, size=size, manual_setup=False)
+        env = Slither(num_envs=512, num_agents=2, height=size, width=size, manual_setup=False)
         env.check_consistency()
 
         _envs = torch.cat([
-            env.foods.repeat_interleave(env.num_snakes, dim=0),
+            env.foods.repeat_interleave(env.num_agents, dim=0),
             env.heads,
             env.bodies
         ], dim=1)
@@ -459,7 +459,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
     def test_cant_boost_until_size_4(self):
         # Create a size 3 snake and try boosting with it
-        env = Slither(num_envs=1, num_snakes=2, size=size, manual_setup=True, boost=True)
+        env = Slither(num_envs=1, num_agents=2, height=size, width=size, manual_setup=True, boost=True)
         env.foods[:, 0, 1, 1] = 1
         # Snake 1
         env.heads[0, 0, 5, 5] = 1
@@ -474,7 +474,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
         # Get orientations manually
         _envs = torch.cat([
-            env.foods.repeat_interleave(env.num_snakes, dim=0),
+            env.foods.repeat_interleave(env.num_agents, dim=0),
             env.heads,
             env.bodies
         ], dim=1)
@@ -505,7 +505,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
             env.check_consistency()
 
-            for i_agent in range(env.num_snakes):
+            for i_agent in range(env.num_agents):
                 _env = torch.cat([
                     env.foods,
                     env.heads[i_agent].unsqueeze(0),
@@ -558,7 +558,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_envs = 50
         num_steps = 10
         num_snakes = 4
-        env = Slither(num_envs=num_envs, num_snakes=num_snakes, size=size, manual_setup=False, boost=True)
+        env = Slither(num_envs=num_envs, num_agents=num_snakes, height=size, width=size, manual_setup=False, boost=True)
         env.check_consistency()
 
         all_actions = {
@@ -643,7 +643,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_envs = 256
         num_snakes = 4
         observation_mode = 'partial_5'
-        env = Slither(num_envs=num_envs, num_snakes=num_snakes, size=25, manual_setup=False, boost=True,
+        env = Slither(num_envs=num_envs, num_agents=num_snakes, height=25, width=25, manual_setup=False, boost=True,
                       observation_mode=observation_mode,
                       render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
                       )

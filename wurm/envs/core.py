@@ -7,7 +7,14 @@ from PIL import Image
 
 from wurm._filters import ORIENTATION_DELTAS
 
+
 class VecEnv(ABC):
+    def __init__(self, num_envs: int, num_agents: int, height: int, width: int):
+        self.num_envs = num_envs
+        self.num_agents = num_agents
+        self.height = height
+        self.width = width
+        
     @abstractmethod
     def step(self, actions: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor, dict):
         raise NotImplementedError
@@ -22,6 +29,12 @@ class VecEnv(ABC):
 
 
 class MultiagentVecEnv(ABC):
+    def __init__(self, num_envs: int, num_agents: int, height: int, width: int):
+        self.num_envs = num_envs
+        self.num_agents = num_agents
+        self.height = height
+        self.width = width
+
     @abstractmethod
     def step(self, actions: Dict[str, torch.Tensor]) -> (Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor], dict):
         raise NotImplementedError
