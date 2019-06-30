@@ -1,9 +1,11 @@
 from abc import ABC, abstractmethod
-import torch
-import torch.nn.functional as F
-from typing import Optional, Dict, Tuple, Any
+from typing import Optional, Any, Dict
+
 import numpy as np
+import torch
 from PIL import Image
+from gym.envs.classic_control import rendering
+from torch.nn import functional as F
 
 from wurm._filters import ORIENTATION_DELTAS
 
@@ -29,11 +31,26 @@ class VecEnv(ABC):
 
 
 class MultiagentVecEnv(ABC):
-    def __init__(self, num_envs: int, num_agents: int, height: int, width: int):
+    def __init__(self, num_envs: int,
+                 num_agents: int,
+                 height: int,
+                 width: int,
+                 dtype: torch.dtype,
+                 device: str):
         self.num_envs = num_envs
         self.num_agents = num_agents
         self.height = height
         self.width = width
+        self.dtype = dtype
+        self.device = device
+        self.viewer = None
+
+        # This Tensor represents the location of each agent in each environment. It should contain
+        # only one non-zero entry for each sub array along dimension 0.
+        self.agents = torch.zeros((num_envs * num_agents, 1, height, width), dtype=dtype, device=device, requires_grad=False)
+
+        # This Tensor represents the current alive/dead state of each agent in each environment
+        self.dones = torch.zeros(self.num_envs * self.num_agents, dtype=torch.uint8, device=device, requires_grad=False)
 
     @abstractmethod
     def step(self, actions: Dict[str, torch.Tensor]) -> (Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor], dict):
@@ -44,8 +61,31 @@ class MultiagentVecEnv(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def render(self, mode: str = 'human', env: Optional[int] = None) -> Any:
+    def _get_env_images(self) -> torch.Tensor:
+        """Gets RGB arrays for each environment.
+
+        Returns:
+            img: A Tensor of shape (num_envs, 3, height, width) and dtype torch.short i.e.
+                an RBG rendering of each environment
+        """
         raise NotImplementedError
+
+    def render(self, mode: str = 'human', env: Optional[int] = None) -> Any:
+        if self.viewer is None and mode == 'human':
+            self.viewer = rendering.SimpleImageViewer()
+
+        img = self._get_env_images()
+        img = build_render_rgb(img=img, num_envs=self.num_envs, env_height=self.height, env_width=self.width, env=env,
+                               num_rows=self.render_args['num_rows'], num_cols=self.render_args['num_cols'],
+                               render_size=self.render_args['size'])
+
+        if mode == 'human':
+            self.viewer.imshow(img)
+            return self.viewer.isopen
+        elif mode == 'rgb_array':
+            return img
+        else:
+            raise ValueError('Render mode not recognised.')
 
 
 def check_multi_vec_env_actions(actions: Dict[str, torch.Tensor], num_envs: int, num_agents: int):

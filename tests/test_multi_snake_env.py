@@ -6,6 +6,7 @@ import numpy as np
 from pprint import pprint
 import matplotlib.pyplot as plt
 
+from wurm import observations
 from wurm.envs import Slither
 from wurm.utils import head, body, food, determine_orientations
 from config import DEFAULT_DEVICE
@@ -15,7 +16,7 @@ print_envs = False
 render_envs = False
 render_sleep = 1
 size = 12
-torch.random.manual_seed(1)
+torch.random.manual_seed(3)
 
 
 def get_test_env(num_envs=1):
@@ -23,13 +24,13 @@ def get_test_env(num_envs=1):
 
     for i in range(num_envs):
         # Snake 1
-        env.heads[2*i, 0, 5, 5] = 1
+        env.agents[2 * i, 0, 5, 5] = 1
         env.bodies[2*i, 0, 5, 5] = 4
         env.bodies[2*i, 0, 4, 5] = 3
         env.bodies[2*i, 0, 4, 4] = 2
         env.bodies[2*i, 0, 4, 3] = 1
         # Snake 2
-        env.heads[2*i+1, 0, 8, 7] = 1
+        env.agents[2 * i + 1, 0, 8, 7] = 1
         env.bodies[2*i+1, 0, 8, 7] = 4
         env.bodies[2*i+1, 0, 8, 8] = 3
         env.bodies[2*i+1, 0, 8, 9] = 2
@@ -37,7 +38,7 @@ def get_test_env(num_envs=1):
 
     _envs = torch.cat([
         env.foods.repeat_interleave(env.num_agents, dim=0),
-        env.heads,
+        env.agents,
         env.bodies
     ], dim=1)
 
@@ -66,9 +67,15 @@ class TestMultiSnakeEnv(unittest.TestCase):
     def test_random_actions(self):
         num_envs = 100
         num_steps = 100
+
+        obs_h = 5
+        obs_w = 5
+        crop_filter = torch.ones((1, 1, obs_h, obs_w), device=DEFAULT_DEVICE)
+        obs_fn = observations.FirstPersonCrop(crop_filter)
+
         # Create some environments and run random actions for N steps, checking for consistency at each step
         env = Slither(num_envs=num_envs, num_agents=2, height=size, width=size, manual_setup=False, verbose=True,
-                      render_args={'num_rows': 5, 'num_cols': 5, 'size': 128},
+                      render_args={'num_rows': 5, 'num_cols': 5, 'size': 128}, observation_fn=obs_fn
                       )
         env.check_consistency()
 
@@ -82,7 +89,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             actions = {
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
-            observations, reward, done, info = env.step(actions)
+            obs, reward, done, info = env.step(actions)
 
             env.reset(done['__all__'])
             env.check_consistency()
@@ -96,11 +103,16 @@ class TestMultiSnakeEnv(unittest.TestCase):
         num_envs = 256
         num_steps = 200
         num_snakes = 4
+
+        obs_h = 5
+        obs_w = 5
+        crop_filter = torch.ones((1, 1, obs_h, obs_w), device=DEFAULT_DEVICE)
+        obs_fn = observations.FirstPersonCrop(crop_filter)
         # Create some environments and run random actions for N steps, checking for consistency at each step
         env = Slither(num_envs=num_envs, num_agents=num_snakes, height=25, width=25,  manual_setup=False, boost=True,
                       verbose=True,  render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
                       respawn_mode='any', food_mode='random_rate', boost_cost_prob=0.25,
-                      observation_mode='partial_5', food_on_death_prob=0.33, food_rate=2.5e-4
+                      observation_fn=obs_fn, food_on_death_prob=0.33, food_rate=2.5e-4
                       )
         env.check_consistency()
 
@@ -114,7 +126,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             actions = {
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
-            observations, reward, done, info = env.step(actions)
+            obs, reward, done, info = env.step(actions)
 
             env.reset(done['__all__'], return_observations=False)
             env.check_consistency()
@@ -159,12 +171,12 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
             env.check_consistency()
 
             for i_agent in range(env.num_agents):
                 head_position = torch.tensor([
-                    env.heads[i_agent, 0].flatten().argmax() // size, env.heads[i_agent, 0].flatten().argmax() % size
+                    env.agents[i_agent, 0].flatten().argmax() // size, env.agents[i_agent, 0].flatten().argmax() % size
                 ])
                 print(i, head_position, expected_head_positions[i_agent][i])
                 self.assertTrue(torch.equal(head_position, expected_head_positions[i_agent][i]))
@@ -192,7 +204,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
             env.check_consistency()
             print(i)
             pprint(dones)
@@ -238,7 +250,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
             env.check_consistency()
 
             print_or_render(env)
@@ -269,7 +281,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
             env.check_consistency()
 
             if i >= 4:
@@ -303,7 +315,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 # agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
             env.check_consistency()
 
             print_or_render(env)
@@ -342,7 +354,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
         _envs = torch.cat([
             env.foods.repeat_interleave(env.num_agents, dim=0),
-            env.heads,
+            env.agents,
             env.bodies
         ], dim=1)
 
@@ -368,7 +380,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
 
             env.reset(dones['__all__'])
             print(i, dones)
@@ -379,21 +391,6 @@ class TestMultiSnakeEnv(unittest.TestCase):
 
         # Both snakes should've died and hence the environment should've reset
         self.assertTrue(torch.all(env.bodies.view(1, num_snakes, -1).max(dim=-1)[0] == env.initial_snake_length))
-
-    def test_agent_observations(self):
-        # Test that own snake appears green, others appear blue
-        env = get_test_env(num_envs=1)
-        env.foods[:, 0, 1, 1] = 1
-
-        obs_0 = env._observe_agent(0)
-        obs_1 = env._observe_agent(1)
-
-        # Check that own agent appears green and other appears blue
-        self.assertTrue(torch.allclose(obs_0[0, :, 4, 5]*255, env.self_colour.float()/2))
-        self.assertTrue(torch.allclose(obs_0[0, :, 8, 8]*255, env.other_colour.float()/2))
-
-        self.assertTrue(torch.allclose(obs_1[0, :, 4, 5]*255, env.other_colour.float()/2))
-        self.assertTrue(torch.allclose(obs_1[0, :, 8, 8]*255, env.self_colour.float()/2))
 
     def test_boost_through_food(self):
         # Test boosting through a food
@@ -414,7 +411,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
 
             env.reset(dones['__all__'])
 
@@ -444,7 +441,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
 
             env.reset(dones['__all__'])
 
@@ -462,12 +459,12 @@ class TestMultiSnakeEnv(unittest.TestCase):
         env = Slither(num_envs=1, num_agents=2, height=size, width=size, manual_setup=True, boost=True)
         env.foods[:, 0, 1, 1] = 1
         # Snake 1
-        env.heads[0, 0, 5, 5] = 1
+        env.agents[0, 0, 5, 5] = 1
         env.bodies[0, 0, 5, 5] = 3
         env.bodies[0, 0, 4, 5] = 2
         env.bodies[0, 0, 4, 4] = 1
         # Snake 2
-        env.heads[1, 0, 8, 7] = 1
+        env.agents[1, 0, 8, 7] = 1
         env.bodies[1, 0, 8, 7] = 3
         env.bodies[1, 0, 8, 8] = 2
         env.bodies[1, 0, 8, 9] = 1
@@ -475,7 +472,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
         # Get orientations manually
         _envs = torch.cat([
             env.foods.repeat_interleave(env.num_agents, dim=0),
-            env.heads,
+            env.agents,
             env.bodies
         ], dim=1)
 
@@ -499,7 +496,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
 
             env.reset(dones['__all__'])
 
@@ -508,7 +505,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
             for i_agent in range(env.num_agents):
                 _env = torch.cat([
                     env.foods,
-                    env.heads[i_agent].unsqueeze(0),
+                    env.agents[i_agent].unsqueeze(0),
                     env.bodies[i_agent].unsqueeze(0)
                 ], dim=1)
 
@@ -539,7 +536,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
 
             env.reset(dones['__all__'])
 
@@ -570,13 +567,14 @@ class TestMultiSnakeEnv(unittest.TestCase):
             actions = {
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
-            observations, reward, done, info = env.step(actions)
+            obs, reward, done, info = env.step(actions)
             env.reset(done['__all__'])
             env.check_consistency()
 
     def test_boost_rendering(self):
         # Test boosting through a food
         env = get_test_env(num_envs=1)
+        env.boost_cost_prob = 0
         env.boost = True
         env.foods[:, 0, 1, 5] = 1
         all_actions = {
@@ -593,7 +591,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
 
             env.reset(dones['__all__'], return_observations=False)
 
@@ -634,7 +632,7 @@ class TestMultiSnakeEnv(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
             pprint(dones)
             env.reset(dones['__all__'])
             env.check_consistency()
@@ -642,20 +640,25 @@ class TestMultiSnakeEnv(unittest.TestCase):
     def test_partial_observations(self):
         num_envs = 256
         num_snakes = 4
-        observation_mode = 'partial_5'
+
+        obs_h = 5
+        obs_w = 5
+        crop_filter = torch.ones((1, 1, obs_h, obs_w), device=DEFAULT_DEVICE)
+        obs_fn = observations.FirstPersonCrop(crop_filter)
         env = Slither(num_envs=num_envs, num_agents=num_snakes, height=25, width=25, manual_setup=False, boost=True,
-                      observation_mode=observation_mode,
+                      observation_fn=obs_fn,
                       render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
                       )
         env.check_consistency()
 
         # render_envs = True
-        observations = env._observe(observation_mode)
+        agent_obs = env._observe()
         if render_envs:
+        # if True:
             fig, axes = plt.subplots(2, 2)
             i = 0
             # Show all the observations of the agent in the first env
-            for k, v in observations.items():
+            for k, v in agent_obs.items():
                 axes[i // 2, i % 2].imshow(v[0].permute(1, 2, 0).cpu().numpy())
                 i += 1
 

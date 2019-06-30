@@ -2,11 +2,13 @@ import torch
 from typing import Dict, Optional, Tuple
 from gym.envs.classic_control import rendering
 import torch.nn.functional as F
+from collections import OrderedDict
 
 from wurm._filters import ORIENTATION_FILTERS
 from wurm.utils import rotate_image_batch, drop_duplicates
-from wurm.envs.core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb, move_pixels
-from wurm.envs.laser_tag.maps import LaserTagMapGenerator
+from wurm.core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb, move_pixels
+from .maps import LaserTagMapGenerator
+from wurm.observations import ObservationFunction, RenderObservations
 from config import DEFAULT_DEVICE, EPS
 
 
@@ -45,20 +47,19 @@ class LaserTag(MultiagentVecEnv):
                  height: int,
                  width: int,
                  map_generator: LaserTagMapGenerator,
+                 observation_fn: ObservationFunction = RenderObservations(),
                  manual_setup: bool = False,
                  initial_hp: int = 2,
                  render_args: dict = None,
                  env_lifetime: int = 1000,
                  dtype: torch.dtype = torch.float,
                  device: str = DEFAULT_DEVICE):
-        super(LaserTag, self).__init__(num_envs, num_agents, height, width)
+        super(LaserTag, self).__init__(num_envs, num_agents, height, width, dtype, device)
         self.map_generator = map_generator
+        self.observation_fn = observation_fn
         self.initial_hp = initial_hp
-        self.dtype = dtype
-        self.device = device
         self.max_env_lifetime = env_lifetime
 
-        self.viewer = None
         self.agent_colours = self._get_n_colours(num_envs*num_agents)
         if render_args is None:
             self.render_args = {'num_rows': 1, 'num_cols': 1, 'size': 256}
@@ -248,7 +249,7 @@ class LaserTag(MultiagentVecEnv):
             done = self.dones.view(self.num_envs, self.num_agents).all(dim=1)
 
         # Reset any environment which has passed the maximum lifetime. This will also regenerate the pathing
-        # map if the pathing generator is randomiesd
+        # map if the pathing generator is randomised
         if torch.any(done):
             num_done = done.sum().item()
             agent_dones = done.repeat_interleave(self.num_agents)
@@ -257,7 +258,7 @@ class LaserTag(MultiagentVecEnv):
             self.orientations[agent_dones] = new_orientations
             self.dones[agent_dones] = new_dones
             self.hp[agent_dones] = new_hp
-            # If we are using a fixed PathingGenerator this line won't do anything
+            # If we are using a fixed MapGenerator this line won't do anything
             self.pathing[done] = new_pathing
 
         # Single agent resets
@@ -354,23 +355,6 @@ class LaserTag(MultiagentVecEnv):
 
         return agents, orientations, dones, hp, pathing
 
-    def render(self, mode: str = 'human', env: Optional[int] = None):
-        if self.viewer is None and mode == 'human':
-            self.viewer = rendering.SimpleImageViewer()
-
-        img = self._get_env_images()
-        img = build_render_rgb(img=img, num_envs=self.num_envs, env_height=self.height, env_width=self.width, env=env,
-                               num_rows=self.render_args['num_rows'], num_cols=self.render_args['num_cols'],
-                               render_size=self.render_args['size'])
-
-        if mode == 'human':
-            self.viewer.imshow(img)
-            return self.viewer.isopen
-        elif mode == 'rgb_array':
-            return img
-        else:
-            raise ValueError('Render mode not recognised.')
-
     def _get_env_images(self) -> torch.Tensor:
         # Black background
         img = torch.zeros((self.num_envs, 3, self.height, self.width), device=self.device, dtype=torch.short)
@@ -411,15 +395,15 @@ class LaserTag(MultiagentVecEnv):
 
         return img
 
+    def _observe(self) -> Dict[str, torch.Tensor]:
+        return self.observation_fn.observe(self)
+
     def _get_n_colours(self, n: int) -> torch.Tensor:
         colours = torch.rand((n, 3), device=self.device)
         colours /= colours.norm(2, dim=1, keepdim=True)
         colours *= 192
         colours = colours.short()
         return colours
-
-    def _observe(self) -> Dict[str, torch.Tensor]:
-        return {f'agent_{i}': torch.zeros((self.num_envs, 1)) for i in range(self.num_agents)}
 
     @property
     def x(self):

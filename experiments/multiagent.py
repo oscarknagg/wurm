@@ -528,7 +528,7 @@ for i_step in count(1):
             torch.save(model.state_dict(), f'{PATH}/models/{save_file}__species={i}.pt')
 
     if args.save_heatmap:
-        head_heatmap += env.heads.view(args.n_envs, args.n_agents, args.size, args.size).sum(dim=0).clone()
+        head_heatmap += env.agents.view(args.n_envs, args.n_agents, args.size, args.size).sum(dim=0).clone()
         if i_step % HEATMAP_INTERVAL == 0:
             os.makedirs(f'{PATH}/heatmaps/{save_file}/', exist_ok=True)
             np.save(f'{PATH}/heatmaps/{save_file}/{num_steps}.npy', head_heatmap.cpu().numpy())

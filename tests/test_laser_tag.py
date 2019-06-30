@@ -1,14 +1,16 @@
 import unittest
 import torch
 from time import sleep
+import matplotlib.pyplot as plt
 
 from wurm.envs import LaserTag
 from wurm.envs.laser_tag.maps import Small2, Small3, Small4
+from wurm import observations
 from tests._laser_trajectories import expected_laser_trajectories
 from config import DEFAULT_DEVICE
 
 
-render_envs = True
+render_envs = False
 size = 9
 render_sleep = 0.5
 
@@ -59,7 +61,7 @@ class TestLaserTag(unittest.TestCase):
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
-            observations, rewards, dones, info = env.step(actions)
+            obs, rewards, dones, info = env.step(actions)
             render(env)
 
             if expected_x is not None:
@@ -165,7 +167,7 @@ class TestLaserTag(unittest.TestCase):
 
     def test_agent_agent_pathing(self):
         """Test agents can't walk through each other."""
-        pass
+        raise Exception
 
     def test_firing(self):
         """Tests that laser trajectories are calculated correctly."""
@@ -261,8 +263,34 @@ class TestLaserTag(unittest.TestCase):
             env.render()
             sleep(5)
 
+    def test_observations(self):
+        obs_fn = observations.RenderObservations()
+        env = LaserTag(num_envs=1, num_agents=2, height=9, width=9,
+                       map_generator=Small2(DEFAULT_DEVICE), observation_fn=obs_fn,
+                       device=DEFAULT_DEVICE)
+
+        agent_obs = obs_fn.observe(env)
+        for agent, obs in agent_obs.items():
+            if render_envs:
+                obs_npy = obs.permute((2, 3, 1, 0))[:, :, :, 0].cpu().numpy()
+                plt.imshow(obs_npy)
+                plt.show()
+
     def test_partial_observations(self):
-        pass
+        obs_h = 5
+        obs_w = 5
+        crop_filter = torch.ones((1, 1, obs_h, obs_w), device=DEFAULT_DEVICE)
+        obs_fn = observations.FirstPersonCrop(crop_filter)
+        env = LaserTag(num_envs=1, num_agents=2, height=9, width=9,
+                       map_generator=Small2(DEFAULT_DEVICE), observation_fn=obs_fn,
+                       device=DEFAULT_DEVICE)
+
+        agent_obs = obs_fn.observe(env)
+        for agent, obs in agent_obs.items():
+            if render_envs:
+                obs_npy = obs.permute((2, 3, 1, 0))[:, :, :, 0].cpu().numpy()
+                plt.imshow(obs_npy)
+                plt.show()
 
     def test_create_envs(self):
         pass

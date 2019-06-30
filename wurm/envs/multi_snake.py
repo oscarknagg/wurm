@@ -3,15 +3,14 @@ from typing import Dict, Tuple, Optional
 from collections import namedtuple, OrderedDict
 import torch
 from torch.nn import functional as F
-from gym.envs.classic_control import rendering
 import numpy as np
 from PIL import Image
 
 from config import DEFAULT_DEVICE, BODY_CHANNEL, EPS, HEAD_CHANNEL, FOOD_CHANNEL
 from wurm._filters import ORIENTATION_DELTAS, NO_CHANGE_FILTER, LENGTH_3_SNAKES
 from wurm.utils import determine_orientations, drop_duplicates, env_consistency, snake_consistency, head, body, food
-from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb
-
+from wurm.observations import ObservationFunction, RenderObservations
+from wurm.core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb
 
 Spec = namedtuple('Spec', ['reward_threshold'])
 
@@ -61,7 +60,7 @@ class Slither(MultiagentVecEnv):
                  width: int,
                  initial_snake_length: int = 3,
                  on_death: str = 'restart',
-                 observation_mode: str = 'full',
+                 observation_fn: ObservationFunction = RenderObservations(),
                  device: str = DEFAULT_DEVICE,
                  dtype: torch.dtype = torch.float,
                  manual_setup: bool = False,
@@ -81,38 +80,32 @@ class Slither(MultiagentVecEnv):
             num_envs:
             size:
         """
-        super(Slither, self).__init__(num_envs, num_agents, height, width)
+        super(Slither, self).__init__(num_envs, num_agents, height, width, dtype, device)
         self.initial_snake_length = initial_snake_length
         self.on_death = on_death
-        self.device = device
         self.verbose = verbose
-        self.dtype = dtype
-        self.observation_mode = observation_mode
-        if observation_mode.startswith('partial_'):
-            self.observation_width = int(observation_mode.split('_')[1])
-            self.observation_size = 2*int(observation_mode.split('_')[1]) + 1
+        self.observation_fn = observation_fn
 
         if render_args is None:
             self.render_args = {'num_rows': 1, 'num_cols': 1, 'size': 256}
         else:
             self.render_args = render_args
 
-        self.foods = torch.zeros((num_envs, 1, height, width), dtype=self.dtype, device=self.device).requires_grad_(False)
-        self.heads = torch.zeros((num_envs * num_agents, 1, height, width), dtype=self.dtype, device=self.device).requires_grad_(False)
-        self.bodies = torch.zeros((num_envs * num_agents, 1, height, width), dtype=self.dtype, device=self.device).requires_grad_(False)
-        self.dones = torch.zeros(self.num_envs * self.num_agents, dtype=torch.uint8, device=self.device)
-        self.boost_this_step = torch.zeros(self.num_envs * self.num_agents, dtype=torch.uint8, device=self.device)
-        self.rewards = torch.zeros(self.num_envs * self.num_agents, dtype=torch.float, device=self.device)
+        self.foods = torch.zeros((num_envs, 1, height, width), dtype=dtype, device=device).requires_grad_(False)
+        self.agents = torch.zeros((num_envs * num_agents, 1, height, width), dtype=dtype, device=device).requires_grad_(False)
+        self.bodies = torch.zeros((num_envs * num_agents, 1, height, width), dtype=dtype, device=device).requires_grad_(False)
+        self.dones = torch.zeros(self.num_envs * self.num_agents, dtype=torch.uint8, device=device)
+        self.boost_this_step = torch.zeros(self.num_envs * self.num_agents, dtype=torch.uint8, device=device)
+        self.rewards = torch.zeros(self.num_envs * self.num_agents, dtype=torch.float, device=device)
         self.env_lifetimes = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.snake_lifetimes = torch.zeros((num_envs, num_agents), dtype=torch.long, device=device)
-        self.orientations = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
-        self.viewer = 0
+        self.orientations = torch.zeros((num_envs * num_agents), dtype=torch.long, device=device, requires_grad=False)
 
         if not manual_setup:
             # Create environments
-            (self.foods, self.heads, self.bodies), self.orientations = self._create_envs(self.num_envs)
+            (self.foods, self.agents, self.bodies), self.orientations = self._create_envs(self.num_envs)
             self.foods.requires_grad_(False)
-            self.heads.requires_grad_(False)
+            self.agents.requires_grad_(False)
             self.bodies.requires_grad_(False)
 
         ###################################
@@ -190,10 +183,10 @@ class Slither(MultiagentVecEnv):
 
         return img
 
-    def _get_env_images(self):
+    def _get_env_images(self) -> torch.Tensor:
         agent_colours = self.agent_colours
 
-        intensity_factor = (self.bodies.gt(EPS).float() * 1 / 3) + (self.heads.gt(EPS).float() * 1 / 3)
+        intensity_factor = (self.bodies.gt(EPS).float() * 1 / 3) + (self.agents.gt(EPS).float() * 1 / 3)
         intensity_factor *= (1 + 0.5*self.boost_this_step.float())[:, None, None, None].expand_as(intensity_factor)
         intensity_factor = intensity_factor.squeeze(1)
 
@@ -225,92 +218,10 @@ class Slither(MultiagentVecEnv):
 
         return img
 
-    def render(self, mode: str = 'human', env: Optional[int] = None):
-        if self.viewer is None:
-            self.viewer = rendering.SimpleImageViewer()
+    def _observe(self) -> Dict[str, torch.Tensor]:
+        return self.observation_fn.observe(self)
 
-        img = self._get_env_images()
-        img = build_render_rgb(img=img, num_envs=self.num_envs, env_height=self.height, env_width=self.width, env=env,
-                               num_rows=self.render_args['num_rows'], num_cols=self.render_args['num_cols'],
-                               render_size=self.render_args['size'])
-
-        if mode == 'human':
-            self.viewer.imshow(img)
-            return self.viewer.isopen
-        elif mode == 'rgb_array':
-            return img
-        else:
-            raise ValueError('Render mode not recognised.')
-
-    def _observe_agent(self, agent: int) -> torch.Tensor:
-        agents = torch.arange(self.num_agents)
-
-        bodies_per_env = self.bodies.view(self.num_envs, self.num_agents, self.height, self.width)
-        heads_per_env = self.heads.view(self.num_envs, self.num_agents, self.height, self.width)
-
-        layers = {
-            self.foods.gt(EPS).squeeze(1): self.food_colour,
-            bodies_per_env[:, agent].gt(EPS): self.self_colour/2,
-            heads_per_env[:, agent].gt(EPS): self.self_colour,
-            bodies_per_env[:, agents[agents != agent]].sum(dim=1).gt(EPS): self.other_colour / 2,
-            heads_per_env[:, agents[agents != agent]].sum(dim=1).gt(EPS): self.other_colour,
-        }
-        return self._make_generic_rgb(layers).to(dtype=self.dtype) / 255
-
-    def _observe(self, mode: str = None) -> Dict[str, torch.Tensor]:
-        if mode is None:
-            mode = self.observation_mode
-
-        if mode == 'full':
-            return OrderedDict([(f'agent_{i}', self._observe_agent(i)) for i in range(self.num_agents)])
-        elif mode.startswith('partial_'):
-            # Get full batch of images
-            t0 = time()
-            img = self._get_env_images()
-            self._log(f'Rendering: {1000 * (time() - t0)}ms')
-
-            # Normalise to 0-1
-            img = img.float() / 255
-
-            # Crop bits for each agent
-            # Pad envs so we ge the correct size observation even when the head of the snake
-            # is close to the edge of the environment
-            padding = [self.observation_width, self.observation_width, ] * 2
-            padded_img = F.pad(img, padding).repeat_interleave(self.num_agents, dim=0)
-
-            t0 = time()
-            n_living = (~self.dones).sum().item()
-            filter = torch.ones((1, 1, self.observation_size, self.observation_size)).to(self.device)
-            padded_heads = F.pad(self.heads, padding)
-            head_area_indices = F.conv2d(
-                padded_heads,
-                filter,
-                padding=self.observation_width
-            ).round()
-
-            living_observations = padded_img[
-                head_area_indices.expand_as(padded_img).byte()
-            ]
-            living_observations = living_observations.reshape(
-                n_living, 3, self.observation_size, self.observation_size)
-
-            observations = torch.zeros((self.num_envs * self.num_agents, 3, self.observation_size, self.observation_size),
-                                       dtype=self.dtype, device=self.device)
-
-            observations[~self.dones] = living_observations
-            observations = observations\
-                .reshape(self.num_envs, self.num_agents, 3, self.observation_size, self.observation_size)
-
-            self._log(f'Head cropping: {1000 * (time() - t0)}ms')
-
-            dict_observations = OrderedDict([
-                (f'agent_{i}', observations[:, i].clone()) for i in range(self.num_agents)
-            ])
-            return dict_observations
-        else:
-            raise ValueError('Unrecognised observation mode.')
-
-    def sanitize_movements(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
+    def _sanitize_movements(self, movements: torch.Tensor, orientations: torch.Tensor) -> torch.Tensor:
         mask = orientations == movements
         movements = (movements + (mask * 2).long()).fmod(4)
         return movements
@@ -349,7 +260,7 @@ class Slither(MultiagentVecEnv):
             n = food_addition_env_indices.sum().item()
             if n > 0:
                 food_addition = self._get_food_addition(
-                    heads=self.heads[food_addition_env_indices.repeat_interleave(self.num_agents)],
+                    heads=self.agents[food_addition_env_indices.repeat_interleave(self.num_agents)],
                     bodies=self.bodies[food_addition_env_indices.repeat_interleave(self.num_agents)],
                     foods=self.foods[food_addition_env_indices],
                 )
@@ -362,7 +273,7 @@ class Slither(MultiagentVecEnv):
             # Get empty locations
             _envs = torch.cat([
                 self.foods[food_addition_env_indices],
-                self.heads[food_addition_env_indices.repeat_interleave(self.num_agents)].view(n, self.num_agents, self.height, self.width),
+                self.agents[food_addition_env_indices.repeat_interleave(self.num_agents)].view(n, self.num_agents, self.height, self.width),
                 self.bodies[food_addition_env_indices.repeat_interleave(self.num_agents)].view(n, self.num_agents, self.height, self.width)
             ], dim=1)
 
@@ -457,7 +368,7 @@ class Slither(MultiagentVecEnv):
         done_at_start = self.dones.clone()
 
         move_directions = torch.stack([v for k, v in move_directions.items()]).t().flatten()
-        move_directions = self.sanitize_movements(movements=move_directions, orientations=self.orientations)
+        move_directions = self._sanitize_movements(movements=move_directions, orientations=self.orientations)
         self.orientations = self._update_orientations(movements=move_directions)
 
         boost_actions = torch.stack([v for k, v in boost_actions.items()]).t().flatten()
@@ -473,12 +384,12 @@ class Slither(MultiagentVecEnv):
             # Boost step #
             ##############
             t0 = time()
-            self.heads[boosted_agents] = self._move_heads(self.heads[boosted_agents], move_directions[boosted_agents])
+            self.agents[boosted_agents] = self._move_heads(self.agents[boosted_agents], move_directions[boosted_agents])
             self._log(f'Movement: {1000 * (time() - t0)}ms')
 
             t0 = time()
             # Get food overlap
-            food_overlap = self._get_food_overlap(self.heads, self.foods.repeat_interleave(self.num_agents, 0)).float()
+            food_overlap = self._get_food_overlap(self.agents, self.foods.repeat_interleave(self.num_agents, 0)).float()
             # Clamp here because if two snakes simultaneiously move their heads on to a food pixel then we get a food
             # overlap pixel with a value of 2 (which then leads to a food pixel of -1 and some issue down the line)
             self.foods -= food_overlap \
@@ -500,7 +411,7 @@ class Slither(MultiagentVecEnv):
             # Check for collisions
             other = torch.arange(self.num_agents, device=self.device).repeat(self.num_envs)
             other = ~F.one_hot(other, self.num_agents).byte()
-            heads = self.heads \
+            heads = self.agents \
                 .view(self.num_envs, self.num_agents, self.height, self.width) \
                 .repeat_interleave(self.num_agents, 0)
             bodies = self.bodies \
@@ -508,7 +419,7 @@ class Slither(MultiagentVecEnv):
                 .repeat_interleave(self.num_agents, dim=0)
             pathing = torch.einsum('nshw,ns->nhw', [heads, other.float()]).unsqueeze(1)
             pathing += bodies
-            collisions = self._check_collisions(self.heads[boosted_agents], pathing[boosted_agents])\
+            collisions = self._check_collisions(self.agents[boosted_agents], pathing[boosted_agents])\
                 .view(n_boosted, -1).any(dim=-1)
             self.dones[boosted_agents] |= collisions
             snake_collision_tracker[boosted_agents] |= collisions
@@ -517,14 +428,14 @@ class Slither(MultiagentVecEnv):
             t0 = time()
             # Move bodies forward
             body_growth = food_overlap[boosted_agents].view(n_boosted, -1).sum(dim=-1).gt(EPS).float()
-            self.bodies[boosted_agents] += self.heads[boosted_agents] * (snake_sizes[boosted_agents] + body_growth)[:, None, None, None]
+            self.bodies[boosted_agents] += self.agents[boosted_agents] * (snake_sizes[boosted_agents] + body_growth)[:, None, None, None]
             # Update snake sizes
             snake_sizes[boosted_agents] += body_growth
             self._log(f'Move bodies: {1000 * (time() - t0)}ms')
 
             t0 = time()
             # Check for edge collisions
-            edge_collisions = self._check_edges(self.heads[boosted_agents]).view(n_boosted, -1).gt(EPS).any(dim=-1)
+            edge_collisions = self._check_edges(self.agents[boosted_agents]).view(n_boosted, -1).gt(EPS).any(dim=-1)
             self.dones[boosted_agents] |= edge_collisions
             edge_collision_tracker[boosted_agents] |= edge_collisions
             self._log(f'Edges: {1000 * (time() - t0)}ms')
@@ -560,7 +471,7 @@ class Slither(MultiagentVecEnv):
 
             # Delete done snakes
             self.bodies[self.dones] = 0
-            self.heads[self.dones] = 0
+            self.agents[self.dones] = 0
 
             # Apply rounding to stop numerical errors accumulating
             self.foods.round_()
@@ -568,7 +479,7 @@ class Slither(MultiagentVecEnv):
             # have occured in one place twice in the same .step(). As I can't figure out why this happens I've
             # added this quick fix
             self.foods.clamp_(0, 1)
-            self.heads.round_()
+            self.agents.round_()
             self.bodies.round_()
 
         ################
@@ -577,12 +488,12 @@ class Slither(MultiagentVecEnv):
         self._log('>>> Regular phase')
         # Check orientations and move head positions of all snakes
         t0 = time()
-        self.heads = self._move_heads(self.heads, move_directions)
+        self.agents = self._move_heads(self.agents, move_directions)
         self._log(f'Movement: {1000 * (time() - t0)}ms')
 
         t0 = time()
         # Get food overlap
-        food_overlap = self._get_food_overlap(self.heads, self.foods.repeat_interleave(self.num_agents, 0)).float()
+        food_overlap = self._get_food_overlap(self.agents, self.foods.repeat_interleave(self.num_agents, 0)).float()
         # Clamp here because if two snakes simultaneiously move their heads on to a food pixel then we get a food
         # overlap pixel with a value of 2 (which then leads to a food pixel of -1 and some issue down the line)
         food_overlap = food_overlap
@@ -602,11 +513,11 @@ class Slither(MultiagentVecEnv):
         # Check for collisions
         other = torch.arange(self.num_agents, device=self.device).repeat(self.num_envs)
         other = ~F.one_hot(other, self.num_agents).byte()
-        heads = self.heads.view(self.num_envs, self.num_agents, self.height, self.width).repeat_interleave(self.num_agents, 0)
+        heads = self.agents.view(self.num_envs, self.num_agents, self.height, self.width).repeat_interleave(self.num_agents, 0)
         bodies = self.bodies.view(self.num_envs, self.num_agents, self.height, self.width).sum(dim=1, keepdim=True).repeat_interleave(self.num_agents, dim=0)
         pathing = torch.einsum('nshw,ns->nhw', [heads, other.float()]).unsqueeze(1)
         pathing += bodies
-        collisions = self._check_collisions(self.heads, pathing).view(self.num_envs * self.num_agents, -1).any(dim=-1)
+        collisions = self._check_collisions(self.agents, pathing).view(self.num_envs * self.num_agents, -1).any(dim=-1)
         self.dones |= collisions
         snake_collision_tracker |= collisions
         self._log(f'Collisions: {1000 * (time() - t0)}ms')
@@ -614,14 +525,14 @@ class Slither(MultiagentVecEnv):
         t0 = time()
         # Move bodies forward
         body_growth = food_overlap.view(self.num_envs * self.num_agents, -1).sum(dim=-1).gt(EPS).float()
-        self.bodies += self.heads * (snake_sizes + body_growth)[:, None, None, None]
+        self.bodies += self.agents * (snake_sizes + body_growth)[:, None, None, None]
         # Update snake sizes
         snake_sizes += body_growth
         self._log(f'Move bodies: {1000 * (time() - t0)}ms')
 
         t0 = time()
         # Check for edge collisions
-        edge_collisions = self._check_edges(self.heads).view(self.num_envs * self.num_agents, -1).gt(EPS).any(dim=-1)
+        edge_collisions = self._check_edges(self.agents).view(self.num_envs * self.num_agents, -1).gt(EPS).any(dim=-1)
         self.dones |= edge_collisions
         edge_collision_tracker |= edge_collisions
         self._log(f'Edges: {1000 * (time() - t0)}ms')
@@ -641,7 +552,7 @@ class Slither(MultiagentVecEnv):
 
         # Delete done snakes
         self.bodies[self.dones] = 0
-        self.heads[self.dones] = 0
+        self.agents[self.dones] = 0
 
         # Add food if there is none in the environment
         self._add_food()
@@ -657,7 +568,7 @@ class Slither(MultiagentVecEnv):
         # have occured in one place twice in the same .step(). As I can't figure out why this happens I've
         # added this quick fix
         self.foods.clamp_(0, 1)
-        self.heads.round_()
+        self.agents.round_()
         self.bodies.round_()
 
         # Get observations
@@ -701,7 +612,7 @@ class Slither(MultiagentVecEnv):
         """Runs multiple checks for environment consistency and throws an exception if any fail"""
         _envs = torch.cat([
             self.foods.repeat_interleave(self.num_agents, dim=0),
-            self.heads,
+            self.agents,
             self.bodies
         ], dim=1)
 
@@ -725,7 +636,7 @@ class Slither(MultiagentVecEnv):
             raise RuntimeError('An environment contains overlapping snakes')
 
         # Check number of heads is no more than env.num_snakes
-        num_heads = self.heads.view(self.num_envs, self.num_agents, self.height, self.width) \
+        num_heads = self.agents.view(self.num_envs, self.num_agents, self.height, self.width) \
             .sum(dim=1, keepdim=True)
         if not torch.all(num_heads <= self.num_agents):
             raise RuntimeError('An environment contains more snakes than it should.')
@@ -755,7 +666,7 @@ class Slither(MultiagentVecEnv):
             t0 = time()
             (new_foods, new_heads, new_bodies), new_positions = self._create_envs(num_done)
             self.foods[done] = new_foods
-            self.heads[agent_dones] = new_heads
+            self.agents[agent_dones] = new_heads
             self.bodies[agent_dones] = new_bodies
             self.orientations[agent_dones] = new_positions
             self._log(f'Resetting {num_done} envs: {1000 * (time() - t0)}ms')
@@ -779,7 +690,7 @@ class Slither(MultiagentVecEnv):
                 first_done_per_env = (self.dones.view(self.num_envs, self.num_agents).cumsum(dim=1) == 1).flatten() & self.dones
                 _envs = torch.cat([
                     self.foods.repeat_interleave(self.num_agents, 0),
-                    self.heads,
+                    self.agents,
                     self.bodies,
                 ], dim=1).sum(dim=1, keepdim=True)
                 _envs = _envs.view(self.num_envs, self.num_agents, self.height, self.width).sum(dim=1, keepdim=True).repeat_interleave(self.num_agents, 0)
@@ -791,7 +702,7 @@ class Slither(MultiagentVecEnv):
                     pathing, exception_on_failure=False)
 
                 self.bodies[first_done_per_env] = new_bodies
-                self.heads[first_done_per_env] = new_heads
+                self.agents[first_done_per_env] = new_heads
                 self.orientations[first_done_per_env] = new_orientations
                 self.dones[first_done_per_env] = ~successfully_spawned
 
