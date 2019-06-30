@@ -4,19 +4,19 @@ import torch
 from time import sleep
 
 from wurm.envs import LaserTag
-from wurm.envs.pathing import Small3
+from wurm.envs.pathing import Small2, Small3
 from tests._laser_trajectories import expected_laser_trajectories
 from config import DEFAULT_DEVICE
 
 
-render_envs = True
+render_envs = False
 size = 9
 render_sleep = 0.5
 
 
 def get_test_env(num_envs=2):
     # Same as small2 map from the Deepmind paper
-    env = LaserTag(num_envs, 2, height=size, width=size)
+    env = LaserTag(num_envs, 2, height=size, width=size, pathing_generator=Small2(DEFAULT_DEVICE), manual_setup=True)
     for i in range(num_envs):
         env.agents[2*i, :, 1, 1] = 1
         env.agents[2*i + 1, :, 7, 7] = 1
@@ -30,7 +30,12 @@ def get_test_env(num_envs=2):
     env.pathing[:, :, 4, 6] = 1
     env.pathing[:, :, 5, 3] = 1
     env.pathing[:, :, 5, 5] = 1
+    env.pathing[:, :, :1, :] = 1
+    env.pathing[:, :, -1:, :] = 1
+    env.pathing[:, :, :, :1] = 1
+    env.pathing[:, :, :, -1:] = 1
 
+    env.respawns = torch.zeros((num_envs, 1, size, size), dtype=torch.uint8, device=DEFAULT_DEVICE, requires_grad=False)
     env.respawns[:, :, 1, 1] = 1
     env.respawns[:, :, 1, 7] = 1
     env.respawns[:, :, 7, 1] = 1
@@ -251,10 +256,14 @@ class TestLaserTag(unittest.TestCase):
     def test_asymettric_map(self):
         env = LaserTag(num_envs=1, num_agents=2, height=9, width=16, pathing_generator=Small3(DEFAULT_DEVICE),
                        device=DEFAULT_DEVICE)
-        env.render()
-        sleep(5)
+        if render_envs:
+            env.render()
+            sleep(5)
 
     def test_partial_observations(self):
+        pass
+
+    def test_create_envs(self):
         pass
 
     def test_render(self):

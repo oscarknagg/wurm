@@ -1,5 +1,5 @@
 import torch
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 import numpy as np
 from gym.envs.classic_control import rendering
 import torch.nn.functional as F
@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from wurm._filters import ORIENTATION_FILTERS
 from wurm.utils import rotate_image_batch, drop_duplicates
 from .core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb, move_pixels
+from .pathing import PathingGenerator
 from config import DEFAULT_DEVICE, EPS
 
 
@@ -42,17 +43,24 @@ class LaserTag(MultiagentVecEnv):
     def __init__(self,
                  num_envs: int,
                  num_agents: int,
-                 size: int,
+                 height: int,
+                 width: int,
+                 pathing_generator: PathingGenerator,
+                 manual_setup: bool = False,
                  initial_hp: int = 2,
                  render_args: dict = None,
+                 env_lifetime: int = 1000,
                  dtype: torch.dtype = torch.float,
                  device: str = DEFAULT_DEVICE):
         self.num_envs = num_envs
         self.num_agents = num_agents
-        self.size = size
+        self.height = height
+        self.width = width
+        self.pathing_generator = pathing_generator
         self.initial_hp = initial_hp
         self.dtype = dtype
         self.device = device
+        self.max_env_lifetime = env_lifetime
 
         self.viewer = None
         self.agent_colours = self._get_n_colours(num_envs*num_agents)
@@ -62,23 +70,19 @@ class LaserTag(MultiagentVecEnv):
             self.render_args = render_args
 
         # Environment tensors
-        self.agents = torch.zeros((num_envs*num_agents, 1, size, size), dtype=self.dtype, device=self.device,
+        self.env_lifetimes = torch.zeros((num_envs ), dtype=torch.long, device=self.device, requires_grad=False)
+        self.lasers = torch.zeros((num_envs * num_agents, 1, height, width), dtype=self.dtype, device=self.device,
                                   requires_grad=False)
-        self.lasers = torch.zeros((num_envs * num_agents, 1, size, size), dtype=self.dtype, device=self.device,
-                                  requires_grad=False)
-        self.pathing = torch.zeros((num_envs, 1, size, size), dtype=torch.uint8, device=self.device,
-                                   requires_grad=False)
-        self.pathing[:, :, :1, :] = 1
-        self.pathing[:, :, :, :1] = 1
-        self.pathing[:, :, -1:, :] = 1
-        self.pathing[:, :, :, -1:] = 1
-        self.respawns = torch.zeros((num_envs, 1, size, size), dtype=torch.uint8, device=self.device,
+        self.respawns = torch.ones((num_envs, 1, height, width), dtype=torch.uint8, device=self.device,
                                     requires_grad=False)
-        # Agent tensors
-        self.orientations = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device,
-                                        requires_grad=False)
-        self.hp = torch.ones(
-            (num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False) * initial_hp
+        if not manual_setup:
+            self.agents, self.orientations, self.dones, self.hp, self.pathing = self._create_envs(num_envs)
+        else:
+            self.agents = torch.zeros((num_envs*num_agents, 1, height, width), device=device, requires_grad=False)
+            self.orientations = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
+            self.dones = torch.zeros((num_envs*num_agents), dtype=torch.uint8, device=device, requires_grad=False)
+            self.hp = torch.ones((num_envs * num_agents), dtype=torch.long, device=device, requires_grad=False) * self.initial_hp
+            self.pathing = torch.zeros((num_envs, 1, height, width), device=device, requires_grad=False, dtype=torch.uint8)
 
         # Environment outputs
         self.rewards = torch.zeros(self.num_envs * self.num_agents, dtype=torch.float, device=self.device)
@@ -132,13 +136,14 @@ class LaserTag(MultiagentVecEnv):
             other = torch.arange(self.num_agents, device=self.device).repeat(self.num_envs)
             other = ~F.one_hot(other, self.num_agents).byte()
             agents_ = self.agents \
-                .view(self.num_envs, self.num_agents, self.size, self.size) \
+                .view(self.num_envs, self.num_agents, self.height, self.width) \
                 .repeat_interleave(self.num_agents, 0) \
                 .float()
             other_agents = torch.einsum('nshw,ns->nhw', [agents_, other.float()]).unsqueeze(1)
 
             # Handle lasers
-            lasers = torch.ones((self.num_envs*self.num_agents, 1, self.size, self.size), dtype=torch.uint8, device=self.device)
+            lasers = torch.ones((self.num_envs*self.num_agents, 1, self.height, self.width), dtype=torch.uint8,
+                                device=self.device)
             lasers[~has_fired] = 0
             orientation_0 = self.orientations == 0
             if torch.any(orientation_0 & has_fired):
@@ -172,14 +177,14 @@ class LaserTag(MultiagentVecEnv):
 
             # For rendering
             agent_blocking = self.agents \
-                .view(self.num_envs, self.num_agents, self.size, self.size) \
+                .view(self.num_envs, self.num_agents, self.height, self.width) \
                 .sum(dim=1, keepdim=True) \
                 .repeat_interleave(self.num_agents, 0).gt(EPS)
             self.lasers += (lasers & ~agent_blocking).float()
 
             # Check for hits (https://www.youtube.com/watch?v=RaMIIpc46gM) and update HP
             lasers_ = lasers \
-                .view(self.num_envs, self.num_agents, self.size, self.size) \
+                .view(self.num_envs, self.num_agents, self.height, self.width) \
                 .repeat_interleave(self.num_agents, 0) \
                 .float()
             pathing = torch.einsum('nshw,ns->nhw', [lasers_, other.float()]).unsqueeze(1)
@@ -197,10 +202,15 @@ class LaserTag(MultiagentVecEnv):
             self.dones |= self.hp.eq(0)
             self.agents[self.dones] = 0
 
+        self.env_lifetimes += 1
         observations = self._observe()
         dones = {f'agent_{i}': d for i, d in
                  enumerate(self.dones.clone().view(self.num_envs, self.num_agents).t().unbind())}
-        dones['__all__'] = self.dones.view(self.num_envs, self.num_agents).all(dim=1).clone()
+        # # Environment is done if all agents are dead
+        # dones['__all__'] = self.dones.view(self.num_envs, self.num_agents).all(dim=1).clone()
+        # or if its past the maximum episode length
+        dones['__all__'] = self.env_lifetimes.gt(self.max_env_lifetime)
+
         rewards = {f'agent_{i}': d for i, d in
                    enumerate(self.rewards.clone().view(self.num_envs, self.num_agents).t().unbind())}
 
@@ -215,7 +225,7 @@ class LaserTag(MultiagentVecEnv):
         """
         n = agents.size(0)
         coords = get_coords(agents)
-        lasers = torch.ones((n, 1, self.size, self.size), dtype=torch.uint8,
+        lasers = torch.ones((n, 1, self.height, self.width), dtype=torch.uint8,
                             device=self.device)
 
         xy = agents * coords
@@ -237,51 +247,123 @@ class LaserTag(MultiagentVecEnv):
         return lasers
 
     def reset(self, done: torch.Tensor = None, return_observations: bool = True) -> Optional[Dict[str, torch.Tensor]]:
-        print(self.dones)
+        # Reset envs that contain no snakes
+        if done is None:
+            done = self.dones.view(self.num_envs, self.num_agents).all(dim=1)
 
+        # Reset any environment which has passed the maximum lifetime. This will also regenerate the pathing
+        # map if the pathing generator is randomiesd
+        if torch.any(done):
+            num_done = done.sum().item()
+            agent_dones = done.repeat_interleave(self.num_agents)
+            new_agents, new_orientations, new_dones, new_hp, new_pathing = self._create_envs(num_done)
+            self.agents[agent_dones] = new_agents
+            self.orientations[agent_dones] = new_orientations
+            self.dones[agent_dones] = new_dones
+            self.hp[agent_dones] = new_hp
+            # If we are using a fixed PathingGenerator this line won't do anything
+            self.pathing[done] = new_pathing
+
+        # Single agent resets
         if torch.any(self.dones):
             first_done_per_env = (self.dones.view(self.num_envs, self.num_agents).cumsum(
                 dim=1) == 1).flatten() & self.dones
 
             pathing = self.pathing.clone()
             pathing |= self.agents\
-                .view(self.num_envs, self.num_agents, self.size, self.size)\
+                .view(self.num_envs, self.num_agents, self.height, self.width)\
                 .gt(EPS)\
                 .any(dim=1, keepdim=True)
             pathing = pathing.repeat_interleave(self.num_agents, 0)
+            pathing = pathing[first_done_per_env]
 
             available_respawn_locations = self.respawns.repeat_interleave(self.num_agents, 0)
-            available_respawn_locations &= ~pathing
-
-            pathing = pathing[first_done_per_env]
             available_respawn_locations = available_respawn_locations[first_done_per_env]
 
-            respawn_indices = drop_duplicates(torch.nonzero(available_respawn_locations), 0)
-
-            new_agents = torch.sparse_coo_tensor(
-                respawn_indices.t(), torch.ones(len(respawn_indices)), available_respawn_locations.shape,
-                device=self.device, dtype=self.dtype
-            ).to_dense()
-
-            # Change orientation randomly
-            new_orientations = torch.randint(0, 4, size=(first_done_per_env.sum().item(), ))
+            new_agents, new_orientations, sucessfully_respawned = self._respawn(pathing, available_respawn_locations, False)
 
             self.agents[first_done_per_env] = new_agents
             self.orientations[first_done_per_env] = new_orientations
-            self.dones[first_done_per_env] = False
+            self.hp[first_done_per_env] = self.initial_hp
+            self.dones[first_done_per_env] = sucessfully_respawned
 
         if return_observations:
             return self._observe()
 
-    def _do_respawn(self):
-        pass
+    def _respawn(self, pathing: torch.Tensor, respawns: torch.Tensor, exception_on_failure: bool):
+        """Respawns an agent by picking randomly from allowed locations.
+
+        Args:
+            pathing: Pathing maps for the a batch of environments. This should be a Tensor of
+                shape (n, 1, h, w) and dtype uint8.
+            respawns: Maps of allowed respawn positions for a batch of environments. This should be a Tensor of
+                shape (n, 1, h, w) and dtype uint8
+            exception_on_failure:
+        """
+        n = pathing.shape[0]
+
+        respawns &= ~pathing
+
+        respawn_indices = drop_duplicates(torch.nonzero(respawns), 0)
+
+        new_agents = torch.sparse_coo_tensor(
+            respawn_indices.t(), torch.ones(len(respawn_indices)), respawns.shape,
+            device=self.device, dtype=self.dtype
+        ).to_dense()
+
+        # Change orientation randomly
+        new_orientations = torch.randint(0, 4, size=(n, ), device=self.device)
+
+        dones = torch.zeros(n, dtype=torch.uint8, device=self.device)
+
+        return new_agents, new_orientations, dones
+
+    def _create_envs(self, num_envs: int) -> Tuple[torch.Tensor, ...]:
+        """Gets pathing from pathing generator and repeatedly respawns agents until torch.all(dones == 0).
+
+        Args:
+            num_envs: Number of envs to create
+        """
+        dones = torch.ones(num_envs*self.num_agents, dtype=torch.uint8, device=self.device)
+
+        pathing = self.pathing_generator.generate(num_envs)
+        agents = torch.zeros((num_envs * self.num_agents, 1, self.height, self.width), dtype=self.dtype,
+                             device=self.device, requires_grad=False)
+        orientations = torch.zeros((num_envs * self.num_agents), dtype=torch.long, device=self.device,
+                                   requires_grad=False)
+        hp = torch.ones(
+            (num_envs * self.num_agents), dtype=torch.long, device=self.device, requires_grad=False) * self.initial_hp
+
+        while torch.any(dones):
+            first_done_per_env = (dones.view(num_envs, self.num_agents).cumsum(
+                dim=1) == 1).flatten() & dones
+
+            _pathing = pathing.repeat_interleave(self.num_agents, 0).clone()
+            _pathing |= agents \
+                .view(num_envs, self.num_agents, self.height, self.width) \
+                .gt(EPS) \
+                .any(dim=1, keepdim=True)
+            _pathing = _pathing[first_done_per_env]
+
+            available_respawn_locations = self.respawns.repeat_interleave(self.num_agents, 0)
+            available_respawn_locations = available_respawn_locations[first_done_per_env]
+
+            new_agents, new_orientations, sucessfully_respawned = self._respawn(_pathing, available_respawn_locations,
+                                                                                False)
+
+            agents[first_done_per_env] += new_agents
+            orientations[first_done_per_env] = new_orientations
+            hp[first_done_per_env] = self.initial_hp
+            dones[first_done_per_env] = sucessfully_respawned
+
+        return agents, orientations, dones, hp, pathing
 
     def render(self, mode: str = 'human', env: Optional[int] = None):
         if self.viewer is None and mode == 'human':
             self.viewer = rendering.SimpleImageViewer()
 
         img = self._get_env_images()
-        img = build_render_rgb(img=img, num_envs=self.num_envs, env_size=self.size, env=env,
+        img = build_render_rgb(img=img, num_envs=self.num_envs, env_height=self.height, env_width=self.width, env=env,
                                num_rows=self.render_args['num_rows'], num_cols=self.render_args['num_cols'],
                                render_size=self.render_args['size'])
 
@@ -295,7 +377,7 @@ class LaserTag(MultiagentVecEnv):
 
     def _get_env_images(self) -> torch.Tensor:
         # Black background
-        img = torch.zeros((self.num_envs, 3, self.size, self.size), device=self.device, dtype=torch.short)
+        img = torch.zeros((self.num_envs, 3, self.height, self.width), device=self.device, dtype=torch.short)
 
         # Add slight highlight for orientation
         locations = (self.agents > EPS).float()
@@ -307,13 +389,13 @@ class LaserTag(MultiagentVecEnv):
         ) * 31
         directions_onehot = F.one_hot(self.orientations, 4).to(self.dtype)
         orientation_highlights = torch.einsum('bchw,bc->bhw', [orientation_highlights, directions_onehot]) \
-            .view(self.num_envs, self.num_agents, 1, self.size, self.size) \
+            .view(self.num_envs, self.num_agents, 1, self.height, self.width) \
             .sum(dim=1) \
             .short()
         img += orientation_highlights.expand_as(img)
 
         # Add lasers
-        per_env_lasers = self.lasers.reshape(self.num_envs, self.num_agents, self.size, self.size).sum(dim=1).gt(EPS)
+        per_env_lasers = self.lasers.reshape(self.num_envs, self.num_agents, self.height, self.width).sum(dim=1).gt(EPS)
         # Convert to NHWC axes for easier indexing here
         img = img.permute((0, 2, 3, 1))
         laser_colour = torch.tensor([127, 127, 31], device=self.device, dtype=torch.short)
@@ -323,7 +405,7 @@ class LaserTag(MultiagentVecEnv):
 
         # Add colours for agents
         body_colours = torch.einsum('nhw,nc->nchw', [locations.squeeze(), self.agent_colours.float()]) \
-            .view(self.num_envs, self.num_agents, 3, self.size, self.size) \
+            .view(self.num_envs, self.num_agents, 3, self.height, self.width) \
             .sum(dim=1) \
             .short()
         img += body_colours
@@ -345,8 +427,8 @@ class LaserTag(MultiagentVecEnv):
 
     @property
     def x(self):
-        return self.agents.view(self.num_envs*self.num_agents, -1).argmax(dim=1) // self.size
+        return self.agents.view(self.num_envs*self.num_agents, -1).argmax(dim=1) // self.width
 
     @property
     def y(self):
-        return self.agents.view(self.num_envs*self.num_agents, -1).argmax(dim=1) % self.size
+        return self.agents.view(self.num_envs*self.num_agents, -1).argmax(dim=1) % self.width
