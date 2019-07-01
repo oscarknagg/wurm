@@ -60,20 +60,14 @@ class TestLaserTag(unittest.TestCase):
         render(env)
 
         for i in range(all_actions['agent_0'].shape[0]):
-            # print('-'*20, i, '-'*20)
             actions = {
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
             obs, rewards, dones, info = env.step(actions)
             render(env)
-            # if i > 40:
-            #     print(i)
-            #     print(actions)
-            #     print()
-            #     render(env)
-
             env.check_consistency()
+            print()
 
             if expected_x is not None:
                 self.assertTrue(torch.equal(env.x.cpu(), expected_x[i]))
@@ -101,9 +95,9 @@ class TestLaserTag(unittest.TestCase):
             side=4,
             padding_value=127
         )
-        env = LaserTag(num_envs=num_envs, num_agents=2, height=9, width=9,
+        env = LaserTag(num_envs=num_envs, num_agents=2, height=9, width=9, verbose=True,
                        map_generator=Small2(DEFAULT_DEVICE), observation_fn=obs_fn,
-                       # render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
+                       render_args={'num_rows': 3, 'num_cols': 3, 'size': 256},
                        device=DEFAULT_DEVICE)
         all_actions = {
             f'agent_{i}': torch.randint(env.num_actions, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE) for i in
