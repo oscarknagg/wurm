@@ -2,7 +2,6 @@
 import numpy as np
 from typing import List
 from itertools import count
-from collections import namedtuple
 import argparse
 from time import time, sleep
 from pprint import pprint, pformat
@@ -17,12 +16,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
 
-from wurm.envs import SingleSnake, SimpleGridworld, Slither
+from wurm.envs import Slither, LaserTag
 from wurm import agents
-from wurm.utils import CSVLogger, ExponentialMovingAverageTracker, print_alive_tensors
+from wurm.utils import CSVLogger, ExponentialMovingAverageTracker
 from wurm.rl import A2C, TrajectoryStore
 from wurm.agents.discriminator import ConvDiscriminator
-from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
+from wurm.observations import FirstPersonCrop
+from config import PATH
 
 
 def flatten_dict(d, take_every=1):
@@ -35,31 +35,39 @@ def flatten_dict(d, take_every=1):
     return flattened
 
 
+def get_bool(input_string):
+    return input_string.lower()[0] == 't'
+
+
 VALUE_LOSS_COEFF = 0.5
 LOG_INTERVAL = 1
-MODEL_INTERVAL = 1000
-PRINT_INTERVAL = 1000
+MODEL_INTERVAL = 100
+PRINT_INTERVAL = 100
 HEATMAP_INTERVAL = 1000
 MAX_GRAD_NORM = 0.5
 FPS = 10
 
 
 parser = argparse.ArgumentParser()
+
+# Generic arguments
 parser.add_argument('--env', type=str)
 parser.add_argument('--n-envs', type=int)
 parser.add_argument('--n-agents', type=int)
 parser.add_argument('--n-species', type=int, default=1)
-parser.add_argument('--size', type=int)
+parser.add_argument('--height', type=int)
+parser.add_argument('--width', type=int)
 parser.add_argument('--agent', type=str, nargs='+')
-parser.add_argument('--obs', type=str)
+parser.add_argument('--coord-conv', default=True, type=get_bool)
+parser.add_argument('--mask-dones', default=True, type=get_bool, help='Removes deaths from training trajectories.')
 parser.add_argument('--warm-start', default=0, type=int)
-parser.add_argument('--boost', default=True, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--train', default=True, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--coord-conv', default=True, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--render', default=False, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--render-window-size', default=256, type=int)
-parser.add_argument('--render-cols', default=1, type=int)
-parser.add_argument('--render-rows', default=1, type=int)
+parser.add_argument('--device', default='cuda', type=str)
+parser.add_argument('--dtype', type=str, default='float')
+parser.add_argument('--diayn', default=0, type=float)
+parser.add_argument('--r', default=None, type=int, help='Repeat number')
+
+# Training arguments
+parser.add_argument('--train', default=True, type=get_bool)
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--gamma', default=0.99, type=float)
 parser.add_argument('--gae-lambda', default=None, type=float)
@@ -68,14 +76,19 @@ parser.add_argument('--entropy', default=0.0, type=float)
 parser.add_argument('--entropy-min', default=None, type=float)
 parser.add_argument('--total-steps', default=float('inf'), type=float)
 parser.add_argument('--total-episodes', default=float('inf'), type=float)
-parser.add_argument('--save-location', type=str, default=None)
-parser.add_argument('--save-model', default=True, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--save-logs', default=True, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--save-video', default=False, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--save-heatmap', default=False, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--device', default='cuda', type=str)
-parser.add_argument('--norm-returns', default=False, type=lambda x: x.lower()[0] == 't')
-parser.add_argument('--share-backbone', default=False, type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--norm-returns', default=False, type=get_bool)
+parser.add_argument('--share-backbone', default=False, type=get_bool)
+
+# Observation arguments
+parser.add_argument('--obs-h', type=int)
+parser.add_argument('--obs-w', type=int)
+parser.add_argument('--obs-rotate', type=get_bool)
+parser.add_argument('--obs-in-front', type=int)
+parser.add_argument('--obs-behind', type=int)
+parser.add_argument('--obs-side', type=int)
+
+# Snake arguments
+parser.add_argument('--boost', default=True, type=get_bool)
 parser.add_argument('--boost-cost', type=float, default=0.25)
 parser.add_argument('--food-on-death', type=float, default=0.33)
 parser.add_argument('--food-on-death-min', type=float, default=None)
@@ -84,42 +97,36 @@ parser.add_argument('--food-mode', type=str, default='random_rate')
 parser.add_argument('--food-rate', type=float, default=3e-4)
 parser.add_argument('--food-rate-min', type=float, default=None)
 parser.add_argument('--respawn-mode', type=str, default='any')
-parser.add_argument('--dtype', type=str, default='float')
-parser.add_argument('--flicker', type=int, default=None)
 parser.add_argument('--colour-mode', type=str, default='random')
-parser.add_argument('--diayn', default=0, type=float)
-parser.add_argument('--r', default=None, type=int, help='Repeat number')
+
+# Laser tag arguments
+parser.add_argument('--laser-tag-map', type=str, default='random')
+
+# Render arguments
+parser.add_argument('--render', default=False, type=lambda x: x.lower()[0] == 't')
+parser.add_argument('--render-window-size', default=256, type=int)
+parser.add_argument('--render-cols', default=1, type=int)
+parser.add_argument('--render-rows', default=1, type=int)
+
+# Output arguments
+parser.add_argument('--save-location', type=str, default=None)
+parser.add_argument('--save-model', default=True, type=get_bool)
+parser.add_argument('--save-logs', default=True, type=get_bool)
+parser.add_argument('--save-video', default=False, type=get_bool)
+parser.add_argument('--save-heatmap', default=False, type=get_bool)
 
 args = parser.parse_args()
 
-excluded_args = ['train', 'device', 'verbose', 'save_location', 'save_model', 'save_logs', 'render',
-                 'render_window_size', 'render_rows', 'render_cols', 'save_video', 'env', 'coord_conv',
-                 'norm_returns', 'dtype', 'food_mode', 'respawn_mode', 'boost', 'warm_start',
-                 'flicker', 'entropy_min', 'update_steps',
-                 ]
-included_args = ['n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy', 'agent', 'obs',
-                 'r', 'share_backbone']
+included_args = ['env', 'n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy', 'agent', 'obs',
+                 'r']
 
 entropy_coeff = args.entropy
 
-if args.r is None:
-    excluded_args += ['r', ]
-if args.total_steps == float('inf'):
-    excluded_args += ['total_steps']
-if args.total_episodes == float('inf'):
-    excluded_args += ['total_episodes']
 argsdict = {k: v for k, v in args.__dict__.items() if k in included_args}
 if 'agent' in argsdict.keys():
     argsdict['agent'] = argsdict['agent'][0]
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
-
-if args.obs == 'full':
-    observation_size = args.size
-elif args.obs.startswith('partial_'):
-    observation_size = 2*int(args.obs.split('_')[1]) + 1
-else:
-    raise RuntimeError
 
 if args.dtype == 'float':
     dtype = torch.float
@@ -136,10 +143,49 @@ else:
 
 # In channels
 in_channels = 3
-if args.boost:
-    num_actions = 8  # each direction with/without boost
+
+##########################
+# Configure observations #
+##########################
+observation_function = FirstPersonCrop(
+    height=args.obs_h,
+    width=args.obs_w,
+    first_person_rotation=args.obs_rotate,
+    in_front=args.obs_in_front,
+    behind=args.obs_behind,
+    side=args.obs_side
+)
+
+#################
+# Configure Env #
+#################
+render_args = {
+    'size': args.render_window_size,
+    'num_rows': args.render_rows,
+    'num_cols': args.render_cols,
+}
+if args.env == 'snake':
+    env = Slither(num_envs=args.n_envs, num_agents=args.n_agents, food_on_death_prob=args.food_on_death,
+                  height=args.height, width=args.width, device=args.device, render_args=render_args, boost=args.boost,
+                  boost_cost_prob=args.boost_cost, dtype=dtype, food_rate=args.food_rate,
+                  respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_fn=observation_function,
+                  reward_on_death=args.reward_on_death, agent_colours=args.colour_mode)
+elif args.env == 'laser':
+    from wurm.envs.laser_tag.maps import Small2
+    # if args.laser_tag_map = 'small3':
+
+    env = LaserTag(num_envs=args.n_envs, num_agents=args.n_agents, height=args.height, width=args.width,
+                   observation_fn=observation_function,
+                   map_generator=Small2(args.device), device=args.device, render_args=render_args)
+elif args.env == 'tron':
+    raise NotImplementedError
+elif args.env == 'bomb':
+    raise NotImplementedError
 else:
-    num_actions = 4
+    raise ValueError('Unrecognised environment')
+
+num_actions = env.num_actions
+
 
 ###################
 # Create agent(s) #
@@ -173,11 +219,11 @@ for i in range(num_models):
         agent_str = args.agent[i].split('/')[-1][:-3]
         agent_params = {kv.split('=')[0]: kv.split('=')[1] for kv in agent_str.split('__')}
         agent_type = agent_params['agent']
-        observation_type = agent_params['obs']
+        # observation_type = agent_params['obs']
         reload = True
     else:
         agent_type = args.agent[i]
-        observation_type = args.obs
+        # observation_type = args.obs
         reload = False
 
     # Create model class
@@ -233,24 +279,6 @@ if args.diayn > 0:
         num_species=args.n_species, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
         num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=dtype)
     discrim_opt = optim.Adam(discriminator.parameters(), lr=args.lr, weight_decay=1e-5)
-
-
-#################
-# Configure Env #
-#################
-render_args = {
-    'size': args.render_window_size,
-    'num_rows': args.render_rows,
-    'num_cols': args.render_cols,
-}
-if args.env == 'snake':
-    env = Slither(num_envs=args.n_envs, num_agents=args.n_agents, food_on_death_prob=args.food_on_death,
-                  size=args.size, device=args.device, render_args=render_args, boost=args.boost,
-                  boost_cost_prob=args.boost_cost, dtype=dtype, food_rate=args.food_rate,
-                  respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_mode=observation_type,
-                  reward_on_death=args.reward_on_death, agent_colours=args.colour_mode)
-else:
-    raise ValueError('Unrecognised environment')
 
 
 trajectories = TrajectoryStore()
@@ -406,6 +434,10 @@ for i_step in count(1):
                     hidden_states[_agent][_done].mul_(0)
 
     if args.agent != 'random' and args.train:
+        flattened_dones = flatten_dict({k: v for k, v in done.items() if k.startswith('agent_')})
+        if args.mask_dones:
+            flattened_dones.fill_(0)
+
         trajectories.append(
             action=flatten_dict(actions),
             log_prob=flatten_dict(probs),
@@ -466,6 +498,7 @@ for i_step in count(1):
     ###########
     # Logging #
     ###########
+    # print(done['agent_0'].float().mean().item(), done['agent_1'].float().mean().item())
     t = time() - t0
     num_episodes += done['__all__'].sum().item()
     num_steps += args.n_envs
@@ -492,28 +525,32 @@ for i_step in count(1):
         logs.update({
             f'reward_{i}': reward[f'agent_{i}'][~done[f'agent_{i}']].mean().item(),
             f'policy_entropy_{i}': entropies[f'agent_{i}'][~done[f'agent_{i}']].mean().item(),
-            f'food_{i}': info[f'food_{i}'][~done[f'agent_{i}']].mean().item(),
-            f'edge_collisions_{i}': info[f'edge_collision_{i}'].float().mean().item(),
-            f'snake_collisions_{i}': info[f'snake_collision_{i}'].float().mean().item(),
-            f'boost_{i}': info[f'boost_{i}'][~done[f'agent_{i}']].float().mean().item(),
-            f'size_{i}': info[f'size_{i}'][~done[f'agent_{i}']].mean().item(),
             f'done_{i}': done[f'agent_{i}'].float().mean().item(),
-            # Return of an episode is equivalent to the size on death
-            f'return_{i}': info[f'size_{i}'][done[f'agent_{i}']].mean().item(),
         })
+
+        if args.env == 'snake':
+            logs.update({
+                f'boost_{i}': info[f'boost_{i}'][~done[f'agent_{i}']].float().mean().item(),
+                f'food_{i}': info[f'food_{i}'][~done[f'agent_{i}']].mean().item(),
+                f'edge_collisions_{i}': info[f'edge_collision_{i}'].float().mean().item(),
+                f'snake_collisions_{i}': info[f'snake_collision_{i}'].float().mean().item(),
+                f'size_{i}': info[f'size_{i}'][~done[f'agent_{i}']].mean().item(),
+                # Return of an episode is equivalent to the size on death
+                f'return_{i}': info[f'size_{i}'][done[f'agent_{i}']].mean().item(),
+            })
 
     ewm_tracker(**logs)
 
     if i_step % PRINT_INTERVAL == 0:
         log_string = '[{:02d}:{:02d}:{:02d}]\t'.format(int((t // 3600)), int((t // 60) % 60), int(t % 60))
         log_string += 'Steps {:.2f}e6\t'.format(num_steps / 1e6)
-        log_string += 'Reward: {:.2e}\t'.format(ewm_tracker['reward_0'])
-        log_string += 'Food: {:.2e}\t'.format(ewm_tracker['food_0'])
         log_string += 'Entropy: {:.2e}\t'.format(ewm_tracker['policy_entropy_0'])
         log_string += 'Done: {:.2e}\t'.format(ewm_tracker['done_0'])
-        log_string += 'Edge: {:.2e}\t'.format(ewm_tracker['edge_collisions_0'])
+        log_string += 'Reward: {:.2e}\t'.format(ewm_tracker['reward_0'])
 
         if args.env == 'snake':
+            log_string += 'Edge: {:.2e}\t'.format(ewm_tracker['edge_collisions_0'])
+            log_string += 'Food: {:.2e}\t'.format(ewm_tracker['food_0'])
             log_string += 'Collision: {:.2e}\t'.format(ewm_tracker['snake_collisions_0'])
             log_string += 'Size: {:.3}\t'.format(ewm_tracker['size_0'])
             log_string += 'Boost: {:.2e}\t'.format(ewm_tracker['boost_0'])

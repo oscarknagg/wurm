@@ -14,6 +14,8 @@ from config import DEFAULT_DEVICE
 render_envs = False
 size = 9
 render_sleep = 0.4
+# render_sleep = 1
+torch.random.manual_seed(3)
 
 
 def get_test_env(num_envs=2):
@@ -58,13 +60,20 @@ class TestLaserTag(unittest.TestCase):
         render(env)
 
         for i in range(all_actions['agent_0'].shape[0]):
+            # print('-'*20, i, '-'*20)
             actions = {
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
 
             obs, rewards, dones, info = env.step(actions)
-            env.check_consistency()
             render(env)
+            # if i > 40:
+            #     print(i)
+            #     print(actions)
+            #     print()
+            #     render(env)
+
+            env.check_consistency()
 
             if expected_x is not None:
                 self.assertTrue(torch.equal(env.x.cpu(), expected_x[i]))
@@ -82,13 +91,9 @@ class TestLaserTag(unittest.TestCase):
     def test_random_actions(self):
         """Tests a very large number of random actions and checks for environment consistency
         instead of any particular expected trajectory."""
-        num_envs = 64
-        num_steps = 1000
+        num_envs = 128
+        num_steps = 256
         num_agents = 2
-        all_actions = {
-            f'agent_{i}': torch.randint(8, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE) for i in
-            range(num_agents)
-        }
         obs_fn = observations.FirstPersonCrop(
             first_person_rotation=True,
             in_front=9,
@@ -98,7 +103,12 @@ class TestLaserTag(unittest.TestCase):
         )
         env = LaserTag(num_envs=num_envs, num_agents=2, height=9, width=9,
                        map_generator=Small2(DEFAULT_DEVICE), observation_fn=obs_fn,
+                       # render_args={'num_rows': 1, 'num_cols': 2, 'size': 256},
                        device=DEFAULT_DEVICE)
+        all_actions = {
+            f'agent_{i}': torch.randint(env.num_actions, size=(num_steps, num_envs)).long().to(DEFAULT_DEVICE) for i in
+            range(num_agents)
+        }
 
         self._test_action_sequence(env, all_actions)
 
@@ -185,11 +195,21 @@ class TestLaserTag(unittest.TestCase):
 
         self._test_action_sequence(env, all_actions, None, expected_x, expected_y)
 
-    def test_agent_agent_pathing(self):
-        """Test agents can't walk through each other."""
+    def test_move_onto_other_agent(self):
+        """Test an agent can't move onto another agent."""
         env = get_test_env(num_envs=1)
         all_actions = {
-            'agent_0': torch.tensor([3, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_0': torch.tensor([3, 3, 3, 3, 3, 3, 3, 0, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 2, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        self._test_action_sequence(env, all_actions)
+
+    def test_agents_move_into_same_square(self):
+        """Test two agent can't simultaneously choose to move onto the same square."""
+        env = get_test_env(num_envs=1)
+        all_actions = {
+            'agent_0': torch.tensor([0, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
             'agent_1': torch.tensor([2, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 

@@ -3,6 +3,7 @@ from typing import Dict, Optional, Tuple
 from gym.envs.classic_control import rendering
 import torch.nn.functional as F
 from collections import OrderedDict
+from time import sleep
 
 from wurm._filters import ORIENTATION_FILTERS
 from wurm.utils import rotate_image_batch, drop_duplicates
@@ -59,7 +60,7 @@ class LaserTag(MultiagentVecEnv):
                  device: str = DEFAULT_DEVICE):
         super(LaserTag, self).__init__(num_envs, num_agents, height, width, dtype, device)
         self.map_generator = map_generator
-        self.colour_mode = 'random'
+        self.colour_mode = colour_mode
         self.observation_fn = observation_fn
         self.initial_hp = initial_hp
         self.max_env_lifetime = env_lifetime
@@ -99,20 +100,6 @@ class LaserTag(MultiagentVecEnv):
         self.lasers.fill_(0)
         self.rewards.fill_(0)
 
-        # # Calculate positions of other agents with respect to each agent
-        # other = torch.arange(self.num_agents, device=self.device).repeat(self.num_envs)
-        # other = ~F.one_hot(other, self.num_agents).byte()
-        # agents_ = self.agents \
-        #     .view(self.num_envs, self.num_agents, self.height, self.width) \
-        #     .repeat_interleave(self.num_agents, 0) \
-        #     .float()
-        # other_agents = torch.einsum('nshw,ns->nhw', [agents_, other.float()]).unsqueeze(1)
-
-        # Alternate calculation
-        other_agents = self.agents.view(self.num_envs, self.num_agents, self.height, self.width)\
-            .sum(dim=1, keepdim=True).repeat_interleave(self.num_agents, 0)\
-            .gt(EPS) & ~(self.agents.gt(EPS))
-
         # Movement
         has_moved = actions == self.move_forward
         has_moved |= actions == self.move_back
@@ -137,9 +124,20 @@ class LaserTag(MultiagentVecEnv):
             directions.fmod_(4)
             self.agents[has_moved] = move_pixels(self.agents[has_moved], directions[has_moved])
 
-            # Check pathing
-            overlap = (self.pathing.repeat_interleave(self.num_agents, 0) | other_agents.gt(EPS)) & (self.agents.gt(EPS))
-            reset_due_to_pathing = overlap.view(self.num_envs*self.num_agents, -1).any(dim=1)
+            # Resolve agent-wall pathing
+            overlap = self.pathing.repeat_interleave(self.num_agents, 0) & (self.agents.gt(EPS))
+            reset_due_to_pathing = overlap.view(self.num_envs * self.num_agents, -1).any(dim=1)
+            if torch.any(reset_due_to_pathing):
+                self.agents[reset_due_to_pathing] = original_agents[reset_due_to_pathing]
+
+            # Resolve agent-agent pathing
+            # TODO: Make one agent in each collision actually do the move
+            other_agents = self.agents.view(self.num_envs, self.num_agents, self.height, self.width) \
+                .sum(dim=1, keepdim=True).repeat_interleave(self.num_agents, 0) \
+                .sub(self.agents) \
+                .gt(EPS)
+            overlap = self.agents.gt(EPS) & other_agents
+            reset_due_to_pathing = overlap.view(self.num_envs * self.num_agents, -1).any(dim=1)
             if torch.any(reset_due_to_pathing):
                 self.agents[reset_due_to_pathing] = original_agents[reset_due_to_pathing]
 
@@ -317,22 +315,43 @@ class LaserTag(MultiagentVecEnv):
     def check_consistency(self):
         # Overlapping agents
         overlapping_agents = self.agents.view(self.num_envs, self.num_agents, self.height, self.width) \
-            .gt(EPS) \
             .sum(dim=1, keepdim=True) \
             .view(self.num_envs, -1) \
             .max(dim=-1)[0] \
             .gt(1)
         if torch.any(overlapping_agents):
+            # print(self.agents[overlapping_agents.repeat_interleave(self.num_agents, 0)][0:self.num_agents].long())
+            print(self.agents)
+            render_env = torch.arange(self.num_envs)[overlapping_agents][0].item()
+            # self.render(env=render_env)
+            self.render(env=1)
+            sleep(5)
             raise RuntimeError('Agent-agent overlap')
 
         # Pathing overlap
         agent_pathing_overlap = self.pathing.repeat_interleave(self.num_agents, 0) & self.agents.gt(EPS)
         if torch.any(agent_pathing_overlap):
+            bad_envs = agent_pathing_overlap.view(self.num_envs * self.num_agents, -1).any(dim=1)
+            print(self.pathing.repeat_interleave(self.num_agents, 0)[bad_envs][0].long())
+            print(self.agents[bad_envs][0].long())
+            render_env = torch.arange(self.num_envs*self.num_agents)[bad_envs][0].item() // self.num_agents
+            self.render(env=render_env)
+            sleep(5)
             raise RuntimeError('Agent-wall overlap')
 
-        agent_pathing_overlap = self.pathing.repeat_interleave(self.num_agents, 0) & self.lasers.gt(EPS)
-        if torch.any(agent_pathing_overlap):
-            raise RuntimeError('Laser-wall overlap')
+        # laser_pathing_overlap = self.pathing.repeat_interleave(self.num_agents, 0) & self.lasers.gt(EPS)
+        # laser_pathing_overlap[:, :, :1, :] = 0
+        # laser_pathing_overlap[:, :, -1:, :] = 0
+        # laser_pathing_overlap[:, :, :, :1] = 0
+        # laser_pathing_overlap[:, :, :, -1:] = 0
+        # if torch.any(laser_pathing_overlap):
+        #     bad_envs = laser_pathing_overlap.view(self.num_envs*self.num_agents, -1).any(dim=1)
+        #     print(self.pathing.repeat_interleave(self.num_agents, 0)[bad_envs][0].long())
+        #     print(self.lasers[bad_envs][0].long())
+        #     render_env = torch.arange(self.num_envs*self.num_agents)[bad_envs][0].item() // self.num_agents
+        #     self.render(env=render_env)
+        #     sleep(5)
+        #     raise RuntimeError('Laser-wall overlap')
 
     def _respawn(self, pathing: torch.Tensor, respawns: torch.Tensor, exception_on_failure: bool):
         """Respawns an agent by picking randomly from allowed locations.
