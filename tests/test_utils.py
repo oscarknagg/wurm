@@ -30,3 +30,16 @@ class TestUtils(unittest.TestCase):
         rot = utils.rotate_image_batch(img, degree=270)
         self.assertTrue(torch.equal(img[0], rot[i]))
 
+    def test_unpad_from_square(self):
+        n, c, h, w = 4, 1, 9, 16
+        img = torch.rand((n, c, h, w))
+        padded = utils.pad_to_square(img)
+        unpadded = utils.unpad_from_square(padded, original_h=h, original_w=w)
+        self.assertTrue(torch.equal(img, unpadded))
+
+        n, c, h, w = 4, 1, 16, 9
+        img = torch.rand((n, c, h, w))
+        padded = utils.pad_to_square(img)
+        unpadded = utils.unpad_from_square(padded, original_h=h, original_w=w)
+        self.assertTrue(torch.equal(img, unpadded))
+

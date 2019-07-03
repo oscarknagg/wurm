@@ -6,7 +6,7 @@ from collections import OrderedDict
 from time import time, sleep
 
 from wurm._filters import ORIENTATION_FILTERS
-from wurm.utils import rotate_image_batch, drop_duplicates
+from wurm.utils import rotate_image_batch, drop_duplicates, pad_to_square, unpad_from_square
 from wurm.core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb, move_pixels
 from .maps import LaserTagMapGenerator
 from wurm.observations import ObservationFunction, RenderObservations
@@ -203,6 +203,12 @@ class LaserTag(MultiagentVecEnv):
             # rotate back to original position
             agents = self.agents.clone()
             pathing = self.pathing.repeat_interleave(self.num_agents, 0) + other_agents.gt(EPS)
+            # Pad to square if the h != w because we can only use rotate_image_batch on
+            # square images
+            agents = pad_to_square(agents)
+            pathing = pad_to_square(pathing)
+            lasers = pad_to_square(lasers)
+
             for orientation, rotation, _ in orientation_preprocessing:
                 _orientation = self.orientations == orientation
                 if torch.any(_orientation):
@@ -219,6 +225,8 @@ class LaserTag(MultiagentVecEnv):
                 _orientation = self.orientations == orientation
                 if torch.any(_orientation):
                     lasers[_orientation] = rotate_image_batch(lasers[_orientation], degree=reverse_rotation)
+
+            lasers = unpad_from_square(lasers, original_h=self.height, original_w=self.width)
 
             # For rendering
             agent_blocking = self.agents \
@@ -281,6 +289,8 @@ class LaserTag(MultiagentVecEnv):
         lasers = torch.ones((n, 1, self.height, self.width), dtype=torch.uint8,
                             device=self.device)
 
+        lasers = pad_to_square(lasers)
+
         xy = agents * coords
         x, y = xy.view(n, 2, -1).sum(dim=2).reshape(n, -1).unbind(dim=1)
 
@@ -297,6 +307,8 @@ class LaserTag(MultiagentVecEnv):
         block = trimmed_pathing.cumsum(dim=2).cumsum(dim=3).cumsum(dim=2).cumsum(dim=3).gt(1+EPS)
 
         lasers &= ~block
+
+        # lasers = unpad_from_square(lasers, original_h=self.height, original_w=self.width)
 
         self._log(f'Lasers: {1000 * (time() - t0)}ms')
         return lasers

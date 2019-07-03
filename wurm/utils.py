@@ -65,7 +65,7 @@ def determine_orientations(envs: torch.Tensor) -> torch.Tensor:
     return orientations
 
 
-def pad_to_square(image_batch: torch.Tensor, padding_value: float = 0):
+def pad_to_square(image_batch: torch.Tensor, padding_value: float = 0) -> torch.Tensor:
     _, _, h, w = image_batch.size()
     if h != w:
         side_difference = h - w if h > w else w - h
@@ -76,8 +76,20 @@ def pad_to_square(image_batch: torch.Tensor, padding_value: float = 0):
     return image_batch
 
 
-def unpad_from_square(image_batch: torch.Tensor, original_h: int, original_w: int):
+def unpad_from_square(image_batch: torch.Tensor, original_h: int, original_w: int) -> torch.Tensor:
     """Reverses pad_to_square()"""
+    h, w = original_h, original_w
+
+    if h == w:
+        return image_batch
+
+    side_difference = h - w if h > w else w - h
+    if h > w:
+        image_batch = image_batch[:, :, :, :-side_difference]
+    else:
+        image_batch = image_batch[:, :, :-side_difference, :]
+
+    return image_batch
 
 
 def snake_consistency(envs: torch.Tensor):
