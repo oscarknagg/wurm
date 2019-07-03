@@ -68,7 +68,18 @@ class LaserTag(MultiagentVecEnv):
         self.max_env_lifetime = env_lifetime
         self.num_actions = 10
 
-        self.agent_colours = self._get_n_colours(num_envs*num_agents)
+        if colour_mode == 'random':
+            self.agent_colours = self._get_n_colours(num_envs*num_agents)
+        elif colour_mode == 'fixed':
+            fixed_colours = torch.tensor([
+                [192, 0, 0],  # Red
+                [0, 0, 192],  # Blue
+                [0, 192, 0],  # Green
+            ], device=device, dtype=torch.short)
+            self.agent_colours = fixed_colours[:self.num_agents].repeat((self.num_envs, 1))
+        else:
+            raise ValueError('colour_mode not recognised.')
+
         if render_args is None:
             self.render_args = {'num_rows': 1, 'num_cols': 1, 'size': 256}
         else:
@@ -80,6 +91,7 @@ class LaserTag(MultiagentVecEnv):
                                   requires_grad=False)
         self.respawns = self.map_generator.respawns(num_envs)
 
+        self.has_fired = torch.zeros(self.num_envs * self.num_agents, dtype=torch.uint8, device=self.device)
         if not manual_setup:
             self.agents, self.orientations, self.dones, self.hp, self.pathing = self._create_envs(num_envs)
         else:
@@ -112,8 +124,11 @@ class LaserTag(MultiagentVecEnv):
         actions = torch.stack([v for k, v in actions.items()]).t().flatten()
 
         # Reset stuff
-        self.lasers.fill_(0)
-        self.rewards.fill_(0)
+        self.lasers = torch.zeros((self.num_envs * self.num_agents, 1, self.height, self.width), dtype=self.dtype,
+                                  device=self.device,
+                                  requires_grad=False)
+        self.rewards = torch.zeros(self.num_envs * self.num_agents, dtype=torch.float, device=self.device)
+        self.dones = torch.zeros(self.num_envs * self.num_agents, dtype=torch.uint8, device=self.device)
 
         # Movement
         has_moved = actions == self.move_forward
@@ -165,8 +180,8 @@ class LaserTag(MultiagentVecEnv):
         self.orientations.fmod_(4)
         self._log(f'Orientations: {1000 * (time() - t0)}ms')
 
-        has_fired = actions == self.fire
-        if torch.any(has_fired):
+        self.has_fired = actions == self.fire
+        if torch.any(self.has_fired):
             other = ~F.one_hot(torch.arange(self.num_agents, device=self.device).repeat(self.num_envs), self.num_agents).byte()
             other_agents = self._other_agents()
 
@@ -174,7 +189,7 @@ class LaserTag(MultiagentVecEnv):
             # Handle lasers
             lasers = torch.ones((self.num_envs*self.num_agents, 1, self.height, self.width), dtype=torch.uint8,
                                 device=self.device)
-            lasers[~has_fired] = 0
+            lasers[~self.has_fired] = 0
 
             orientation_preprocessing = [
                 (0, 0, 0),
@@ -195,9 +210,9 @@ class LaserTag(MultiagentVecEnv):
                     agents[_orientation] = rotate_image_batch(agents[_orientation], degree=rotation)
             self._log(f'Rotation pre-processing: {1000 * (time() - t0)}ms')
 
-            lasers[has_fired] = self._do_lasers(
-                agents=agents[has_fired],
-                pathing=pathing[has_fired]
+            lasers[self.has_fired] = self._do_lasers(
+                agents=agents[self.has_fired],
+                pathing=pathing[self.has_fired]
             )
 
             for orientation, _, reverse_rotation in orientation_preprocessing:
@@ -217,19 +232,19 @@ class LaserTag(MultiagentVecEnv):
                 .view(self.num_envs, self.num_agents, self.height, self.width) \
                 .repeat_interleave(self.num_agents, 0) \
                 .float()
-            pathing = torch.einsum('nshw,ns->nhw', [lasers_, other.float()]).unsqueeze(1)
+            pathing = torch.einsum('nahw,na->nhw', [lasers_, other.float()]).unsqueeze(1)
             hit = (self.agents * pathing).gt(EPS).view(self.num_envs*self.num_agents, -1).any(dim=-1)
             self.hp -= hit.long()
             self.hp.relu_()
-            self.dones |= self.hp.eq(0)
+            self.dones |= self.hp.eq(EPS)
 
             # Give rewards
-            other_agents_hit = other_agents.gt(EPS) & lasers
+            other_agents_hit = other_agents.gt(EPS) & lasers.gt(EPS)
             reward = other_agents_hit.view(self.num_envs*self.num_agents, -1).sum(dim=-1).float()
             self.rewards += reward
 
             # Kill
-            self.dones |= self.hp.eq(0)
+            self.dones |= self.hp.lt(EPS)
             self.agents[self.dones] = 0
 
         self.env_lifetimes += 1
@@ -241,6 +256,15 @@ class LaserTag(MultiagentVecEnv):
 
         rewards = {f'agent_{i}': d for i, d in
                    enumerate(self.rewards.clone().view(self.num_envs, self.num_agents).t().unbind())}
+
+        info.update({
+            f'hp_{i}': d for i, d in
+            enumerate(self.hp.clone().view(self.num_envs, self.num_agents).t().unbind())
+        })
+        info.update({
+            f'laser_{i}': d for i, d in
+            enumerate(self.has_fired.clone().view(self.num_envs, self.num_agents).t().unbind())
+        })
 
         return observations, rewards, dones, info
 
@@ -299,6 +323,7 @@ class LaserTag(MultiagentVecEnv):
             self.hp[agent_dones] = new_hp
             # If we are using a fixed MapGenerator this line won't do anything
             self.pathing[done] = new_pathing
+            self.env_lifetimes[done] = 0
 
         # Single agent resets
         if torch.any(self.dones):
@@ -335,12 +360,12 @@ class LaserTag(MultiagentVecEnv):
             .gt(1)
         if torch.any(overlapping_agents):
             # print(self.agents[overlapping_agents.repeat_interleave(self.num_agents, 0)][0:self.num_agents].long())
-            print(self.agents)
+            # print(self.agents)
             render_env = torch.arange(self.num_envs)[overlapping_agents][0].item()
-            # self.render(env=render_env)
-            self.render(env=1)
-            sleep(5)
-            raise RuntimeError('Agent-agent overlap')
+            self.render(env=render_env)
+            # self.render(env=1)
+            # sleep(5)
+            raise RuntimeError('Agent-agent overlap in {} envs.'.format(overlapping_agents.sum().item()))
 
         # Pathing overlap
         agent_pathing_overlap = self.pathing.repeat_interleave(self.num_agents, 0) & self.agents.gt(EPS)
@@ -352,6 +377,30 @@ class LaserTag(MultiagentVecEnv):
             self.render(env=render_env)
             sleep(5)
             raise RuntimeError('Agent-wall overlap')
+
+        # Can only get reward when firing
+        not_fired_and_reward = (~self.has_fired) & self.rewards.gt(EPS)
+        if torch.any(not_fired_and_reward):
+
+            raise RuntimeError('Agent has got reward without firing.')
+
+        # Max reward per step is 1
+        if torch.any(self.rewards.gt(1)):
+            raise RuntimeError
+
+        # Every alive agent must actually exist
+        alive = ~self.dones
+        agent_exists = self.agents.view(self.num_envs*self.num_agents, -1).sum(dim=1).gt(EPS)
+        if torch.any(alive & (~agent_exists)):
+            raise RuntimeError('Agent is alive but doesnt exist.')
+
+        # Agents can only be dead if a laser has been fired by another agent this step
+        laser_fired_in_env = self.has_fired\
+            .view(self.num_envs, self.num_agents)\
+            .any(dim=1)\
+            .repeat_interleave(self.num_agents, 0)
+
+
 
         # laser_pathing_overlap = self.pathing.repeat_interleave(self.num_agents, 0) & self.lasers.gt(EPS)
         # laser_pathing_overlap[:, :, :1, :] = 0
