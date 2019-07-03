@@ -107,6 +107,16 @@ class FirstPersonCrop(ObservationFunction):
         img = env._get_env_images()
         agents = env.agents.clone()
 
+        # Pad to square if the h != w because we can only use rotate_image_batch on
+        # square images
+        _, _, h, w = img .size()
+        if h != w:
+            side_difference = h - w if h > w else w - h
+            to_square_padding = [0, side_difference]
+            to_square_padding = to_square_padding if h > w else [0, 0] + to_square_padding
+            img = F.pad(img, to_square_padding, value=self.padding_value)
+            agents = F.pad(agents, to_square_padding)
+
         # Normalise to 0-1
         img = img.float() / 255
         img = img.repeat_interleave(env.num_agents, dim=0)
