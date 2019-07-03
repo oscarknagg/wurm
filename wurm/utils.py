@@ -65,49 +65,7 @@ def determine_orientations(envs: torch.Tensor) -> torch.Tensor:
     return orientations
 
 
-def get_test_env(size: int, orientation: str = 'up') -> torch.Tensor:
-    """Gets a predetermined single-snake environment with the snake in a specified orientation"""
-    env = torch.zeros((1, 3, size, size))
-    if orientation == 'up':
-        env[0, BODY_CHANNEL, 3, 3] = 1
-        env[0, BODY_CHANNEL, 3, 4] = 2
-        env[0, BODY_CHANNEL, 4, 4] = 3
-        env[0, BODY_CHANNEL, 5, 4] = 4
 
-        env[0, HEAD_CHANNEL, 5, 4] = 1
-
-        env[0, FOOD_CHANNEL, 6, 6] = 1
-    elif orientation == 'right':
-        env[0, BODY_CHANNEL, 3, 3] = 1
-        env[0, BODY_CHANNEL, 3, 4] = 2
-        env[0, BODY_CHANNEL, 4, 4] = 3
-        env[0, BODY_CHANNEL, 4, 5] = 4
-
-        env[0, HEAD_CHANNEL, 4, 5] = 1
-
-        env[0, FOOD_CHANNEL, 6, 9] = 1
-    elif orientation == 'down':
-        env[0, BODY_CHANNEL, 8, 8] = 1
-        env[0, BODY_CHANNEL, 7, 8] = 2
-        env[0, BODY_CHANNEL, 6, 8] = 3
-        env[0, BODY_CHANNEL, 5, 8] = 4
-
-        env[0, HEAD_CHANNEL, 5, 8] = 1
-
-        env[0, FOOD_CHANNEL, 7, 2] = 1
-    elif orientation == 'left':
-        env[0, BODY_CHANNEL, 8, 7] = 1
-        env[0, BODY_CHANNEL, 7, 7] = 2
-        env[0, BODY_CHANNEL, 6, 7] = 3
-        env[0, BODY_CHANNEL, 6, 6] = 4
-
-        env[0, HEAD_CHANNEL, 6, 6] = 1
-
-        env[0, FOOD_CHANNEL, 1, 2] = 1
-    else:
-        raise Exception
-
-    return env
 
 
 def snake_consistency(envs: torch.Tensor):
