@@ -22,7 +22,7 @@ from wurm.utils import CSVLogger, ExponentialMovingAverageTracker
 from wurm.rl import A2C, TrajectoryStore
 from wurm.agents.discriminator import ConvDiscriminator
 from wurm.observations import FirstPersonCrop
-from config import PATH
+from config import PATH, EPS
 
 
 def flatten_dict(d, take_every=1):
@@ -41,8 +41,8 @@ def get_bool(input_string):
 
 VALUE_LOSS_COEFF = 0.5
 LOG_INTERVAL = 1
-MODEL_INTERVAL = 100
-PRINT_INTERVAL = 100
+MODEL_INTERVAL = 1000
+PRINT_INTERVAL = 1000
 HEATMAP_INTERVAL = 1000
 MAX_GRAD_NORM = 0.5
 FPS = 10
@@ -71,7 +71,7 @@ parser.add_argument('--train', default=True, type=get_bool)
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--gamma', default=0.99, type=float)
 parser.add_argument('--gae-lambda', default=None, type=float)
-parser.add_argument('--update-steps', default=20, type=int)
+parser.add_argument('--update-steps', default=5, type=int)
 parser.add_argument('--entropy', default=0.0, type=float)
 parser.add_argument('--entropy-min', default=None, type=float)
 parser.add_argument('--total-steps', default=float('inf'), type=float)
@@ -119,6 +119,9 @@ args = parser.parse_args()
 
 included_args = ['env', 'n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy', 'agent', 'obs',
                  'r']
+
+if args.laser_tag_map is not None:
+    included_args += ['laser_tag_map',]
 
 entropy_coeff = args.entropy
 
@@ -171,12 +174,19 @@ if args.env == 'snake':
                   respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_fn=observation_function,
                   reward_on_death=args.reward_on_death, agent_colours=args.colour_mode)
 elif args.env == 'laser':
-    from wurm.envs.laser_tag.maps import Small2
-    # if args.laser_tag_map = 'small3':
+    from wurm.envs.laser_tag.maps import Small2, Small3, Small4
+    if args.laser_tag_map == 'small2':
+        map_generator = Small2(args.device)
+    elif args.laser_tag_map == 'small3':
+        map_generator = Small3(args.device)
+    elif args.laser_tag_map == 'small4':
+        map_generator = Small4(args.device)
+    else:
+        raise ValueError('Unrecognised LaserTag map')
 
     env = LaserTag(num_envs=args.n_envs, num_agents=args.n_agents, height=args.height, width=args.width,
-                   observation_fn=observation_function,
-                   map_generator=Small2(args.device), device=args.device, render_args=render_args)
+                   observation_fn=observation_function, colour_mode=args.colour_mode,
+                   map_generator=map_generator, device=args.device, render_args=render_args)
 elif args.env == 'tron':
     raise NotImplementedError
 elif args.env == 'bomb':
@@ -434,10 +444,6 @@ for i_step in count(1):
                     hidden_states[_agent][_done].mul_(0)
 
     if args.agent != 'random' and args.train:
-        flattened_dones = flatten_dict({k: v for k, v in done.items() if k.startswith('agent_')})
-        if args.mask_dones:
-            flattened_dones.fill_(0)
-
         trajectories.append(
             action=flatten_dict(actions),
             log_prob=flatten_dict(probs),
@@ -478,7 +484,7 @@ for i_step in count(1):
             trajectories.rewards,
             trajectories.values,
             trajectories.log_probs,
-            trajectories.dones
+            torch.zeros_like(trajectories.dones) if args.mask_dones else trajectories.dones
         )
 
         entropy_loss = - trajectories.entropies.mean()
@@ -520,6 +526,7 @@ for i_step in count(1):
         't': t,
         'steps': num_steps,
         'episodes': num_episodes,
+        'env_done': done[f'__all__'].float().mean().item(),
     })
     for i in range(args.n_agents):
         logs.update({
@@ -539,6 +546,13 @@ for i_step in count(1):
                 f'return_{i}': info[f'size_{i}'][done[f'agent_{i}']].mean().item(),
             })
 
+        if args.env == 'laser':
+            logs.update({
+                f'hp_{i}': info[f'hp_{i}'].float().mean().item(),
+                f'laser_{i}': info[f'laser_{i}'].float().mean().item(),
+                f'hit_rate_{i}': (info[f'laser_{i}'] & reward[f'agent_{i}'].gt(EPS)).float().mean().item(),
+            })
+
     ewm_tracker(**logs)
 
     if i_step % PRINT_INTERVAL == 0:
@@ -554,6 +568,10 @@ for i_step in count(1):
             log_string += 'Collision: {:.2e}\t'.format(ewm_tracker['snake_collisions_0'])
             log_string += 'Size: {:.3}\t'.format(ewm_tracker['size_0'])
             log_string += 'Boost: {:.2e}\t'.format(ewm_tracker['boost_0'])
+
+        if args.env == 'laser':
+            log_string += 'HP: {:.2e}\t'.format(ewm_tracker['hp_0'])
+            log_string += 'Laser: {:.2e}\t'.format(ewm_tracker['laser_0'])
 
         log_string += 'FPS: {:.2e}\t'.format(ewm_tracker['fps'])
 

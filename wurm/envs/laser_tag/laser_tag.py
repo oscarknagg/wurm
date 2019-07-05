@@ -44,6 +44,11 @@ class LaserTag(MultiagentVecEnv):
     move_forward_and_turn_right = 8
     move_forward_and_turn_left = 9
 
+    metadata = {
+        'render.modes': ['rgb_array'],
+        'video.frames_per_second': 12
+    }
+
     def __init__(self,
                  num_envs: int,
                  num_agents: int,
