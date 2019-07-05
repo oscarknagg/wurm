@@ -194,7 +194,6 @@ class LaserTag(MultiagentVecEnv):
             # Handle lasers
             lasers = torch.ones((self.num_envs*self.num_agents, 1, self.height, self.width), dtype=torch.uint8,
                                 device=self.device)
-            lasers[~self.has_fired] = 0
 
             orientation_preprocessing = [
                 (0, 0, 0),
@@ -211,14 +210,16 @@ class LaserTag(MultiagentVecEnv):
             # Pad to square if the h != w because we can only use rotate_image_batch on
             # square images
             agents = pad_to_square(agents)
-            pathing = pad_to_square(pathing)
-            lasers = pad_to_square(lasers)
+            pathing = pad_to_square(pathing, padding_value=1)
+            lasers = pad_to_square(lasers, padding_value=1)
+            lasers[~self.has_fired] = 0
 
             for orientation, rotation, _ in orientation_preprocessing:
                 _orientation = self.orientations == orientation
                 if torch.any(_orientation):
                     pathing[_orientation] = rotate_image_batch(pathing[_orientation], degree=rotation)
                     agents[_orientation] = rotate_image_batch(agents[_orientation], degree=rotation)
+
             self._log(f'Rotation pre-processing: {1000 * (time() - t0)}ms')
 
             lasers[self.has_fired] = self._do_lasers(
@@ -294,7 +295,7 @@ class LaserTag(MultiagentVecEnv):
         lasers = torch.ones((n, 1, self.height, self.width), dtype=torch.uint8,
                             device=self.device)
 
-        lasers = pad_to_square(lasers)
+        lasers = pad_to_square(lasers, padding_value=1)
 
         xy = agents * coords
         x, y = xy.view(n, 2, -1).sum(dim=2).reshape(n, -1).unbind(dim=1)
@@ -313,9 +314,8 @@ class LaserTag(MultiagentVecEnv):
 
         lasers &= ~block
 
-        # lasers = unpad_from_square(lasers, original_h=self.height, original_w=self.width)
-
         self._log(f'Lasers: {1000 * (time() - t0)}ms')
+        
         return lasers
 
     def reset(self, done: torch.Tensor = None, return_observations: bool = True) -> Optional[Dict[str, torch.Tensor]]:
