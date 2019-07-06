@@ -1,3 +1,31 @@
+import torch
+from typing import List
+
+
+def parse_mapstring(map: List[str]) -> (torch.Tensor, torch.Tensor):
+    # Get height and width
+    height = len(map)
+    width = (len(map[0]) + 1) // 2
+
+    # Check consistent height and width
+    # Convert to tensor
+    pathing = torch.zeros((1, 1, height, width))
+    respawn = torch.zeros((1, 1, height, width))
+    for i, line in enumerate(map):
+        # Remove padding spaces
+        line = (line + ' ')[::2]
+
+        if len(line) != width:
+            raise ValueError('Map string has inconsistent shape')
+
+        _pathing = torch.tensor([char == '*' for char in line])
+        pathing[:, :, i, :] = _pathing
+        _respawn = torch.tensor([char == 'P' for char in line])
+        respawn[:, :, i, :] = _respawn
+
+    return pathing, respawn
+
+
 small2_pathing = [
     '* * * * * * * * *',
     '* P           P *',
@@ -153,3 +181,7 @@ small4c_pathing = [
     '*                                         *',
     '* * * * * * * * * * * * * * * * * * * * * *',
 ]
+
+pathing, respawn =parse_mapstring(small2_pathing)
+print(pathing)
+print(respawn)
