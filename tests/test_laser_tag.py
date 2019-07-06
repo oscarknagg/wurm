@@ -419,6 +419,7 @@ class TestSmall3(unittest.TestCase):
         render(env)
 
         for i in range(all_actions['agent_0'].shape[0]):
+            print('-'*20, i, '-'*20)
             actions = {
                 agent: agent_actions[i] for agent, agent_actions in all_actions.items()
             }
@@ -426,4 +427,7 @@ class TestSmall3(unittest.TestCase):
             observations, rewards, dones, info = env.step(actions)
             # Laser trajectories were verified manually then saved to another file because they are very verbose
             # self.assertTrue(torch.equal(env.lasers, expected_laser_trajectories_1_3[i]))
+
+            # print(env.lasers)
+
             render(env)

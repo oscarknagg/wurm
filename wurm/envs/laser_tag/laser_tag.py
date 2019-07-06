@@ -275,10 +275,12 @@ class LaserTag(MultiagentVecEnv):
             f'hp_{i}': d for i, d in
             enumerate(self.hp.clone().view(self.num_envs, self.num_agents).t().unbind())
         })
-        info.update({
-            f'laser_{i}': d for i, d in
-            enumerate(self.has_fired.clone().view(self.num_envs, self.num_agents).t().unbind())
-        })
+        for i in range(self.num_actions):
+            action_i = actions == i
+            info.update({
+                f'action_{i}': d for i, d in
+                enumerate(action_i.clone().view(self.num_envs, self.num_agents).t().unbind())
+            })
 
         return observations, rewards, dones, info
 
@@ -315,7 +317,7 @@ class LaserTag(MultiagentVecEnv):
         lasers &= ~block
 
         self._log(f'Lasers: {1000 * (time() - t0)}ms')
-        
+
         return lasers
 
     def reset(self, done: torch.Tensor = None, return_observations: bool = True) -> Optional[Dict[str, torch.Tensor]]:
