@@ -4,6 +4,7 @@ from gym.envs.classic_control import rendering
 import torch.nn.functional as F
 from collections import OrderedDict
 from time import time, sleep
+import warnings
 
 from wurm._filters import ORIENTATION_FILTERS
 from wurm.utils import rotate_image_batch, drop_duplicates, pad_to_square, unpad_from_square
@@ -55,6 +56,7 @@ class LaserTag(MultiagentVecEnv):
                  height: int,
                  width: int,
                  map_generator: LaserTagMapGenerator,
+                 strict: bool = False,
                  verbose: int = 0,
                  colour_mode: str = 'random',
                  observation_fn: ObservationFunction = RenderObservations(),
@@ -65,6 +67,7 @@ class LaserTag(MultiagentVecEnv):
                  dtype: torch.dtype = torch.float,
                  device: str = DEFAULT_DEVICE):
         super(LaserTag, self).__init__(num_envs, num_agents, height, width, dtype, device)
+        self.strict = strict
         self.verbose = verbose
         self.map_generator = map_generator
         self.colour_mode = colour_mode
@@ -371,55 +374,62 @@ class LaserTag(MultiagentVecEnv):
             return self._observe()
 
     def check_consistency(self):
+        self.errors = torch.zeros_like(self.errors)
+
         # Overlapping agents
         overlapping_agents = self.agents.view(self.num_envs, self.num_agents, self.height, self.width) \
             .sum(dim=1, keepdim=True) \
             .view(self.num_envs, -1) \
             .max(dim=-1)[0] \
             .gt(1)
+        self.errors |= overlapping_agents
         if torch.any(overlapping_agents):
-            # print(self.agents[overlapping_agents.repeat_interleave(self.num_agents, 0)][0:self.num_agents].long())
-            # print(self.agents)
-            render_env = torch.arange(self.num_envs)[overlapping_agents][0].item()
-            self.render(env=render_env)
-            # self.render(env=1)
-            # sleep(5)
-            raise RuntimeError('Agent-agent overlap in {} envs.'.format(overlapping_agents.sum().item()))
+            msg = 'Agent-agent overlap in {} envs.'.format(overlapping_agents.sum().item())
+            if self.strict:
+                raise RuntimeError(msg)
+            else:
+                warnings.warn(msg)
 
         # Pathing overlap
         agent_pathing_overlap = self.pathing.repeat_interleave(self.num_agents, 0) & self.agents.gt(EPS)
         if torch.any(agent_pathing_overlap):
             bad_envs = agent_pathing_overlap.view(self.num_envs * self.num_agents, -1).any(dim=1)
-            print(self.pathing.repeat_interleave(self.num_agents, 0)[bad_envs][0].long())
-            print(self.agents[bad_envs][0].long())
-            render_env = torch.arange(self.num_envs*self.num_agents)[bad_envs][0].item() // self.num_agents
-            self.render(env=render_env)
-            sleep(5)
-            raise RuntimeError('Agent-wall overlap')
+            msg = 'Agent-wall overlap in {} envs.'.format(bad_envs.sum().item())
+            if self.strict:
+                raise RuntimeError(msg)
+            else:
+                warnings.warn(msg)
 
         # Can only get reward when firing
         not_fired_and_reward = (~self.has_fired) & self.rewards.gt(EPS)
         if torch.any(not_fired_and_reward):
-
             raise RuntimeError('Agent has got reward without firing.')
 
         # Max reward per step is 1
-        if torch.any(self.rewards.gt(1)):
-            raise RuntimeError
+        impossible_rewards = self.rewards.gt(1)
+        if torch.any(impossible_rewards):
+            msg = 'Agent has received impossibly high reward in {} envs'.format(impossible_rewards.sum().item())
+            if self.strict:
+                raise RuntimeError(msg)
+            else:
+                warnings.warn(msg)
 
         # Every alive agent must actually exist
         alive = ~self.dones
         agent_exists = self.agents.view(self.num_envs*self.num_agents, -1).sum(dim=1).gt(EPS)
-        if torch.any(alive & (~agent_exists)):
-            raise RuntimeError('Agent is alive but doesnt exist.')
+        alive_and_doesnt_exist = alive & (~agent_exists)
+        if torch.any(alive_and_doesnt_exist):
+            msg = 'Agent is alive but doesn\'t exist in {} envs.'.format(alive_and_doesnt_exist.sum().item())
+            if self.strict:
+                raise RuntimeError(msg)
+            else:
+                warnings.warn(msg)
 
-        # Agents can only be dead if a laser has been fired by another agent this step
-        laser_fired_in_env = self.has_fired\
-            .view(self.num_envs, self.num_agents)\
-            .any(dim=1)\
-            .repeat_interleave(self.num_agents, 0)
-
-
+        # # Agents can only be dead if a laser has been fired by another agent this step
+        # laser_fired_in_env = self.has_fired\
+        #     .view(self.num_envs, self.num_agents)\
+        #     .any(dim=1)\
+        #     .repeat_interleave(self.num_agents, 0)
 
         # laser_pathing_overlap = self.pathing.repeat_interleave(self.num_agents, 0) & self.lasers.gt(EPS)
         # laser_pathing_overlap[:, :, :1, :] = 0
@@ -434,6 +444,19 @@ class LaserTag(MultiagentVecEnv):
         #     self.render(env=render_env)
         #     sleep(5)
         #     raise RuntimeError('Laser-wall overlap')
+
+        # Reset bad envs. I choose not to reset the env lifetime so we can maintain the nice
+        # thing of having all of the envs terminate synchronously.
+        if torch.any(self.errors):
+            num_done = self.errors.sum().item()
+            agent_dones = self.errors.repeat_interleave(self.num_agents)
+            new_agents, new_orientations, new_dones, new_hp, new_pathing = self._create_envs(num_done)
+            self.agents[agent_dones] = new_agents
+            self.orientations[agent_dones] = new_orientations
+            self.dones[agent_dones] = new_dones
+            self.hp[agent_dones] = new_hp
+            # If we are using a fixed MapGenerator this line won't do anything
+            self.pathing[self.errors] = new_pathing
 
     def _respawn(self, pathing: torch.Tensor, respawns: torch.Tensor, exception_on_failure: bool):
         """Respawns an agent by picking randomly from allowed locations.

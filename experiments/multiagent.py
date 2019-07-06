@@ -282,7 +282,7 @@ if agent_type != 'random' and args.train:
     optimizers: List[optim.Adam] = []
     for i in range(num_models):
         optimizers.append(
-            optim.Adam(models[i].parameters(), lr=args.lr, weight_decay=1e-5)
+            optim.Adam(models[i].parameters(), lr=args.lr, weight_decay=0)
         )
 
 #########
@@ -508,7 +508,6 @@ for i_step in count(1):
     ###########
     # Logging #
     ###########
-    # print(done['agent_0'].float().mean().item(), done['agent_1'].float().mean().item())
     t = time() - t0
     num_episodes += done['__all__'].sum().item()
     num_steps += args.n_envs
@@ -555,6 +554,7 @@ for i_step in count(1):
                 f'hp_{i}': info[f'hp_{i}'].float().mean().item(),
                 f'laser_{i}': info[f'action_7_{i}'].float().mean().item(),
                 f'hit_rate_{i}': (info[f'action_7_{i}'] & reward[f'agent_{i}'].gt(EPS)).float().mean().item(),
+                f'errors': env.errors.sum().item()
             })
 
     ewm_tracker(**logs)
@@ -582,7 +582,7 @@ for i_step in count(1):
         print(log_string)
 
     if i_step % MODEL_INTERVAL == 0 and args.save_model:
-        os.makedirs(f'{PATH}/models/', exist_ok=True)
+        os.makedirs(os.path.split(f'{PATH}/models/{save_file}')[0], exist_ok=True)
         for i, model in enumerate(models):
             torch.save(model.state_dict(), f'{PATH}/models/{save_file}__species={i}.pt')
 
@@ -598,7 +598,7 @@ for i_step in count(1):
     if i_step % LOG_INTERVAL == 0 and args.save_logs:
         logger.write(logs)
 
-    if num_steps >= args.total_steps or num_episodes >= args.total_episodes:
+    if num_steps > args.total_steps or num_episodes >= args.total_episodes:
         break
 
 if args.save_video:

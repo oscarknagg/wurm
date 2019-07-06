@@ -44,6 +44,7 @@ class MultiagentVecEnv(ABC):
         self.dtype = dtype
         self.device = device
         self.viewer = None
+        self.render_args = {'num_rows': 1, 'num_cols': 1, 'size': 256}
 
         # This Tensor represents the location of each agent in each environment. It should contain
         # only one non-zero entry for each sub array along dimension 0.
@@ -51,6 +52,10 @@ class MultiagentVecEnv(ABC):
 
         # This Tensor represents the current alive/dead state of each agent in each environment
         self.dones = torch.zeros(self.num_envs * self.num_agents, dtype=torch.uint8, device=device, requires_grad=False)
+
+        # This tensor represents whether a particular environment has experienced an exception in the most recent
+        # step. This is useful for resetting environments that have an exception
+        self.errors = torch.zeros(self.num_envs, dtype=torch.uint8, device=device, requires_grad=False)
 
     @abstractmethod
     def step(self, actions: Dict[str, torch.Tensor]) -> (Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor], dict):
