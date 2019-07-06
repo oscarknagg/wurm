@@ -222,7 +222,7 @@ class LaserTag(MultiagentVecEnv):
 
             self._log(f'Rotation pre-processing: {1000 * (time() - t0)}ms')
 
-            lasers[self.has_fired] = self._do_lasers(
+            lasers[self.has_fired] = self._laser_trajectories(
                 agents=agents[self.has_fired],
                 pathing=pathing[self.has_fired]
             )
@@ -275,16 +275,16 @@ class LaserTag(MultiagentVecEnv):
             f'hp_{i}': d for i, d in
             enumerate(self.hp.clone().view(self.num_envs, self.num_agents).t().unbind())
         })
-        for i in range(self.num_actions):
-            action_i = actions == i
+        for i_action in range(self.num_actions):
+            action_i = actions == i_action
             info.update({
-                f'action_{i}': d for i, d in
+                f'action_{i_action}_{i_agent}': d for i_agent, d in
                 enumerate(action_i.clone().view(self.num_envs, self.num_agents).t().unbind())
             })
 
         return observations, rewards, dones, info
 
-    def _do_lasers(self, agents: torch.Tensor, pathing: torch.Tensor) -> torch.Tensor:
+    def _laser_trajectories(self, agents: torch.Tensor, pathing: torch.Tensor) -> torch.Tensor:
         """Calculates laser trajectories.
 
         Args:

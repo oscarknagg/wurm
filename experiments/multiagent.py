@@ -109,6 +109,7 @@ parser.add_argument('--render-cols', default=1, type=int)
 parser.add_argument('--render-rows', default=1, type=int)
 
 # Output arguments
+parser.add_argument('--save-folder', type=str, default=None)
 parser.add_argument('--save-location', type=str, default=None)
 parser.add_argument('--save-model', default=True, type=get_bool)
 parser.add_argument('--save-logs', default=True, type=get_bool)
@@ -121,7 +122,7 @@ included_args = ['env', 'n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma'
                  'r']
 
 if args.laser_tag_map is not None:
-    included_args += ['laser_tag_map',]
+    included_args += ['laser_tag_map', ]
 
 entropy_coeff = args.entropy
 
@@ -143,6 +144,9 @@ if args.save_location is None:
     save_file = argstring
 else:
     save_file = args.save_location
+
+if args.save_folder is not None:
+    save_file = os.path.join(args.save_folder, save_file)
 
 # In channels
 in_channels = 3
@@ -549,8 +553,8 @@ for i_step in count(1):
         if args.env == 'laser':
             logs.update({
                 f'hp_{i}': info[f'hp_{i}'].float().mean().item(),
-                f'laser_{i}': info[f'laser_{i}'].float().mean().item(),
-                f'hit_rate_{i}': (info[f'laser_{i}'] & reward[f'agent_{i}'].gt(EPS)).float().mean().item(),
+                f'laser_{i}': info[f'action_7_{i}'].float().mean().item(),
+                f'hit_rate_{i}': (info[f'action_7_{i}'] & reward[f'agent_{i}'].gt(EPS)).float().mean().item(),
             })
 
     ewm_tracker(**logs)
@@ -577,7 +581,7 @@ for i_step in count(1):
 
         print(log_string)
 
-    if i_step % MODEL_INTERVAL == 0and args.save_model:
+    if i_step % MODEL_INTERVAL == 0 and args.save_model:
         os.makedirs(f'{PATH}/models/', exist_ok=True)
         for i, model in enumerate(models):
             torch.save(model.state_dict(), f'{PATH}/models/{save_file}__species={i}.pt')

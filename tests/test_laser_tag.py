@@ -11,7 +11,7 @@ from tests._laser_trajectories import expected_laser_trajectories_0_2, expected_
 from config import DEFAULT_DEVICE
 
 
-render_envs = True
+render_envs = False
 size = 9
 render_sleep = 0.4
 # render_sleep = 1
@@ -54,7 +54,7 @@ def render(env):
         sleep(render_sleep)
 
 
-def test_action_sequence(self, env, all_actions, expected_orientations=None, expected_x=None, expected_y=None,
+def _test_action_sequence(test_fixture, env, all_actions, expected_orientations=None, expected_x=None, expected_y=None,
                           expected_hp=None, expected_reward=None, expected_done=None):
     render(env)
 
@@ -68,17 +68,17 @@ def test_action_sequence(self, env, all_actions, expected_orientations=None, exp
         env.check_consistency()
 
         if expected_x is not None:
-            self.assertTrue(torch.equal(env.x.cpu(), expected_x[i]))
+            test_fixture.assertTrue(torch.equal(env.x.cpu(), expected_x[i]))
         if expected_y is not None:
-            self.assertTrue(torch.equal(env.y.cpu(), expected_y[i]))
+            test_fixture.assertTrue(torch.equal(env.y.cpu(), expected_y[i]))
         if expected_orientations is not None:
-            self.assertTrue(torch.equal(env.orientations.cpu(), expected_orientations[i]))
+            test_fixture.assertTrue(torch.equal(env.orientations.cpu(), expected_orientations[i]))
         if expected_hp is not None:
-            self.assertTrue(torch.equal(env.hp.cpu(), expected_hp[i]))
+            test_fixture.assertTrue(torch.equal(env.hp.cpu(), expected_hp[i]))
         if expected_reward is not None:
-            self.assertTrue(torch.equal(env.rewards.cpu(), expected_reward[i]))
+            test_fixture.assertTrue(torch.equal(env.rewards.cpu(), expected_reward[i]))
         if expected_done is not None:
-            self.assertTrue(torch.equal(env.dones.cpu(), expected_done[i]))
+            test_fixture.assertTrue(torch.equal(env.dones.cpu(), expected_done[i]))
 
         env.reset()
 
@@ -106,7 +106,7 @@ class TestLaserTagSmall2(unittest.TestCase):
             range(num_agents)
         }
 
-        test_action_sequence(env, all_actions)
+        _test_action_sequence(self, env, all_actions)
 
     def test_basic_movement(self):
         """2 agents rotate completely on the spot then move in a circle."""
@@ -129,7 +129,7 @@ class TestLaserTagSmall2(unittest.TestCase):
             [7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 7],
         ]).t()
 
-        test_action_sequence(env, all_actions, expected_orientations, expected_x, expected_y)
+        _test_action_sequence(self, env, all_actions, expected_orientations, expected_x, expected_y)
 
     def test_move_backward(self):
         env = get_test_env(num_envs=1)
@@ -150,7 +150,7 @@ class TestLaserTagSmall2(unittest.TestCase):
             [2, 2],
         ]).t()
 
-        test_action_sequence(env, all_actions, expected_orientations, expected_x, expected_y)
+        _test_action_sequence(self, env, all_actions, expected_orientations, expected_x, expected_y)
 
     def test_strafe(self):
         env = get_test_env(num_envs=1)
@@ -171,7 +171,7 @@ class TestLaserTagSmall2(unittest.TestCase):
             [2, 2],
         ]).t()
 
-        test_action_sequence(env, all_actions, expected_orientations, expected_x, expected_y)
+        _test_action_sequence(self, env, all_actions, expected_orientations, expected_x, expected_y)
 
     def test_wall_pathing(self):
         """Test agents can't walk through walls."""
@@ -189,7 +189,7 @@ class TestLaserTagSmall2(unittest.TestCase):
             [7, 7, 7, 7, 7, 6, 6]
         ]).t()
 
-        test_action_sequence(env, all_actions, None, expected_x, expected_y)
+        _test_action_sequence(self, env, all_actions, None, expected_x, expected_y)
 
     def test_move_onto_other_agent(self):
         """Test an agent can't move onto another agent."""
@@ -199,7 +199,7 @@ class TestLaserTagSmall2(unittest.TestCase):
             'agent_1': torch.tensor([0, 2, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
-        test_action_sequence(env, all_actions)
+        _test_action_sequence(self, env, all_actions)
 
     @pytest.mark.skip()
     def test_move_through_other_agent(self):
@@ -213,7 +213,7 @@ class TestLaserTagSmall2(unittest.TestCase):
             'agent_1': torch.tensor([2, 3, 3, 3, 3, 3, 3, 3]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
-        test_action_sequence(env, all_actions)
+        _test_action_sequence(self, env, all_actions)
 
     def test_firing_orientations_0_2(self):
         """Tests that laser trajectories are calculated correctly."""
@@ -275,8 +275,8 @@ class TestLaserTagSmall2(unittest.TestCase):
             [0, ] * (all_actions['agent_0'].shape[0] - 1) + [1],
         ]).t().byte()
 
-        test_action_sequence(env, all_actions, expected_hp=expected_hp, expected_reward=expected_reward,
-                                   expected_done=expected_done)
+        _test_action_sequence(self, env, all_actions, expected_hp=expected_hp, expected_reward=expected_reward,
+                              expected_done=expected_done)
 
     def test_being_hit_orientations_1_3(self):
         """Tests that agent-laser collision is calculated correctly, hp is deducted
@@ -299,8 +299,8 @@ class TestLaserTagSmall2(unittest.TestCase):
             [0, ] * (all_actions['agent_0'].shape[0] - 1) + [1],
         ]).t().byte()
 
-        test_action_sequence(env, all_actions, expected_hp=expected_hp, expected_reward=expected_reward,
-                                   expected_done=expected_done)
+        _test_action_sequence(self, env, all_actions, expected_hp=expected_hp, expected_reward=expected_reward,
+                              expected_done=expected_done)
 
     def test_cant_shoot_through_agents(self):
         env = get_test_env(num_envs=1)
@@ -349,7 +349,7 @@ class TestLaserTagSmall2(unittest.TestCase):
             'agent_0': torch.tensor([0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 7, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
             'agent_1': torch.tensor([0, 2, 3, 3, 3, 3, 3, 3, 1, 7, 7, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
-        test_action_sequence(env, all_actions)
+        _test_action_sequence(self, env, all_actions)
 
     def test_observations(self):
         obs_fn = observations.RenderObservations()
