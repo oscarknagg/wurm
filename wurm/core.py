@@ -77,7 +77,7 @@ class MultiagentVecEnv(ABC):
 
     def render(self, mode: str = 'human', env: Optional[int] = None) -> Any:
         if self.viewer is None and mode == 'human':
-            self.viewer = rendering.SimpleImageViewer()
+            self.viewer = rendering.SimpleImageViewer(maxwidth=1080)
 
         img = self._get_env_images()
         img = build_render_rgb(img=img, num_envs=self.num_envs, env_height=self.height, env_width=self.width, env=env,
