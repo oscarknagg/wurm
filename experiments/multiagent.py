@@ -100,7 +100,7 @@ parser.add_argument('--respawn-mode', type=str, default='any')
 parser.add_argument('--colour-mode', type=str, default='random')
 
 # Laser tag arguments
-parser.add_argument('--laser-tag-map', type=str, default='random')
+parser.add_argument('--laser-tag-map', nargs='+', type=str, default='random')
 
 # Render arguments
 parser.add_argument('--render', default=False, type=lambda x: x.lower()[0] == 't')
@@ -178,16 +178,13 @@ if args.env == 'snake':
                   respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_fn=observation_function,
                   reward_on_death=args.reward_on_death, agent_colours=args.colour_mode)
 elif args.env == 'laser':
-    from wurm.envs.laser_tag.map_generators import MapFromString
-    from wurm.envs.laser_tag.maps import small2, small3, small4
-    if args.laser_tag_map == 'small2':
-        map_generator = MapFromString(small2, args.device)
-    elif args.laser_tag_map == 'small3':
-        map_generator = MapFromString(small3, args.device)
-    elif args.laser_tag_map == 'small4':
-        map_generator = MapFromString(small4, args.device)
+    from wurm.envs.laser_tag.map_generators import MapFromString, MapPool
+
+    if len(args.laser_tag_map) == 1:
+        map_generator = MapFromString(args.laser_tag_map[0], args.device)
     else:
-        raise ValueError('Unrecognised LaserTag map')
+        fixed_maps = [MapFromString(m, args.device) for m in args.laser_tag_map]
+        map_generator = MapPool(fixed_maps)
 
     env = LaserTag(num_envs=args.n_envs, num_agents=args.n_agents, height=args.height, width=args.width,
                    observation_fn=observation_function, colour_mode=args.colour_mode,

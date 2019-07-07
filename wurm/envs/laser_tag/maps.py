@@ -153,3 +153,20 @@ small4c = [
     '*                                         *',
     '* * * * * * * * * * * * * * * * * * * * * *',
 ]
+
+MAPS = {
+    'small2': small2,
+    'small2a': small2a,
+    'small2b': small2b,
+    'small2c': small2c,
+
+    'small3': small3,
+    'small3a': small3a,
+    'small3b': small3b,
+    'small3c': small3c,
+
+    'small4': small4,
+    'small4a': small4a,
+    'small4b': small4b,
+    'small4c': small4c,
+}

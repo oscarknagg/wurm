@@ -12,7 +12,7 @@ from tests._laser_trajectories import expected_laser_trajectories_0_2, expected_
 from config import DEFAULT_DEVICE
 
 
-render_envs = False
+render_envs = True
 size = 9
 render_sleep = 0.4
 # render_sleep = 1
@@ -403,7 +403,7 @@ class TestLaserTag(unittest.TestCase):
 
 
 class TestSmall3(unittest.TestCase):
-    def test_asymettric_map(self):
+    def test_firing_orientations_1_3(self):
         env = LaserTag(num_envs=1, num_agents=2, height=9, width=16, map_generator=MapFromString(maps.small3, DEFAULT_DEVICE),
                        device=DEFAULT_DEVICE, colour_mode='fixed')
 
@@ -414,8 +414,39 @@ class TestSmall3(unittest.TestCase):
         env.orientations[1] = 1
 
         all_actions = {
-            'agent_0': torch.tensor([7, 0, 7, 0, 7, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
-            'agent_1': torch.tensor([0, 7, 0, 7, 0, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_0': torch.tensor([7, 0, 7, 0, 7, 3, 3, 3, 3, 3, 3, 3, 3, 5, 3, 3, 3, 3, 6, 0]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([0, 7, 5, 7, 5, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+        }
+
+        render(env)
+
+        for i in range(all_actions['agent_0'].shape[0]):
+            print('-'*20, i, '-'*20)
+            actions = {
+                agent: agent_actions[i] for agent, agent_actions in all_actions.items()
+            }
+
+            observations, rewards, dones, info = env.step(actions)
+            # Laser trajectories were verified manually then saved to another file because they are very verbose
+            # self.assertTrue(torch.equal(env.lasers, expected_laser_trajectories_1_3[i]))
+
+            # print(env.lasers)
+
+            render(env)
+
+    def test_firing_orientations_0_2(self):
+        env = LaserTag(num_envs=1, num_agents=2, height=9, width=16, map_generator=MapFromString(maps.small3, DEFAULT_DEVICE),
+                       device=DEFAULT_DEVICE, colour_mode='fixed')
+
+        env.agents = torch.zeros_like(env.agents)
+        env.agents[0, 0, 1, 14] = 1
+        env.agents[1, 0, -2, -2] = 1
+        env.orientations[0] = 0
+        env.orientations[1] = 1
+
+        all_actions = {
+            'agent_0': torch.tensor([7, ]).unsqueeze(1).long().to(DEFAULT_DEVICE),
+            'agent_1': torch.tensor([3, ]).unsqueeze(1).long().to(DEFAULT_DEVICE),
         }
 
         render(env)

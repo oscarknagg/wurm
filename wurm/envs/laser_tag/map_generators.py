@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import List, NamedTuple
+from typing import List, NamedTuple, Union
 import torch
+
+from .maps import MAPS
 
 
 def parse_mapstring(mapstring: List[str]) -> (torch.Tensor, torch.Tensor):
@@ -61,9 +63,15 @@ class FixedMapGenerator(LaserTagMapGenerator):
 
 
 class MapFromString(FixedMapGenerator):
-    def __init__(self, mapstring: List[str], device: str):
+    def __init__(self, mapstring: Union[str, List[str]], device: str):
         super(MapFromString, self).__init__(device)
-        self._pathing, self._respawn = parse_mapstring(mapstring)
+        if isinstance(mapstring, list):
+            # A mapstring has been passed
+            self._pathing, self._respawn = parse_mapstring(mapstring)
+        else:
+            # The name of a pre-specified map has been passed
+            mapstring = MAPS[mapstring]
+            self._pathing, self._respawn = parse_mapstring(mapstring)
 
 
 class MapPool(LaserTagMapGenerator):
@@ -77,7 +85,6 @@ class MapPool(LaserTagMapGenerator):
 
     def generate(self, num_envs: int) -> LaserTagMap:
         map_selection = torch.randint(0, len(self.map_pool), size=(num_envs, ))
-        print(map_selection)
 
         pathing = torch.zeros((num_envs, 1, self.height, self.width), dtype=torch.uint8, device=self.device)
         respawn = torch.zeros((num_envs, 1, self.height, self.width), dtype=torch.uint8, device=self.device)
