@@ -9,7 +9,7 @@ import warnings
 from wurm._filters import ORIENTATION_FILTERS
 from wurm.utils import rotate_image_batch, drop_duplicates, pad_to_square, unpad_from_square
 from wurm.core import MultiagentVecEnv, check_multi_vec_env_actions, build_render_rgb, move_pixels
-from .maps import LaserTagMapGenerator
+from .map_generators import LaserTagMapGenerator
 from wurm.observations import ObservationFunction, RenderObservations
 from config import DEFAULT_DEVICE, EPS
 

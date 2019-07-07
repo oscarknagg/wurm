@@ -178,13 +178,14 @@ if args.env == 'snake':
                   respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_fn=observation_function,
                   reward_on_death=args.reward_on_death, agent_colours=args.colour_mode)
 elif args.env == 'laser':
-    from wurm.envs.laser_tag.maps import Small2, Small3, Small4
+    from wurm.envs.laser_tag.map_generators import MapFromString
+    from wurm.envs.laser_tag.maps import small2, small3, small4
     if args.laser_tag_map == 'small2':
-        map_generator = Small2(args.device)
+        map_generator = MapFromString(small2, args.device)
     elif args.laser_tag_map == 'small3':
-        map_generator = Small3(args.device)
+        map_generator = MapFromString(small3, args.device)
     elif args.laser_tag_map == 'small4':
-        map_generator = Small4(args.device)
+        map_generator = MapFromString(small4, args.device)
     else:
         raise ValueError('Unrecognised LaserTag map')
 
@@ -262,6 +263,7 @@ for i in range(num_models):
 
     # Load state dict if reload
     if reload:
+        print('Reloading agent {} from location {}'.format(i, args.agent[i]))
         models[i].load_state_dict(
             torch.load(args.agent[i])
         )
@@ -275,8 +277,6 @@ else:
         m.eval()
         for param in m.parameters():
             param.requires_grad = False
-
-print(models[0])
 
 if agent_type != 'random' and args.train:
     optimizers: List[optim.Adam] = []
@@ -425,7 +425,7 @@ for i_step in count(1):
         discrim_loss = 0
         for i, (agent, obs) in enumerate(observations.items()):
             species_idx = i * args.n_species // args.n_agents
-            species_label = torch.tensor([species_idx,]*args.n_envs,
+            species_label = torch.tensor([species_idx, ]*args.n_envs,
                                          device=args.device, dtype=torch.long, requires_grad=False)
             # Optimise discriminator
             species_predictions = discriminator(observations[agent])
@@ -442,10 +442,10 @@ for i_step in count(1):
 
     if args.agent == 'gru':
         with torch.no_grad():
-            # reset hidden states
+            # Reset hidden states on death or on environment reset
             for _agent, _done in done.items():
                 if _agent != '__all__':
-                    hidden_states[_agent][_done].mul_(0)
+                    hidden_states[_agent | done['__all__']][_done].mul_(0)
 
     if args.agent != 'random' and args.train:
         trajectories.append(
@@ -533,8 +533,8 @@ for i_step in count(1):
     })
     for i in range(args.n_agents):
         logs.update({
-            f'reward_{i}': reward[f'agent_{i}'][~done[f'agent_{i}']].mean().item(),
-            f'policy_entropy_{i}': entropies[f'agent_{i}'][~done[f'agent_{i}']].mean().item(),
+            f'reward_{i}': reward[f'agent_{i}'].mean().item(),
+            f'policy_entropy_{i}': entropies[f'agent_{i}'].mean().item(),
             f'done_{i}': done[f'agent_{i}'].float().mean().item(),
         })
 
