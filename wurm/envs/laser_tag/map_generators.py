@@ -1,8 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, NamedTuple
 import torch
-
-from wurm.envs.laser_tag import maps
 
 
 def parse_mapstring(mapstring: List[str]) -> (torch.Tensor, torch.Tensor):
@@ -29,14 +27,15 @@ def parse_mapstring(mapstring: List[str]) -> (torch.Tensor, torch.Tensor):
     return pathing, respawn
 
 
-class LaserTagMapGenerator(ABC):
-    """Base class for pathing generators."""
-    @abstractmethod
-    def pathing(self, num_envs: int) -> torch.Tensor:
-        raise NotImplementedError
+class LaserTagMap(NamedTuple):
+    pathing: torch.Tensor
+    respawn: torch.Tensor
 
+
+class LaserTagMapGenerator(ABC):
+    """Base class for map generators."""
     @abstractmethod
-    def respawns(self, num_envs: int) -> torch.Tensor:
+    def generate(self, num_envs: int) -> LaserTagMap:
         raise NotImplementedError
 
 
@@ -47,11 +46,18 @@ class FixedMapGenerator(LaserTagMapGenerator):
     def __init__(self, device: str):
         self.device = device
 
-    def pathing(self, num_envs: int) -> torch.Tensor:
-        return self._pathing.to(self.device).repeat((num_envs, 1, 1, 1))
+    def generate(self, num_envs: int) -> LaserTagMap:
+        pathing = self._pathing.to(self.device).repeat((num_envs, 1, 1, 1))
+        respawn = self._respawn.to(self.device).repeat((num_envs, 1, 1, 1))
+        return LaserTagMap(pathing, respawn)
 
-    def respawns(self, num_envs: int) -> torch.Tensor:
-        return self._respawn.to(self.device).repeat((num_envs, 1, 1, 1))
+    @property
+    def height(self):
+        return self._pathing.size(2)
+
+    @property
+    def width(self):
+        return self._pathing.size(3)
 
 
 class MapFromString(FixedMapGenerator):
@@ -63,96 +69,27 @@ class MapFromString(FixedMapGenerator):
 class MapPool(LaserTagMapGenerator):
     """Uniformly selects maps at random from a pool of fixed maps."""
     def __init__(self, map_pool: List[FixedMapGenerator]):
+        assert len(map_pool) > 0
         self.map_pool = map_pool
+        self.device = self.map_pool[0].device
+        self.height = self.map_pool[0].height
+        self.width = self.map_pool[0].width
 
+    def generate(self, num_envs: int) -> LaserTagMap:
+        map_selection = torch.randint(0, len(self.map_pool), size=(num_envs, ))
+        print(map_selection)
 
-# class Small2(FixedMapGenerator):
-#     """Generates the Small2 map from https://arxiv.org/pdf/1711.00832.pdf"""
-#     def __init__(self, device: str):
-#         return MapFromString(device=device, mapstring=_maps.small2)
+        pathing = torch.zeros((num_envs, 1, self.height, self.width), dtype=torch.uint8, device=self.device)
+        respawn = torch.zeros((num_envs, 1, self.height, self.width), dtype=torch.uint8, device=self.device)
 
+        for i in range(len(self.map_pool)):
+            map_i = map_selection == i
+            num_map_i = map_i.sum().item()
+            new_maps = self.map_pool[i].generate(num_map_i)
+            pathing[map_i] = new_maps.pathing
+            respawn[map_i] = new_maps.respawn
 
-# def Small2(device: str):
-#     return MapFromString(device=device, mapstring=_maps.small2)
-
-    # _pathing = torch.tensor(
-    #      [[[[1, 1, 1, 1, 1, 1, 1, 1, 1],
-    #         [1, 0, 0, 0, 0, 0, 0, 0, 1],
-    #         [1, 0, 0, 0, 0, 0, 0, 0, 1],
-    #         [1, 0, 0, 1, 0, 1, 0, 0, 1],
-    #         [1, 0, 1, 1, 0, 1, 1, 0, 1],
-    #         [1, 0, 0, 1, 0, 1, 0, 0, 1],
-    #         [1, 0, 0, 0, 0, 0, 0, 0, 1],
-    #         [1, 0, 0, 0, 0, 0, 0, 0, 1],
-    #         [1, 1, 1, 1, 1, 1, 1, 1, 1]]]], dtype=torch.uint8)
-    # _respawn = torch.tensor(
-    #    [[[[0, 0, 0, 0, 0, 0, 0, 0, 0],
-    #       [0, 1, 0, 0, 0, 0, 0, 1, 0],
-    #       [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    #       [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    #       [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    #       [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    #       [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    #       [0, 1, 0, 0, 0, 0, 0, 1, 0],
-    #       [0, 0, 0, 0, 0, 0, 0, 0, 0]]]], dtype=torch.uint8)
-#
-#
-# class Small3(FixedMapGenerator):
-#     """Generates the Small3 map from https://arxiv.org/pdf/1711.00832.pdf"""
-#     _pathing = torch.tensor(
-#        [[[[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-#           [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1],
-#           [1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1],
-#           [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1],
-#           [1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
-#           [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]]], dtype=torch.uint8)
-#     _respawn = torch.tensor(
-#        [[[[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]]], dtype=torch.uint8)
-#
-#
-# class Small4(FixedMapGenerator):
-#     """Generates the Small4 map from https://arxiv.org/pdf/1711.00832.pdf"""
-#     _pathing = torch.tensor(
-#        [[[[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-#           [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
-#           [1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1],
-#           [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-#           [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-#           [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]]], dtype=torch.uint8)
-#     _respawn = torch.tensor(
-#        [[[[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-#           [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]]], dtype=torch.uint8)
+        return LaserTagMap(pathing, respawn)
 
 
 class Random(LaserTagMapGenerator):

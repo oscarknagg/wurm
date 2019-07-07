@@ -97,17 +97,17 @@ class LaserTag(MultiagentVecEnv):
         self.env_lifetimes = torch.zeros((num_envs), dtype=torch.long, device=self.device, requires_grad=False)
         self.lasers = torch.zeros((num_envs * num_agents, 1, height, width), dtype=self.dtype, device=self.device,
                                   requires_grad=False)
-        self.respawns = self.map_generator.respawns(num_envs)
 
         self.has_fired = torch.zeros(self.num_envs * self.num_agents, dtype=torch.uint8, device=self.device)
         if not manual_setup:
-            self.agents, self.orientations, self.dones, self.hp, self.pathing = self._create_envs(num_envs)
+            self.agents, self.orientations, self.dones, self.hp, self.pathing, self.respawns = self._create_envs(num_envs)
         else:
             self.agents = torch.zeros((num_envs*num_agents, 1, height, width), device=device, requires_grad=False)
             self.orientations = torch.zeros((num_envs * num_agents), dtype=torch.long, device=self.device, requires_grad=False)
             self.dones = torch.zeros((num_envs*num_agents), dtype=torch.uint8, device=device, requires_grad=False)
             self.hp = torch.ones((num_envs * num_agents), dtype=torch.long, device=device, requires_grad=False) * self.initial_hp
             self.pathing = torch.zeros((num_envs, 1, height, width), device=device, requires_grad=False, dtype=torch.uint8)
+            self.respawns = torch.zeros((num_envs, 1, height, width), device=device, requires_grad=False, dtype=torch.uint8)
 
         # Environment outputs
         self.rewards = torch.zeros(self.num_envs * self.num_agents, dtype=torch.float, device=self.device)
@@ -338,13 +338,15 @@ class LaserTag(MultiagentVecEnv):
         if torch.any(done):
             num_done = done.sum().item()
             agent_dones = done.repeat_interleave(self.num_agents)
-            new_agents, new_orientations, new_dones, new_hp, new_pathing = self._create_envs(num_done)
+            new_agents, new_orientations, new_dones, new_hp, new_pathing, new_respawns = self._create_envs(num_done)
             self.agents[agent_dones] = new_agents
             self.orientations[agent_dones] = new_orientations
             self.dones[agent_dones] = new_dones
             self.hp[agent_dones] = new_hp
-            # If we are using a fixed MapGenerator this line won't do anything
+            # If we are using a fixed MapGenerator these lines won't do anything
             self.pathing[done] = new_pathing
+            self.respawns[done] = new_respawns
+
             self.env_lifetimes[done] = 0
 
         # Single agent resets
@@ -450,13 +452,14 @@ class LaserTag(MultiagentVecEnv):
         if torch.any(self.errors):
             num_done = self.errors.sum().item()
             agent_dones = self.errors.repeat_interleave(self.num_agents)
-            new_agents, new_orientations, new_dones, new_hp, new_pathing = self._create_envs(num_done)
+            new_agents, new_orientations, new_dones, new_hp, new_pathing, new_respawns = self._create_envs(num_done)
             self.agents[agent_dones] = new_agents
             self.orientations[agent_dones] = new_orientations
             self.dones[agent_dones] = new_dones
             self.hp[agent_dones] = new_hp
             # If we are using a fixed MapGenerator this line won't do anything
             self.pathing[self.errors] = new_pathing
+            self.respawns[self.errors] = new_respawns
 
     def _respawn(self, pathing: torch.Tensor, respawns: torch.Tensor, exception_on_failure: bool):
         """Respawns an agent by picking randomly from allowed locations.
@@ -494,7 +497,10 @@ class LaserTag(MultiagentVecEnv):
         """
         dones = torch.ones(num_envs*self.num_agents, dtype=torch.uint8, device=self.device)
 
-        pathing = self.map_generator.pathing(num_envs)
+        map = self.map_generator.generate(num_envs)
+        respawns = map.respawn
+        pathing = map.pathing
+
         agents = torch.zeros((num_envs * self.num_agents, 1, self.height, self.width), dtype=self.dtype,
                              device=self.device, requires_grad=False)
         orientations = torch.zeros((num_envs * self.num_agents), dtype=torch.long, device=self.device,
@@ -514,7 +520,7 @@ class LaserTag(MultiagentVecEnv):
                 .repeat_interleave(self.num_agents, 0)
             _pathing = _pathing[first_done_per_env]
 
-            available_respawn_locations = self.respawns.repeat_interleave(self.num_agents, 0)
+            available_respawn_locations = respawns.repeat_interleave(self.num_agents, 0)
             available_respawn_locations = available_respawn_locations[first_done_per_env]
 
             new_agents, new_orientations, sucessfully_respawned = self._respawn(_pathing, available_respawn_locations,
@@ -525,7 +531,7 @@ class LaserTag(MultiagentVecEnv):
             hp[first_done_per_env] = self.initial_hp
             dones[first_done_per_env] = sucessfully_respawned
 
-        return agents, orientations, dones, hp, pathing
+        return agents, orientations, dones, hp, pathing, respawns
 
     def _get_env_images(self) -> torch.Tensor:
         t0 = time()
