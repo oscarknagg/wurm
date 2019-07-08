@@ -118,6 +118,13 @@ class LaserTag(MultiagentVecEnv):
             print(msg)
 
     def _other_agents(self) -> torch.Tensor:
+        """Calculate positions of other agents with respect to each agent.
+
+        Returns:
+            other_agents: A boolean Tensor of shape (num_envs*num_agents, 1, height, width) where each sub-Tensor
+                along index 0 is a map of other agents in an environment from the point of view of that particular
+                agent.
+        """
         t0 = time()
         other_agents = self.agents.view(self.num_envs, self.num_agents, self.height, self.width) \
             .sum(dim=1, keepdim=True).repeat_interleave(self.num_agents, 0) \
@@ -214,8 +221,8 @@ class LaserTag(MultiagentVecEnv):
             # square images
             agents = pad_to_square(agents)
             pathing = pad_to_square(pathing, padding_value=1)
-            lasers = pad_to_square(lasers, padding_value=1)
-            lasers[~self.has_fired] = 0
+            # lasers = pad_to_square(lasers, padding_value=1)
+            # lasers[~self.has_fired] = 0
 
             for orientation, rotation, _ in orientation_preprocessing:
                 _orientation = self.orientations == orientation
@@ -225,44 +232,67 @@ class LaserTag(MultiagentVecEnv):
 
             self._log(f'Rotation pre-processing: {1000 * (time() - t0)}ms')
 
-            lasers[self.has_fired] = self._laser_trajectories(
-                agents=agents[self.has_fired],
-                pathing=pathing[self.has_fired]
-            )
+            resolution_order = torch.randperm(self.num_agents, device=self.device).repeat(self.num_envs)
+            for i_resolve in range(self.num_agents):
+                resolve_these = resolution_order == i_resolve
+                currently_firing = self.has_fired & resolve_these
+                currently_being_hit = ~resolve_these
 
-            for orientation, _, reverse_rotation in orientation_preprocessing:
-                _orientation = self.orientations == orientation
-                if torch.any(_orientation):
-                    lasers[_orientation] = rotate_image_batch(lasers[_orientation], degree=reverse_rotation)
+                if not torch.any(currently_firing):
+                    continue
 
-            lasers = unpad_from_square(lasers, original_h=self.height, original_w=self.width)
+                # pathing = pad_to_square(pathing, padding_value=1)
+                lasers = pad_to_square(lasers, padding_value=1)
+                lasers[~self.has_fired] = 0
+                lasers[currently_firing] = self._laser_trajectories(
+                    agents=agents[currently_firing],
+                    pathing=pathing[currently_firing]
+                )
 
-            # For rendering
-            agent_blocking = self.agents \
-                .view(self.num_envs, self.num_agents, self.height, self.width) \
-                .sum(dim=1, keepdim=True) \
-                .repeat_interleave(self.num_agents, 0).gt(EPS)
-            self.lasers += (lasers & ~agent_blocking).float()
+                for orientation, _, reverse_rotation in orientation_preprocessing:
+                    _orientation = self.orientations == orientation
+                    if torch.any(_orientation):
+                        lasers[_orientation] = rotate_image_batch(lasers[_orientation], degree=reverse_rotation)
 
-            # Check for hits (https://www.youtube.com/watch?v=RaMIIpc46gM) and update HP
-            lasers_ = lasers \
-                .view(self.num_envs, self.num_agents, self.height, self.width) \
-                .repeat_interleave(self.num_agents, 0) \
-                .float()
-            pathing = torch.einsum('nahw,na->nhw', [lasers_, other.float()]).unsqueeze(1)
-            hit = (self.agents * pathing).gt(EPS).view(self.num_envs*self.num_agents, -1).any(dim=-1)
-            self.hp -= hit.long()
-            self.hp.relu_()
-            self.dones |= self.hp.eq(EPS)
+                lasers = unpad_from_square(lasers, original_h=self.height, original_w=self.width)
 
-            # Give rewards
-            other_agents_hit = other_agents.gt(EPS) & lasers.gt(EPS)
-            reward = other_agents_hit.view(self.num_envs*self.num_agents, -1).sum(dim=-1).float()
-            self.rewards += reward
+                # For rendering
+                agent_blocking = self.agents \
+                    .view(self.num_envs, self.num_agents, self.height, self.width) \
+                    .sum(dim=1, keepdim=True) \
+                    .repeat_interleave(self.num_agents, 0).gt(EPS)
+                self.lasers[currently_firing] += (lasers & ~agent_blocking).float()[currently_firing]
 
-            # Kill
-            self.dones |= self.hp.lt(EPS)
-            self.agents[self.dones] = 0
+                # Check for hits (https://www.youtube.com/watch?v=RaMIIpc46gM) and update HP
+                lasers_ = lasers \
+                    .view(self.num_envs, self.num_agents, self.height, self.width) \
+                    .repeat_interleave(self.num_agents, 0) \
+                    .float()
+                other_lasers = torch.einsum('nahw,na->nhw', [lasers_, other.float()]).unsqueeze(1)
+                hit = (self.agents * other_lasers).gt(EPS).view(self.num_envs*self.num_agents, -1).any(dim=-1)
+                self.hp[currently_being_hit] -= hit[currently_being_hit].long()
+                self.hp.relu_()
+
+                # Kill
+                done_before_firing = self.dones.clone()
+                self.dones |= self.hp.float().lt(EPS)
+                dones_in_this_firing_step = self.dones & ~done_before_firing
+                self.agents[self.dones] = 0
+                # Agents that are killed before resolving there shots don't shoot
+                self.has_fired[self.dones] = 0
+
+                # Give rewards when an agent kills another agent i.e. when an agents laser overlaps another
+                # agent and it has done = True
+                other_agents_hit = other_agents.gt(EPS) & lasers.gt(EPS)
+                reward = other_agents_hit.view(self.num_envs*self.num_agents, -1).sum(dim=-1).float()
+                # We should only give a reward
+                # for killing  another agent however only one agent can be killed in each firing step (i.e. this
+                # for-loop). Hence instead of calculating which agent hits which particular other agents I just
+                # calculate whether any agent was killed in each env and then perform an AND (multiplication for floats)
+                # for with the hits
+                agent_killed_in_env = dones_in_this_firing_step.view(self.num_envs, self.num_agents).any(dim=1).repeat_interleave(self.num_agents, 0)
+                reward *= agent_killed_in_env.float()
+                self.rewards[currently_firing] += reward[currently_firing]
 
         self.env_lifetimes += 1
         observations = self._observe()
@@ -383,7 +413,7 @@ class LaserTag(MultiagentVecEnv):
             .sum(dim=1, keepdim=True) \
             .view(self.num_envs, -1) \
             .max(dim=-1)[0] \
-            .gt(1)
+            .gt(1.5)
         self.errors |= overlapping_agents
         if torch.any(overlapping_agents):
             msg = 'Agent-agent overlap in {} envs.'.format(overlapping_agents.sum().item())
@@ -394,6 +424,7 @@ class LaserTag(MultiagentVecEnv):
 
         # Pathing overlap
         agent_pathing_overlap = self.pathing.repeat_interleave(self.num_agents, 0) & self.agents.gt(EPS)
+        # self.errors |= agent_pathing_overlap.view(self.num_envs, self.num_agents).any(dim=1)
         if torch.any(agent_pathing_overlap):
             bad_envs = agent_pathing_overlap.view(self.num_envs * self.num_agents, -1).any(dim=1)
             msg = 'Agent-wall overlap in {} envs.'.format(bad_envs.sum().item())
@@ -404,11 +435,31 @@ class LaserTag(MultiagentVecEnv):
 
         # Can only get reward when firing
         not_fired_and_reward = (~self.has_fired) & self.rewards.gt(EPS)
+        # self.errors |= not_fired_and_reward
         if torch.any(not_fired_and_reward):
-            raise RuntimeError('Agent has got reward without firing.')
+            print(not_fired_and_reward)
+            print(not_fired_and_reward.argmax())
+            print()
+            # bad_envs = not_fired_and_reward.view(self.num_envs * self.num_agents, -1).any(dim=1)
+            # print(torch.nonzero(bad_envs))
+            # i = torch.nonzero(bad_envs)[0]
+            i = not_fired_and_reward.argmax().item() // 2
+            print(self.agents.view(self.num_envs, self.num_agents, self.height, self.width)[i])
+            print('-'*20)
+            print(self.lasers.view(self.num_envs, self.num_agents, self.height, self.width)[i])
+            print('-'*20)
+            print('reward ', self.rewards.view(self.num_envs, self.num_agents)[i])
+            print('has_fired', self.has_fired.view(self.num_envs, self.num_agents)[i])
+
+            msg = 'Agent has got reward without firing in {} envs.'.format(not_fired_and_reward.sum().item())
+            if self.strict:
+                raise RuntimeError(msg)
+            else:
+                warnings.warn(msg)
 
         # Max reward per step is 1
-        impossible_rewards = self.rewards.gt(1)
+        impossible_rewards = self.rewards.gt(1 + EPS)
+        # self.errors |= impossible_rewards
         if torch.any(impossible_rewards):
             msg = 'Agent has received impossibly high reward in {} envs'.format(impossible_rewards.sum().item())
             if self.strict:
@@ -420,6 +471,7 @@ class LaserTag(MultiagentVecEnv):
         alive = ~self.dones
         agent_exists = self.agents.view(self.num_envs*self.num_agents, -1).sum(dim=1).gt(EPS)
         alive_and_doesnt_exist = alive & (~agent_exists)
+        # self.errors |= alive_and_doesnt_exist
         if torch.any(alive_and_doesnt_exist):
             msg = 'Agent is alive but doesn\'t exist in {} envs.'.format(alive_and_doesnt_exist.sum().item())
             if self.strict:

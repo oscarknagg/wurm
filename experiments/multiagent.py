@@ -129,6 +129,8 @@ entropy_coeff = args.entropy
 argsdict = {k: v for k, v in args.__dict__.items() if k in included_args}
 if 'agent' in argsdict.keys():
     argsdict['agent'] = argsdict['agent'][0]
+if 'laser_tag_map' in argsdict.keys():
+    argsdict['laser_tag_map'] = argsdict['laser_tag_map'][0]
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 print(argstring)
 
