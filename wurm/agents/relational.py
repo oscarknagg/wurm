@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from wurm.modules import RelationalModule2D, CoordConv2D, AddCoords, ConvBlock, feedforward_block
+from wurm.agents.modules import RelationalModule2D, ConvBlock, feedforward_block
 
 
 class RelationalAgent(nn.Module):

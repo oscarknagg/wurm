@@ -10,15 +10,15 @@ from gym.wrappers.monitoring.video_recorder import VideoRecorder
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
 
 from wurm.envs import SingleSnake, SimpleGridworld
 from wurm import agents
-from wurm.utils import env_consistency, CSVLogger, ExponentialMovingAverageTracker
+from wurm.utils import env_consistency, ExponentialMovingAverageTracker
+from wurm.callbacks.loggers import CSVLogger
 from wurm.rl import A2C, TrajectoryStore
-from config import BODY_CHANNEL, HEAD_CHANNEL, FOOD_CHANNEL, PATH
+from config import BODY_CHANNEL, PATH
 
 
 RENDER = False

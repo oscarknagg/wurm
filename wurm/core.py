@@ -1,13 +1,16 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Any, Dict
-
+from typing import Optional, Any, Dict, List
 import numpy as np
 import torch
+from torch import nn
 from PIL import Image
 from gym.envs.classic_control import rendering
-from torch.nn import functional as F
+from itertools import count
 
-from wurm._filters import ORIENTATION_DELTAS
+from wurm.callbacks.core import CallbackList
+from wurm.rl.core import RLTrainer
+from wurm.interaction import InteractionHandler
+# from wurm.callbacks.warm_start import WarmStart
 
 
 class VecEnv(ABC):
@@ -27,6 +30,10 @@ class VecEnv(ABC):
 
     @abstractmethod
     def render(self, mode: str = 'human', env: Optional[int] = None) -> Any:
+        raise NotImplementedError
+
+    @abstractmethod
+    def check_consistency(self):
         raise NotImplementedError
 
 
@@ -106,6 +113,84 @@ def check_multi_vec_env_actions(actions: Dict[str, torch.Tensor], num_envs: int,
             raise RuntimeError('Must have the same number of actions as environments.')
 
 
+# class EnvironmentRun(object):
+#     def __init__(self,
+#                  home_folder: str,
+#                  env: MultiagentVecEnv,
+#                  models: List[nn.Module],
+#                  interaction_handler: InteractionHandler,
+#                  callbacks: CallbackList,
+#                  rl_trainer: RLTrainer,
+#                  train: bool,
+#                  warm_start: int = 0,
+#                  total_steps: Optional[int] = None,
+#                  total_episodes: Optional[int] = None):
+#         self.home_folder = home_folder
+#         self.env = env
+#         self.models = models
+#         self.interaction_handler = interaction_handler
+#         self.callbacks = callbacks
+#         self.rl_trainer = rl_trainer
+#         self.train = train
+#         self.total_steps = total_steps
+#         self.warm_start = warm_start
+#         self.total_episodes = total_episodes
+#
+#     def run(self):
+#         if self.warm_start:
+#             observations, hidden_states, cell_states = WarmStart(self.env, self.models, self.warm_start,
+#                                                                  self.interaction_handler).warm_start()
+#         else:
+#             observations = self.env.reset()
+#             hidden_states = {f'agent_{i}': torch.zeros((self.env.num_envs, 64), device=self.env.device) for i in
+#                              range(self.env.num_agents)}
+#             cell_states = {f'agent_{i}': torch.zeros((self.env.num_envs, 64), device=self.env.device) for i in
+#                            range(self.env.num_agents)}
+#
+#         # Interact with environment
+#         num_episodes = 0
+#         num_steps = 0
+#         for i_step in count(1):
+#             logs = {}
+#
+#             interaction = self.interaction_handler.interact(observations, hidden_states, cell_states)
+#             self.callbacks.before_step(logs, interaction.actions, interaction.action_distributions)
+#
+#             observations, reward, done, info = self.env.step(interaction.actions)
+#             self.env.reset(done['__all__'], return_observations=False)
+#             self.env.check_consistency()
+#             num_episodes += done['__all__'].sum().item()
+#             num_steps += self.env.num_envs
+#
+#             with torch.no_grad():
+#                 # Reset hidden states on death or on environment reset
+#                 for _agent, _done in done.items():
+#                     if _agent != '__all__':
+#                         hidden_states[_agent | done['__all__']][_done].mul_(0)
+#                         cell_states[_agent | done['__all__']][_done].mul_(0)
+#
+#             if not self.train:
+#                 hidden_states = {k: v.detach() for k, v in hidden_states.items()}
+#                 cell_states = {k: v.detach() for k, v in cell_states.items()}
+#
+#             ##########################
+#             # Reinforcement learning #
+#             ##########################
+#             if self.train:
+#                 self.rl_trainer.train(
+#                     interaction, hidden_states, cell_states, logs, observations, reward, done, info
+#                 )
+#
+#             self.callbacks.after_step(logs, observations, reward, done, info)
+#
+#             if num_steps > self.total_steps or num_episodes >= self.total_episodes:
+#                 break
+#
+#         self.callbacks.on_train_end()
+#
+#         return models, logs
+
+
 def build_render_rgb(
         img: torch.Tensor,
         num_envs: int,
@@ -158,21 +243,3 @@ def build_render_rgb(
     return img
 
 
-def move_pixels(pixels: torch.Tensor, directions: torch.Tensor) -> torch.Tensor:
-    """Takes in pixels and directions, returns updated heads
-
-    Args:
-        pixels:
-        directions:
-    """
-    # Create head position deltas
-    filters = ORIENTATION_DELTAS.to(dtype=pixels.dtype, device=pixels.device)
-    head_deltas = F.conv2d(
-        pixels,
-        filters,
-        padding=1
-    )
-    directions_onehot = F.one_hot(directions, 4).to(pixels.dtype)
-    head_deltas = torch.einsum('bchw,bc->bhw', [head_deltas, directions_onehot]).unsqueeze(1)
-    pixels += head_deltas
-    return pixels

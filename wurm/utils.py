@@ -1,13 +1,10 @@
 import torch
 import torch.nn.functional as F
-from collections import Iterable, OrderedDict
-from typing import List, Tuple
-from pprint import pformat
-import numpy as np
-import csv
+from typing import List, Tuple, Dict
 import gc
-import os
-import io
+import git
+from pprint import pformat
+import json
 
 from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL
 from wurm._filters import ORIENTATION_DELTAS
@@ -214,94 +211,6 @@ def drop_duplicates(tensor: torch.Tensor, column: int, random: bool = True):
     return unique
 
 
-class CSVLogger(object):
-    """Stream results to a csv file.
-
-    Supports all values that can be represented as a string,
-    including 1D iterables such as np.ndarray.
-
-    Args:
-        filename: filename of the csv file, e.g. 'run/log.csv'.
-        separator: string used to separate elements in the csv file.
-        append: True: append if file exists (useful for continuing training). False: overwrite existing file.
-        header_comment: A possibly multi line string to put at the top of the CSV file
-        """
-
-    def __init__(self, filename: str, separator: str = ',', append: bool = False, header_comment: str = None):
-        self.sep = separator
-        self.filename = filename
-        self.append = append
-        self.header_comment = header_comment
-        self.writer = None
-        self.keys = None
-        self.append_header = True
-        self.file_flags = ''
-        self._open_args = {'newline': '\n'}
-
-        # Make directory
-        os.makedirs(os.path.split(filename)[0], exist_ok=True)
-
-        if self.append:
-            if os.path.exists(self.filename):
-                with open(self.filename, 'r' + self.file_flags) as f:
-                    self.append_header = not bool(len(f.readline()))
-            mode = 'a'
-        else:
-            mode = 'w'
-
-        self.csv_file = io.open(self.filename,
-                                mode + self.file_flags,
-                                **self._open_args)
-
-    def write(self, logs: dict):
-        def handle_value(k):
-            is_zero_dim_tensor = isinstance(k, torch.Tensor) and k.ndimension() == 0
-            is_zero_dim_ndarray = isinstance(k, np.ndarray) and k.ndim == 0
-            if isinstance(k, str):
-                return k
-            elif isinstance(k, Iterable) and not is_zero_dim_ndarray and not is_zero_dim_tensor:
-                return '"[%s]"' % (', '.join(map(str, k)))
-            elif is_zero_dim_tensor:
-                return k.item()
-            else:
-                return k
-
-        def comment_out(s, comment='#'):
-            return comment + s.replace('\n', f'\n{comment}')
-
-        if self.keys is None:
-            self.keys = sorted(logs.keys())
-
-        if not self.writer:
-            # Write the initial comment
-            if self.append_header:
-                print(comment_out(self.header_comment), file=self.csv_file)
-
-            # Write the column names
-            class CustomDialect(csv.excel):
-                delimiter = self.sep
-
-            fieldnames = self.keys
-            self.writer = csv.DictWriter(self.csv_file,
-                                         fieldnames=fieldnames,
-                                         dialect=CustomDialect)
-            if self.append_header:
-                self.writer.writeheader()
-
-        row_dict = OrderedDict()
-        row_dict.update((key, handle_value(logs[key])) for key in self.keys)
-        self.writer.writerow(row_dict)
-        self.csv_file.flush()
-
-
-class PrintLogger(object):
-    def __init__(self):
-        pass
-
-    def write(self, logs: dict):
-        print(logs)
-
-
 class ExponentialMovingAverageTracker(object):
     def __init__(self, alpha: float):
         assert 0 <= alpha <= 1
@@ -381,3 +290,28 @@ def rotate_image_batch(img: torch.Tensor, degree: int = 0) -> torch.Tensor:
         rot = img.transpose(3, 2).flip(2)
 
     return rot
+
+
+def get_comment(args) -> str:
+    """Gets a verbose comment to add at the top of a CSV log file.
+
+    Args:
+        args: Input command line arguments.
+    """
+    repo = git.Repo(search_parent_directories=True)
+    sha = repo.head.object.hexsha
+    comment = f'Git commit: {sha}\n'
+    comment += f'Args: {json.dumps(args.__dict__)}\n'
+    comment += 'Prettier args:\n'
+    comment += pformat(args.__dict__)
+    return comment
+
+
+def stack_dict_of_tensors(d: Dict[str, torch.Tensor], take_every: int = 1) -> torch.Tensor:
+    stacked = []
+    for i, (k, v) in enumerate(d.items()):
+        if i % take_every == 0:
+            stacked.append(v)
+
+    stacked = torch.stack(stacked).view(-1, 1)
+    return stacked

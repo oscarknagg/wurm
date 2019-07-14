@@ -537,7 +537,7 @@ class TestSmall3(unittest.TestCase):
         torch.random.manual_seed(0)
         obs_fn = observations.FirstPersonCrop(
             first_person_rotation=True,
-            in_front=11,
+            in_front=13,
             behind=2,
             side=6,
             padding_value=127
@@ -546,12 +546,13 @@ class TestSmall3(unittest.TestCase):
         # env = LaserTag(num_envs=1, num_agents=2, height=9, width=9, map_generator=MapFromString(maps.small2, DEFAULT_DEVICE),
         #                device=DEFAULT_DEVICE, colour_mode='fixed', strict=True)
 
-        env = LaserTag(num_envs=1, num_agents=2, height=9, width=16, map_generator=MapFromString(maps.small3, DEFAULT_DEVICE),
-                       device=DEFAULT_DEVICE, colour_mode='fixed', strict=True)
-
-        # env = LaserTag(num_envs=1, num_agents=2, height=14, width=22, map_generator=MapFromString(maps.small2, DEFAULT_DEVICE),
+        # env = LaserTag(num_envs=1, num_agents=2, height=9, width=16, map_generator=MapFromString(maps.small3, DEFAULT_DEVICE),
         #                device=DEFAULT_DEVICE, colour_mode='fixed', strict=True)
 
+        env = LaserTag(num_envs=1, num_agents=2, height=14, width=22, map_generator=MapFromString(maps.small4, DEFAULT_DEVICE),
+                       device=DEFAULT_DEVICE, colour_mode='fixed', strict=True)
+
+        render_envs = True
         agent_obs = obs_fn.observe(env)
         for agent, obs in agent_obs.items():
             if render_envs:

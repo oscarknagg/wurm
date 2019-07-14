@@ -2,7 +2,7 @@ from torch import nn
 import torch.nn.functional as F
 import torch
 
-from wurm.modules import feedforward_block
+from wurm.agents.modules import feedforward_block
 
 
 class FeedforwardAgent(nn.Module):

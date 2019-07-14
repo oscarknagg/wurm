@@ -6,7 +6,7 @@ from typing import Callable
 EPS = 1e-8
 
 
-class A2C(object):
+class A2CLoss(object):
     """Class that encapsulates the advantage actor-critic algorithm.
 
     Args:
