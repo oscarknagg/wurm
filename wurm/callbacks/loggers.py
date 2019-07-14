@@ -159,12 +159,12 @@ class PrintLogger(Callback):
 
 class LogEnricher(Callback):
     """Processes the logs immediately after a step/"""
-    def __init__(self, env: MultiagentVecEnv):
+    def __init__(self, env: MultiagentVecEnv, initial_steps: int = 0, initial_episodes: int = 0):
         super(LogEnricher, self).__init__()
         self.env = env
 
-        self.num_episodes = 0
-        self.num_steps = 0
+        self.num_episodes = initial_episodes
+        self.num_steps = initial_steps
 
     def on_train_begin(self):
         self.t_train_begin = time()

@@ -1,47 +1,45 @@
 """Entry point for training, transferring and visualising agents."""
-import numpy as np
 from typing import List
-from itertools import count
+import pandas as pd
 import argparse
-from time import time, sleep
-from pprint import pformat
 import os
-import git
-import json
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions import Categorical
 
 from wurm.envs import Slither, LaserTag
 from wurm import agents
+from wurm.envs.laser_tag.map_generators import MapFromString, MapPool
 from wurm.callbacks.core import CallbackList
-from wurm.callbacks.warm_start import WarmStart
 from wurm.callbacks.render import Render
 from wurm.callbacks.model_checkpoint import ModelCheckpoint
 from wurm.interaction import MultiSpeciesHandler
-from wurm.rl import A2CLoss, TrajectoryStore, A2CTrainer
+from wurm.rl import A2CLoss, A2CTrainer
 from wurm.observations import FirstPersonCrop
+from wurm import core
 from wurm import arguments
 from wurm import utils
 from wurm.callbacks import loggers
 from config import PATH, EPS
 
 
+# This probably won't change so I've just made it a hardcoded value
+INPUT_CHANNELS = 3
+
+
 parser = argparse.ArgumentParser()
 parser = arguments.add_common_arguments(parser)
 parser = arguments.add_training_arguments(parser)
+parser = arguments.add_model_arguments(parser)
 parser = arguments.add_observation_arguments(parser)
 parser = arguments.add_snake_env_arguments(parser)
 parser = arguments.add_laser_tag_env_arguments(parser)
 parser = arguments.add_render_arguments(parser)
 parser = arguments.add_output_arguments(parser)
 args = parser.parse_args()
-callbacks = []
 
-included_args = ['env', 'n_envs', 'n_agents', 'n_species', 'size', 'lr', 'gamma', 'update_steps', 'entropy', 'agent', 'obs',
-                 'r']
+included_args = ['env', 'n_envs', 'n_agents', 'repeat']
 
 if args.laser_tag_map is not None:
     included_args += ['laser_tag_map', ]
@@ -70,7 +68,20 @@ if args.save_location is None:
 else:
     save_file = args.save_location
 
-in_channels = 3
+##########################
+# Resume from checkpoint #
+##########################
+if os.path.exists(f'{PATH}/experiments/{args.save_folder}'):
+    resume_from_checkpoint = True
+    old_log_file = pd.read_csv(f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv', comment='#')
+    num_completed_steps = old_log_file.iloc[-1].steps
+    num_completed_episodes = old_log_file.iloc[-1].episodes
+    print('Pre-existing experiment folder detected - resuming from checkpoint')
+    print(f'{num_completed_steps:.2e} out of {args.total_steps:.2e} environment steps completed.')
+else:
+    resume_from_checkpoint = False
+    num_completed_steps = 0
+    num_completed_episodes = 0
 
 ##########################
 # Configure observations #
@@ -99,8 +110,6 @@ if args.env == 'snake':
                   respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_fn=observation_function,
                   reward_on_death=args.reward_on_death, agent_colours=args.colour_mode)
 elif args.env == 'laser':
-    from wurm.envs.laser_tag.map_generators import MapFromString, MapPool
-
     if len(args.laser_tag_map) == 1:
         map_generator = MapFromString(args.laser_tag_map[0], args.device)
     else:
@@ -123,65 +132,72 @@ num_actions = env.num_actions
 ###################
 # Create agent(s) #
 ###################
-# If we share the network backbone between species then only create one network with n_species heads
-if args.share_backbone:
-    num_heads = args.n_species
-    num_models = 1
-else:
-    num_heads = 1
-    num_models = args.n_species
+num_heads = 1
+num_models = args.n_species
+
+# Quick hack to make reloading from checkpoint work
+if resume_from_checkpoint:
+    # Get latest checkpoint
+    checkpoint_models = []
+    for root, _, files in os.walk(f'{PATH}/experiments/{args.save_folder}/models/'):
+        for f in sorted(files):
+            model_args = {i.split('=')[0]: i.split('=')[1] for i in f[:-3].split('__')}
+            checkpoint_models.append((int(model_args['species']), float(model_args['steps']), f))
+
+    max_steps = max(checkpoint_models, key=lambda x: x[1])[1]
+
+    latest_models = [os.path.join(root, f[2]) for f in checkpoint_models if f[1] == max_steps]
+    args.agent_location = latest_models
 
 # Quick hack to make it easier to input all of the species trained in one particular experiment
-if len(args.agent) == 1:
-    species_0_path = args.agent[0]+'__species=0.pt'
-    species_0_relative_path = os.path.join(PATH, 'models', args.agent[0])+'__species=0.pt'
-    if os.path.exists(species_0_path) or os.path.exists(species_0_relative_path):
-        agent_path = args.agent[0] if species_0_path else os.path.join(PATH, 'models', args.agent)
-        args.agent = [agent_path + f'__species={i}.pt' for i in range(args.n_species)]
-    else:
-        args.agent = [args.agent[0], ] * args.n_agents
+if args.agent_location is not None:
+    if len(args.agent_location) == 1:
+        species_0_path = args.agent_location[0]+'__species=0.pt'
+        species_0_relative_path = os.path.join(PATH, args.agent_location[0])+'__species=0.pt'
+        if os.path.exists(species_0_path) or os.path.exists(species_0_relative_path):
+            agent_path = args.agent[0] if species_0_path else os.path.join(PATH, 'models', args.agent_location)
+            args.agent_location = [agent_path + f'__species={i}.pt' for i in range(args.n_species)]
+        else:
+            args.agent_location = [args.agent_location[0], ] * args.n_agents
 
 models: List[nn.Module] = []
 for i in range(num_models):
     # Check for existence of model file
-    model_path = args.agent[i]
-    model_relative_path = os.path.join(PATH, 'models', args.agent[i])
-
-    # Get agent params
-    if os.path.exists(model_path) or os.path.exists(model_relative_path):
-        agent_str = args.agent[i].split('/')[-1][:-3]
-        agent_params = {kv.split('=')[0]: kv.split('=')[1] for kv in agent_str.split('__')}
-        agent_type = agent_params['agent']
-        reload = True
+    if args.agent_location is None:
+        specified_model_file = False
     else:
-        agent_type = args.agent[i]
-        reload = False
+        model_path = args.agent_location[i]
+        model_relative_path = os.path.join(PATH, 'models', args.agent_location[i])
+        if os.path.exists(model_path) or os.path.exists(model_relative_path):
+            specified_model_file = True
+        else:
+            specified_model_file = False
 
     # Create model class
-    if agent_type == 'conv':
+    if args.agent_type == 'conv':
         models.append(
             agents.ConvAgent(
-                num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
+                num_actions=num_actions, num_initial_convs=2, in_channels=INPUT_CHANNELS, conv_channels=32,
                 num_residual_convs=2, num_feedforward=1, feedforward_dim=64,
                 num_heads=num_heads).to(device=args.device, dtype=dtype)
         )
-    elif agent_type == 'gru':
+    elif args.agent_type == 'gru':
         models.append(
             agents.GRUAgent(
-                num_actions=num_actions, num_initial_convs=2, in_channels=in_channels, conv_channels=32,
+                num_actions=num_actions, num_initial_convs=2, in_channels=INPUT_CHANNELS, conv_channels=32,
                 num_residual_convs=2, num_feedforward=1, feedforward_dim=64,
                 num_heads=num_heads).to(device=args.device, dtype=dtype)
         )
-    elif agent_type == 'random':
+    elif args.agent_type == 'random':
         models.append(agents.RandomAgent(num_actions=num_actions, device=args.device))
     else:
         raise ValueError('Unrecognised agent type.')
 
-    # Load state dict if reload
-    if reload:
-        print('Reloading agent {} from location {}'.format(i, args.agent[i]))
+    # Load state dict if the model file(s) have been specified
+    if specified_model_file:
+        print('Reloading agent {} from location {}'.format(i, args.agent_location[i]))
         models[i].load_state_dict(
-            torch.load(args.agent[i])
+            torch.load(args.agent_location[i])
         )
 
 if args.train:
@@ -194,24 +210,19 @@ else:
         for param in m.parameters():
             param.requires_grad = False
 
-if agent_type != 'random' and args.train:
-    optimizers: List[optim.Adam] = []
-    for i in range(num_models):
-        optimizers.append(
-            optim.Adam(models[i].parameters(), lr=args.lr, weight_decay=0)
-        )
-
-a2c = A2CLoss(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=dtype,
-          use_gae=args.gae_lambda is not None, gae_lambda=args.gae_lambda)
-interaction_handler = MultiSpeciesHandler(models, args.n_species, args.n_agents, agent_type)
-a2c_trainer = A2CTrainer(
-    models=models, update_steps=args.update_steps, lr=args.lr, a2c_loss=a2c, interaction_handler=interaction_handler,
-    value_loss_coeff=args.value_loss_coeff, entropy_loss_coeff=args.entropy_loss_coeff, mask_dones=args.mask_dones,
-    max_grad_norm=args.max_grad_norm)
-
+interaction_handler = MultiSpeciesHandler(models, args.n_species, args.n_agents, args.agent_type)
+if args.train:
+    a2c = A2CLoss(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=dtype,
+                  use_gae=args.gae_lambda is not None, gae_lambda=args.gae_lambda)
+    a2c_trainer = A2CTrainer(
+        models=models, update_steps=args.update_steps, lr=args.lr, a2c_loss=a2c, interaction_handler=interaction_handler,
+        value_loss_coeff=args.value_loss_coeff, entropy_loss_coeff=args.entropy_loss_coeff, mask_dones=args.mask_dones,
+        max_grad_norm=args.max_grad_norm)
+else:
+    a2c_trainer = None
 
 callbacks = [
-    loggers.LogEnricher(env),
+    loggers.LogEnricher(env, num_completed_steps, num_completed_episodes),
     loggers.PrintLogger(env=args.env, interval=args.print_interval),
     Render(env, args.fps) if args.render else None,
     ModelCheckpoint(
@@ -223,7 +234,8 @@ callbacks = [
     loggers.CSVLogger(
         filename=f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv',
         header_comment=utils.get_comment(args),
-        interval=args.log_interval
+        interval=args.log_interval,
+        append=resume_from_checkpoint
     ) if args.save_logs else None,
     loggers.VideoLogger(
         env,
@@ -240,56 +252,16 @@ callbacks = [c for c in callbacks if c]
 callback_list = CallbackList(callbacks)
 callback_list.on_train_begin()
 
-trajectories = TrajectoryStore()
-if agent_type != 'random' and args.train:
-    optimizers: List[optim.Adam] = []
-    for i in range(num_models):
-        optimizers.append(
-            optim.Adam(models[i].parameters(), lr=args.lr, weight_decay=0)
-        )
-
-##################
-# Begin training #
-##################
-if args.warm_start:
-    observations, hidden_states, cell_states = WarmStart(env, models, args.warm_start, interaction_handler).warm_start()
-else:
-    observations = env.reset()
-    hidden_states = {f'agent_{i}': torch.zeros((args.n_envs, 64), device=args.device) for i in range(args.n_agents)}
-    cell_states = {f'agent_{i}': torch.zeros((args.n_envs, 64), device=args.device) for i in range(args.n_agents)}
-
-num_episodes = 0
-num_steps = 0
-
-for i_step in count(1):
-    logs = {}
-
-    interaction = interaction_handler.interact(observations, hidden_states, cell_states)
-
-    callback_list.before_step(logs, interaction.actions, interaction.action_distributions)
-
-    observations, reward, done, info = env.step(interaction.actions)
-    env.reset(done['__all__'], return_observations=False)
-    env.check_consistency()
-    num_episodes += done['__all__'].sum().item()
-    num_steps += args.n_envs
-
-    if args.agent == 'gru' or args.agent == 'lstm':
-        with torch.no_grad():
-            # Reset hidden states on death or on environment reset
-            for _agent, _done in done.items():
-                if _agent != '__all__':
-                    hidden_states[_agent | done['__all__']][_done].mul_(0)
-                    cell_states[_agent | done['__all__']][_done].mul_(0)
-
-    if args.agent != 'random' and args.train:
-        a2c_trainer.train(
-            interaction, hidden_states, cell_states, logs, observations, reward, done, info
-        )
-
-    callback_list.after_step(logs, observations, reward, done, info)
-
-    if num_steps > args.total_steps or num_episodes >= args.total_episodes:
-        break
-
-callback_list.on_train_end()
+environment_run = core.EnvironmentRun(
+    env=env,
+    models=models,
+    interaction_handler=interaction_handler,
+    callbacks=callback_list,
+    rl_trainer=a2c_trainer,
+    warm_start=args.warm_start,
+    initial_steps=num_completed_steps,
+    total_steps=args.total_steps,
+    initial_episodes=num_completed_episodes,
+    total_episodes=args.total_episodes
+)
+environment_run.run()

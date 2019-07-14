@@ -12,11 +12,10 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
     parser.add_argument('--n-species', type=int, default=1)
     parser.add_argument('--height', type=int)
     parser.add_argument('--width', type=int)
-    parser.add_argument('--agent', type=str, nargs='+')
     parser.add_argument('--warm-start', default=0, type=int)
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--dtype', type=str, default='float')
-    parser.add_argument('--r', default=None, type=int, help='Repeat number')
+    parser.add_argument('--repeat', default=None, type=int, help='Repeat number')
     return parser
 
 
@@ -36,6 +35,12 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.Argument
     parser.add_argument('--total-episodes', default=float('inf'), type=float)
     parser.add_argument('--norm-returns', default=False, type=get_bool)
     parser.add_argument('--share-backbone', default=False, type=get_bool)
+    return parser
+
+
+def add_model_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser.add_argument('--agent-type', type=str, default='gru')
+    parser.add_argument('--agent-location', type=str, nargs='+')
     return parser
 
 

@@ -10,7 +10,7 @@ from itertools import count
 from wurm.callbacks.core import CallbackList
 from wurm.rl.core import RLTrainer
 from wurm.interaction import InteractionHandler
-# from wurm.callbacks.warm_start import WarmStart
+from wurm import utils
 
 
 class VecEnv(ABC):
@@ -113,82 +113,86 @@ def check_multi_vec_env_actions(actions: Dict[str, torch.Tensor], num_envs: int,
             raise RuntimeError('Must have the same number of actions as environments.')
 
 
-# class EnvironmentRun(object):
-#     def __init__(self,
-#                  home_folder: str,
-#                  env: MultiagentVecEnv,
-#                  models: List[nn.Module],
-#                  interaction_handler: InteractionHandler,
-#                  callbacks: CallbackList,
-#                  rl_trainer: RLTrainer,
-#                  train: bool,
-#                  warm_start: int = 0,
-#                  total_steps: Optional[int] = None,
-#                  total_episodes: Optional[int] = None):
-#         self.home_folder = home_folder
-#         self.env = env
-#         self.models = models
-#         self.interaction_handler = interaction_handler
-#         self.callbacks = callbacks
-#         self.rl_trainer = rl_trainer
-#         self.train = train
-#         self.total_steps = total_steps
-#         self.warm_start = warm_start
-#         self.total_episodes = total_episodes
-#
-#     def run(self):
-#         if self.warm_start:
-#             observations, hidden_states, cell_states = WarmStart(self.env, self.models, self.warm_start,
-#                                                                  self.interaction_handler).warm_start()
-#         else:
-#             observations = self.env.reset()
-#             hidden_states = {f'agent_{i}': torch.zeros((self.env.num_envs, 64), device=self.env.device) for i in
-#                              range(self.env.num_agents)}
-#             cell_states = {f'agent_{i}': torch.zeros((self.env.num_envs, 64), device=self.env.device) for i in
-#                            range(self.env.num_agents)}
-#
-#         # Interact with environment
-#         num_episodes = 0
-#         num_steps = 0
-#         for i_step in count(1):
-#             logs = {}
-#
-#             interaction = self.interaction_handler.interact(observations, hidden_states, cell_states)
-#             self.callbacks.before_step(logs, interaction.actions, interaction.action_distributions)
-#
-#             observations, reward, done, info = self.env.step(interaction.actions)
-#             self.env.reset(done['__all__'], return_observations=False)
-#             self.env.check_consistency()
-#             num_episodes += done['__all__'].sum().item()
-#             num_steps += self.env.num_envs
-#
-#             with torch.no_grad():
-#                 # Reset hidden states on death or on environment reset
-#                 for _agent, _done in done.items():
-#                     if _agent != '__all__':
-#                         hidden_states[_agent | done['__all__']][_done].mul_(0)
-#                         cell_states[_agent | done['__all__']][_done].mul_(0)
-#
-#             if not self.train:
-#                 hidden_states = {k: v.detach() for k, v in hidden_states.items()}
-#                 cell_states = {k: v.detach() for k, v in cell_states.items()}
-#
-#             ##########################
-#             # Reinforcement learning #
-#             ##########################
-#             if self.train:
-#                 self.rl_trainer.train(
-#                     interaction, hidden_states, cell_states, logs, observations, reward, done, info
-#                 )
-#
-#             self.callbacks.after_step(logs, observations, reward, done, info)
-#
-#             if num_steps > self.total_steps or num_episodes >= self.total_episodes:
-#                 break
-#
-#         self.callbacks.on_train_end()
-#
-#         return models, logs
+class EnvironmentRun(object):
+    def __init__(self,
+                 env: MultiagentVecEnv,
+                 models: List[nn.Module],
+                 interaction_handler: InteractionHandler,
+                 callbacks: CallbackList,
+                 rl_trainer: Optional[RLTrainer],
+                 warm_start: int = 0,
+                 initial_steps: int = 0,
+                 initial_episodes: int = 0,
+                 total_steps: Optional[int] = None,
+                 total_episodes: Optional[int] = None):
+        self.env = env
+        self.models = models
+        self.interaction_handler = interaction_handler
+        self.callbacks = callbacks
+        self.rl_trainer = rl_trainer
+        self.train = rl_trainer is not None
+        self.warm_start = warm_start
+        self.initial_steps = initial_steps
+        self.initial_episodes = initial_episodes
+        self.total_steps = total_steps
+        self.total_episodes = total_episodes
+
+    def run(self):
+        if self.warm_start:
+            observations, hidden_states, cell_states = utils.WarmStart(self.env, self.models, self.warm_start,
+                                                                 self.interaction_handler).warm_start()
+        else:
+            observations = self.env.reset()
+            hidden_states = {f'agent_{i}': torch.zeros((self.env.num_envs, 64), device=self.env.device) for i in
+                             range(self.env.num_agents)}
+            cell_states = {f'agent_{i}': torch.zeros((self.env.num_envs, 64), device=self.env.device) for i in
+                           range(self.env.num_agents)}
+
+        # Interact with environment
+        num_episodes = self.initial_episodes
+        num_steps = self.initial_steps
+        final_logs = []
+        for i_step in count(1):
+            logs = {}
+
+            interaction = self.interaction_handler.interact(observations, hidden_states, cell_states)
+            self.callbacks.before_step(logs, interaction.actions, interaction.action_distributions)
+
+            observations, reward, done, info = self.env.step(interaction.actions)
+            self.env.reset(done['__all__'], return_observations=False)
+            self.env.check_consistency()
+            num_episodes += done['__all__'].sum().item()
+            num_steps += self.env.num_envs
+
+            with torch.no_grad():
+                # Reset hidden states on death or on environment reset
+                for _agent, _done in done.items():
+                    if _agent != '__all__':
+                        hidden_states[_agent][done['__all__']|_done].mul_(0)
+                        cell_states[_agent][done['__all__']| _done].mul_(0)
+
+            if not self.train:
+                hidden_states = {k: v.detach() for k, v in hidden_states.items()}
+                cell_states = {k: v.detach() for k, v in cell_states.items()}
+
+            ##########################
+            # Reinforcement learning #
+            ##########################
+            if self.train:
+                self.rl_trainer.train(
+                    interaction, hidden_states, cell_states, logs, observations, reward, done, info
+                )
+
+            self.callbacks.after_step(logs, observations, reward, done, info)
+
+            final_logs.append(logs)
+
+            if num_steps > self.total_steps or num_episodes >= self.total_episodes:
+                break
+
+        self.callbacks.on_train_end()
+
+        return self.models, final_logs
 
 
 def build_render_rgb(
