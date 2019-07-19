@@ -1,5 +1,8 @@
 import argparse
 
+from wurm.envs import LaserTag, Slither
+from wurm.envs.laser_tag.map_generators import MapFromString, MapPool
+
 
 def get_bool(input_string: str) -> bool:
     return input_string.lower()[0] == 't'
@@ -92,3 +95,39 @@ def add_output_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
     parser.add_argument('--save-video', default=False, type=get_bool)
     parser.add_argument('--save-heatmap', default=False, type=get_bool)
     return parser
+
+
+def get_env(args: argparse.Namespace):
+    if args.env is None:
+        raise ValueError('args.env is None.')
+    render_args = {
+        'size': args.render_window_size,
+        'num_rows': args.render_rows,
+        'num_cols': args.render_cols,
+    }
+    if args.env == 'snake':
+        env = Slither(num_envs=args.n_envs, num_agents=args.n_agents, food_on_death_prob=args.food_on_death,
+                      height=args.height, width=args.width, device=args.device, render_args=render_args,
+                      boost=args.boost,
+                      boost_cost_prob=args.boost_cost, food_rate=args.food_rate,
+                      respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_fn=None,
+                      reward_on_death=args.reward_on_death, agent_colours=args.colour_mode)
+    elif args.env == 'laser':
+        if len(args.laser_tag_map) == 1:
+            map_generator = MapFromString(args.laser_tag_map[0], args.device)
+        else:
+            fixed_maps = [MapFromString(m, args.device) for m in args.laser_tag_map]
+            map_generator = MapPool(fixed_maps)
+
+        env = LaserTag(num_envs=args.n_envs, num_agents=args.n_agents, height=args.height, width=args.width,
+                       observation_fn=None, colour_mode=args.colour_mode,
+                       map_generator=map_generator, device=args.device, render_args=render_args)
+    elif args.env == 'cooperative':
+        raise NotImplementedError
+    elif args.env == 'asymmetric':
+        raise NotImplementedError
+    else:
+        raise ValueError('Unrecognised environment')
+
+    return env
+

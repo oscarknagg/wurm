@@ -30,7 +30,7 @@ class CSVLogger(Callback):
         """
 
     def __init__(self, filename: str, separator: str = ',', append: bool = False, header_comment: str = None,
-                 interval: Optional[int] = 1):
+                 interval: int = 1):
         super(CSVLogger, self).__init__()
         self.sep = separator
         self.filename = filename
@@ -49,10 +49,14 @@ class CSVLogger(Callback):
             if os.path.exists(self.filename):
                 with open(self.filename, 'r' + self.file_flags) as f:
                     self.write_header_comment = not bool(len(f.readline()))
+                    self.write_header = not bool(len(f.readline()))
             mode = 'a'
         else:
             mode = 'w'
             self.write_header_comment = True
+            self.write_header = True
+
+        self.write_header_comment = self.write_header_comment and self.header_comment is not None
 
         self.csv_file = io.open(self.filename,
                                 mode + self.file_flags,
@@ -98,8 +102,7 @@ class CSVLogger(Callback):
                                              fieldnames=self.keys,
                                              dialect=CustomDialect)
 
-                if self.write_header_comment:
-                    self.writer.writeheader()
+                self.writer.writeheader()
 
             row_dict = OrderedDict()
             row_dict.update((key, handle_value(logs[key])) for key in self.keys)
@@ -211,9 +214,11 @@ class LogEnricher(Callback):
                 })
 
             if isinstance(self.env, envs.LaserTag):
+
                 logs.update({
                     f'hp_{i}': infos[f'hp_{i}'].float().mean().item(),
                     f'laser_{i}': infos[f'action_7_{i}'].float().mean().item(),
+                    # f'hit_rate_{i}': 2 * rewards[f'agent_{i}'].mean().item() / infos[f'action_7_{i}'].float().mean().item(),
                     f'hit_rate_{i}': (infos[f'action_7_{i}'] & rewards[f'agent_{i}'].gt(EPS)).float().mean().item(),
                     f'errors': self.env.errors.sum().item()
                 })

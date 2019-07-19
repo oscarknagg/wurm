@@ -56,9 +56,9 @@ if 'laser_tag_map' in argsdict.keys():
 argstring = '__'.join([f'{k}={v}' for k, v in argsdict.items()])
 
 if args.dtype == 'float':
-    dtype = torch.float
+    args.dtype = torch.float
 elif args.dtype == 'half':
-    dtype = torch.half
+    args.dtype = torch.half
 else:
     raise RuntimeError
 
@@ -71,7 +71,9 @@ else:
 ##########################
 # Resume from checkpoint #
 ##########################
-if os.path.exists(f'{PATH}/experiments/{args.save_folder}'):
+experiment_folder_exists = os.path.exists(f'{PATH}/experiments/{args.save_folder}')
+repeat_exists = os.path.exists(f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv')
+if experiment_folder_exists and repeat_exists:
     resume_from_checkpoint = True
     old_log_file = pd.read_csv(f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv', comment='#')
     num_completed_steps = old_log_file.iloc[-1].steps
@@ -98,41 +100,14 @@ observation_function = FirstPersonCrop(
 #################
 # Configure Env #
 #################
-render_args = {
-    'size': args.render_window_size,
-    'num_rows': args.render_rows,
-    'num_cols': args.render_cols,
-}
-if args.env == 'snake':
-    env = Slither(num_envs=args.n_envs, num_agents=args.n_agents, food_on_death_prob=args.food_on_death,
-                  height=args.height, width=args.width, device=args.device, render_args=render_args, boost=args.boost,
-                  boost_cost_prob=args.boost_cost, dtype=dtype, food_rate=args.food_rate,
-                  respawn_mode=args.respawn_mode, food_mode=args.food_mode, observation_fn=observation_function,
-                  reward_on_death=args.reward_on_death, agent_colours=args.colour_mode)
-elif args.env == 'laser':
-    if len(args.laser_tag_map) == 1:
-        map_generator = MapFromString(args.laser_tag_map[0], args.device)
-    else:
-        fixed_maps = [MapFromString(m, args.device) for m in args.laser_tag_map]
-        map_generator = MapPool(fixed_maps)
-
-    env = LaserTag(num_envs=args.n_envs, num_agents=args.n_agents, height=args.height, width=args.width,
-                   observation_fn=observation_function, colour_mode=args.colour_mode,
-                   map_generator=map_generator, device=args.device, render_args=render_args)
-elif args.env == 'cooperative':
-    raise NotImplementedError
-elif args.env == 'asymmetric':
-    raise NotImplementedError
-else:
-    raise ValueError('Unrecognised environment')
-
+env = arguments.get_env(args)
+env.observation_fn = observation_function
 num_actions = env.num_actions
 
 
 ###################
 # Create agent(s) #
 ###################
-num_heads = 1
 num_models = args.n_species
 
 # Quick hack to make reloading from checkpoint work
@@ -155,7 +130,7 @@ if args.agent_location is not None:
         species_0_path = args.agent_location[0]+'__species=0.pt'
         species_0_relative_path = os.path.join(PATH, args.agent_location[0])+'__species=0.pt'
         if os.path.exists(species_0_path) or os.path.exists(species_0_relative_path):
-            agent_path = args.agent[0] if species_0_path else os.path.join(PATH, 'models', args.agent_location)
+            agent_path = args.agent_location[0] if species_0_path else os.path.join(PATH, 'models', args.agent_location)
             args.agent_location = [agent_path + f'__species={i}.pt' for i in range(args.n_species)]
         else:
             args.agent_location = [args.agent_location[0], ] * args.n_agents
@@ -178,15 +153,13 @@ for i in range(num_models):
         models.append(
             agents.ConvAgent(
                 num_actions=num_actions, num_initial_convs=2, in_channels=INPUT_CHANNELS, conv_channels=32,
-                num_residual_convs=2, num_feedforward=1, feedforward_dim=64,
-                num_heads=num_heads).to(device=args.device, dtype=dtype)
+                num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=args.dtype)
         )
     elif args.agent_type == 'gru':
         models.append(
             agents.GRUAgent(
                 num_actions=num_actions, num_initial_convs=2, in_channels=INPUT_CHANNELS, conv_channels=32,
-                num_residual_convs=2, num_feedforward=1, feedforward_dim=64,
-                num_heads=num_heads).to(device=args.device, dtype=dtype)
+                num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=args.dtype)
         )
     elif args.agent_type == 'random':
         models.append(agents.RandomAgent(num_actions=num_actions, device=args.device))
@@ -212,7 +185,7 @@ else:
 
 interaction_handler = MultiSpeciesHandler(models, args.n_species, args.n_agents, args.agent_type)
 if args.train:
-    a2c = A2CLoss(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=dtype,
+    a2c = A2CLoss(gamma=args.gamma, normalise_returns=args.norm_returns, dtype=args.dtype,
                   use_gae=args.gae_lambda is not None, gae_lambda=args.gae_lambda)
     a2c_trainer = A2CTrainer(
         models=models, update_steps=args.update_steps, lr=args.lr, a2c_loss=a2c, interaction_handler=interaction_handler,
@@ -223,11 +196,11 @@ else:
 
 callbacks = [
     loggers.LogEnricher(env, num_completed_steps, num_completed_episodes),
-    loggers.PrintLogger(env=args.env, interval=args.print_interval),
+    loggers.PrintLogger(env=args.env, interval=args.print_interval) if args.print_interval is not None else None,
     Render(env, args.fps) if args.render else None,
     ModelCheckpoint(
         f'{PATH}/experiments/{args.save_folder}/models',
-        'steps={steps:.2e}__species={i_species}.pt',
+        f'repeat={args.repeat}__' + 'steps={steps:.2e}__species={i_species}.pt',
         models,
         interval=args.model_interval
     ) if args.save_model else None,
