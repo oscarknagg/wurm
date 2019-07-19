@@ -13,6 +13,7 @@ from wurm import agents
 from wurm.envs.laser_tag.map_generators import MapFromString, MapPool
 from wurm.callbacks.core import CallbackList
 from wurm.callbacks.render import Render
+from wurm.callbacks.s3_backup import S3Backup
 from wurm.callbacks.model_checkpoint import ModelCheckpoint
 from wurm.interaction import MultiSpeciesHandler
 from wurm.rl import A2CLoss, A2CTrainer
@@ -194,6 +195,7 @@ if args.train:
 else:
     a2c_trainer = None
 
+
 callbacks = [
     loggers.LogEnricher(env, num_completed_steps, num_completed_episodes),
     loggers.PrintLogger(env=args.env, interval=args.print_interval) if args.print_interval is not None else None,
@@ -202,13 +204,18 @@ callbacks = [
         f'{PATH}/experiments/{args.save_folder}/models',
         f'repeat={args.repeat}__' + 'steps={steps:.2e}__species={i_species}.pt',
         models,
-        interval=args.model_interval
+        interval=args.model_interval,
+        s3_bucket=args.s3_bucket,
+        s3_filepath=f'{args.save_folder}/models/repeat={args.repeat}__' + 'steps={steps:.2e}__species={i_species}.pt'
     ) if args.save_model else None,
     loggers.CSVLogger(
         filename=f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv',
         header_comment=utils.get_comment(args),
         interval=args.log_interval,
-        append=resume_from_checkpoint
+        append=resume_from_checkpoint,
+        s3_bucket=args.s3_bucket,
+        s3_filename=f'{args.save_folder}/logs/{save_file}.csv',
+        s3_interval=args.s3_interval
     ) if args.save_logs else None,
     loggers.VideoLogger(
         env,
@@ -218,8 +225,7 @@ callbacks = [
         env,
         save_folder=f'{PATH}/experiments/{args.save_folder}/heatmaps/',
         interval=args.heatmap_interval
-    ) if args.save_heatmap else None
-
+    ) if args.save_heatmap else None,
 ]
 callbacks = [c for c in callbacks if c]
 callback_list = CallbackList(callbacks)

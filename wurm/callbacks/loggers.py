@@ -8,6 +8,7 @@ import torch
 from torch.distributions import Distribution
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
 from time import time
+import boto3
 
 from wurm.utils import ExponentialMovingAverageTracker
 from wurm.core import MultiagentVecEnv
@@ -29,14 +30,25 @@ class CSVLogger(Callback):
         header_comment: A possibly multi line string to put at the top of the CSV file
         """
 
-    def __init__(self, filename: str, separator: str = ',', append: bool = False, header_comment: str = None,
-                 interval: int = 1):
+    def __init__(self,
+                 filename: str,
+                 separator: str = ',',
+                 append: bool = False,
+                 header_comment: str = None,
+                 interval: int = 1,
+                 s3_bucket: Optional[str] = None,
+                 s3_filename: Optional[str] = None,
+                 s3_interval: int = 1000):
         super(CSVLogger, self).__init__()
         self.sep = separator
         self.filename = filename
         self.append = append
         self.header_comment = header_comment
         self.interval = interval
+        self.s3_bucket = s3_bucket
+        self.s3_filename = s3_filename
+        self.s3_interval = s3_interval
+
         self.writer = None
         self.keys = None
         self.file_flags = ''
@@ -72,11 +84,7 @@ class CSVLogger(Callback):
         if self.write_header_comment:
             print(comment_out(self.header_comment), file=self.csv_file)
 
-    def after_step(self, logs: Optional[dict] = None,
-                   obs: Optional[Dict[str, torch.Tensor]] = None,
-                   rewards: Optional[Dict[str, torch.Tensor]] = None,
-                   dones: Optional[Dict[str, torch.Tensor]] = None,
-                   infos: Optional[Dict[str, torch.Tensor]] = None):
+    def _write(self, logs: dict):
         def handle_value(k):
             is_zero_dim_tensor = isinstance(k, torch.Tensor) and k.ndimension() == 0
             is_zero_dim_ndarray = isinstance(k, np.ndarray) and k.ndim == 0
@@ -89,25 +97,40 @@ class CSVLogger(Callback):
             else:
                 return k
 
+        if self.keys is None:
+            self.keys = sorted(logs.keys())
+
+        if not self.writer:
+            # Write the column names
+            class CustomDialect(csv.excel):
+                delimiter = self.sep
+
+            self.writer = csv.DictWriter(self.csv_file,
+                                         fieldnames=self.keys,
+                                         dialect=CustomDialect)
+
+            self.writer.writeheader()
+
+        row_dict = OrderedDict()
+        row_dict.update((key, handle_value(logs[key])) for key in self.keys)
+        self.writer.writerow(row_dict)
+        self.csv_file.flush()
+
+    def after_step(self, logs: Optional[dict] = None,
+                   obs: Optional[Dict[str, torch.Tensor]] = None,
+                   rewards: Optional[Dict[str, torch.Tensor]] = None,
+                   dones: Optional[Dict[str, torch.Tensor]] = None,
+                   infos: Optional[Dict[str, torch.Tensor]] = None):
         if self.i % self.interval == 0:
-            if self.keys is None:
-                self.keys = sorted(logs.keys())
+            self._write(logs)
 
-            if not self.writer:
-                # Write the column names
-                class CustomDialect(csv.excel):
-                    delimiter = self.sep
-
-                self.writer = csv.DictWriter(self.csv_file,
-                                             fieldnames=self.keys,
-                                             dialect=CustomDialect)
-
-                self.writer.writeheader()
-
-            row_dict = OrderedDict()
-            row_dict.update((key, handle_value(logs[key])) for key in self.keys)
-            self.writer.writerow(row_dict)
-            self.csv_file.flush()
+        if self.i % self.s3_interval and self.s3_bucket is not None:
+            if self.s3_bucket is not None:
+                boto3.client('s3').upload_file(
+                    self.filename,
+                    self.s3_bucket,
+                    self.s3_filename
+                )
 
         self.i += 1
 

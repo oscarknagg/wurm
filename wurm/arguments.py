@@ -87,6 +87,8 @@ def add_output_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
     parser.add_argument('--print-interval', default=1000, type=int)
     parser.add_argument('--log-interval', default=1, type=int)
     parser.add_argument('--model-interval', default=1000, type=int)
+    parser.add_argument('--s3-interval', default=None, type=int)
+    parser.add_argument('--s3-bucket', default=None, type=str)
     parser.add_argument('--heatmap-interval', default=1, type=int)
     parser.add_argument('--save-folder', type=str, default=None)
     parser.add_argument('--save-location', type=str, default=None)
