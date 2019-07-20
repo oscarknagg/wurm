@@ -19,6 +19,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--dtype', type=str, default='float')
     parser.add_argument('--repeat', default=None, type=int, help='Repeat number')
+    parser.add_argument('--resume-mode', default='local', type=str)
     return parser
 
 

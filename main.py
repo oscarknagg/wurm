@@ -72,19 +72,43 @@ else:
 ##########################
 # Resume from checkpoint #
 ##########################
-experiment_folder_exists = os.path.exists(f'{PATH}/experiments/{args.save_folder}')
-repeat_exists = os.path.exists(f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv')
-if experiment_folder_exists and repeat_exists:
-    resume_from_checkpoint = True
-    old_log_file = pd.read_csv(f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv', comment='#')
-    num_completed_steps = old_log_file.iloc[-1].steps
-    num_completed_episodes = old_log_file.iloc[-1].episodes
-    print('Pre-existing experiment folder detected - resuming from checkpoint')
-    print(f'{num_completed_steps:.2e} out of {args.total_steps:.2e} environment steps completed.')
+if args.resume_mode == 'local':
+    experiment_folder_exists = os.path.exists(f'{PATH}/experiments/{args.save_folder}')
+    repeat_exists = os.path.exists(f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv')
+    if experiment_folder_exists and repeat_exists:
+        old_log_file = pd.read_csv(f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv', comment='#')
+        resume_from_checkpoint = True
+        num_completed_steps = old_log_file.iloc[-1].steps
+        num_completed_episodes = old_log_file.iloc[-1].episodes
+        print('Pre-existing experiment folder detected - resuming from checkpoint')
+        print(f'{num_completed_steps:.2e} out of {args.total_steps:.2e} environment steps completed.')
+    else:
+        resume_from_checkpoint = False
+        num_completed_steps = 0
+        num_completed_episodes = 0
+elif args.resume_mode == 's3':
+    # The easiest way to check if an experiment checkpoint exists is just to try to
+    # load it and check for a 404.
+    from botocore.exceptions import ClientError
+    try:
+        old_log_file = pd.read_csv(f's3://{args.s3_bucket}/{args.save_folder}/logs/{save_file}.csv', comment='#')
+        old_log_file.to_csv(f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv', index=False)
+        resume_from_checkpoint = True
+        num_completed_steps = old_log_file.iloc[-1].steps
+        num_completed_episodes = old_log_file.iloc[-1].episodes
+
+        print('Pre-existing experiment folder detected - resuming from checkpoint')
+        print(f'{num_completed_steps:.2e} out of {args.total_steps:.2e} environment steps completed.')
+    except ClientError as e:
+        if e.response['Error']['Code'] == "404":
+            # Object not found
+            resume_from_checkpoint = False
+            num_completed_steps = 0
+            num_completed_episodes = 0
+        else:
+            raise e
 else:
-    resume_from_checkpoint = False
-    num_completed_steps = 0
-    num_completed_episodes = 0
+    raise ValueError('Unrecognised resume-mode.')
 
 ##########################
 # Configure observations #
