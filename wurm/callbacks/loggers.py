@@ -109,7 +109,8 @@ class CSVLogger(Callback):
                                          fieldnames=self.keys,
                                          dialect=CustomDialect)
 
-            self.writer.writeheader()
+            if self.write_header:
+                self.writer.writeheader()
 
         row_dict = OrderedDict()
         row_dict.update((key, handle_value(logs[key])) for key in self.keys)
@@ -124,13 +125,14 @@ class CSVLogger(Callback):
         if self.i % self.interval == 0:
             self._write(logs)
 
-        if self.i % self.s3_interval and self.s3_bucket is not None:
-            if self.s3_bucket is not None:
-                boto3.client('s3').upload_file(
-                    self.filename,
-                    self.s3_bucket,
-                    self.s3_filename
-                )
+        if self.s3_bucket is not None:
+            if self.i % self.s3_interval:
+                if self.s3_bucket is not None:
+                    boto3.client('s3').upload_file(
+                        self.filename,
+                        self.s3_bucket,
+                        self.s3_filename
+                    )
 
         self.i += 1
 

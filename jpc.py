@@ -4,6 +4,7 @@ import argparse
 from itertools import product
 from multiprocessing import Pool, cpu_count
 import torch
+import warnings
 
 from wurm.core import EnvironmentRun
 from wurm.callbacks.core import CallbackList
@@ -72,13 +73,23 @@ observation_function = observations.FirstPersonCrop(
 
 
 def worker(i, j):
+    # Check for already complete
+    if os.path.exists(f'{PATH}/experiments/{args.experiment_folder}/jpc/{args.steps}/{i}-{j}.csv'):
+        print('({}, {}), already complete.'.format(i, j))
+        return
+
     env = arguments.get_env(args)
     env.observation_fn = observation_function
 
-    model_locations = [
-        models_to_run[i, 0],
-        models_to_run[j, 1]
-    ]
+    try:
+        model_locations = [
+            models_to_run[i, 0],
+            models_to_run[j, 1]
+        ]
+    except KeyError as e:
+        warnings.warn('Model ({}, {}) not found.'.format(i, j))
+        return
+
     models = []
     for model_path in model_locations:
         models.append(

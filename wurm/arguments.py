@@ -1,7 +1,14 @@
 import argparse
+from torch import nn
+from typing import List
+import os
+import torch
 
 from wurm.envs import LaserTag, Slither
 from wurm.envs.laser_tag.map_generators import MapFromString, MapPool
+from wurm import utils
+from wurm import agents
+from config import PATH, INPUT_CHANNELS
 
 
 def get_bool(input_string: str) -> bool:
@@ -19,6 +26,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--dtype', type=str, default='float')
     parser.add_argument('--repeat', default=None, type=int, help='Repeat number')
+    parser.add_argument('--resume-mode', default='local', type=str)
     return parser
 
 
@@ -133,3 +141,70 @@ def get_env(args: argparse.Namespace):
 
     return env
 
+
+def get_models(args: argparse.Namespace, num_actions: int) -> List[nn.Module]:
+    num_models = args.n_species
+
+    # Quick hack to make it easier to input all of the species trained in one particular experiment
+    if args.agent_location is not None:
+        if len(args.agent_location) == 1:
+            species_0_path = args.agent_location[0] + '__species=0.pt'
+            species_0_relative_path = os.path.join(PATH, args.agent_location[0]) + '__species=0.pt'
+            if os.path.exists(species_0_path) or os.path.exists(species_0_relative_path):
+                agent_path = args.agent_location[0] if species_0_path else os.path.join(PATH, 'models',
+                                                                                        args.agent_location)
+                args.agent_location = [agent_path + f'__species={i}.pt' for i in range(args.n_species)]
+            else:
+                args.agent_location = [args.agent_location[0], ] * args.n_agents
+
+    models: List[nn.Module] = []
+    for i in range(num_models):
+        # Check for existence of model file
+        if args.agent_location is None:
+            specified_model_file = False
+        else:
+            model_path = args.agent_location[i]
+            model_relative_path = os.path.join(PATH, 'models', args.agent_location[i])
+            if os.path.exists(model_path) or os.path.exists(model_relative_path):
+                specified_model_file = True
+            else:
+                specified_model_file = False
+
+        # Create model class
+        if args.agent_type == 'conv':
+            models.append(
+                agents.ConvAgent(
+                    num_actions=num_actions, num_initial_convs=2, in_channels=INPUT_CHANNELS, conv_channels=32,
+                    num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device,
+                                                                                    dtype=args.dtype)
+            )
+        elif args.agent_type == 'gru':
+            models.append(
+                agents.GRUAgent(
+                    num_actions=num_actions, num_initial_convs=2, in_channels=INPUT_CHANNELS, conv_channels=32,
+                    num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device,
+                                                                                    dtype=args.dtype)
+            )
+        elif args.agent_type == 'random':
+            models.append(agents.RandomAgent(num_actions=num_actions, device=args.device))
+        else:
+            raise ValueError('Unrecognised agent type.')
+
+        # Load state dict if the model file(s) have been specified
+        if specified_model_file:
+            print('Reloading agent {} from location {}'.format(i, args.agent_location[i]))
+            models[i].load_state_dict(
+                utils.load_state_dict(args.agent_location[i])
+            )
+
+    if args.train:
+        for m in models:
+            m.train()
+    else:
+        torch.no_grad()
+        for m in models:
+            m.eval()
+            for param in m.parameters():
+                param.requires_grad = False
+
+    return models

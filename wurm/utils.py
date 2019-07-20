@@ -5,6 +5,8 @@ import gc
 import git
 from pprint import pformat
 import json
+import boto3
+import os
 
 from config import FOOD_CHANNEL, HEAD_CHANNEL, BODY_CHANNEL
 from wurm._filters import ORIENTATION_DELTAS
@@ -321,3 +323,29 @@ def stack_dict_of_tensors(d: Dict[str, torch.Tensor], take_every: int = 1) -> to
 
     stacked = torch.stack(stacked).view(-1, 1)
     return stacked
+
+
+def load_state_dict(path: str) -> dict:
+    """torch.load() but seamlessly loads from S3 as well."""
+
+    def extract_bucket_name(s3_path: str) -> str:
+        return s3_path.split('/')[2]
+
+    def extract_object_name(s3_path: str) -> str:
+        return '/'.join(s3_path.split('/')[3:])
+
+    if path.startswith('s3://'):
+        s3 = boto3.client('s3')
+
+        bucket_name = extract_bucket_name(path)
+        object_name = extract_object_name(path)
+        file_name = 'temp.pt'
+
+        s3.download_file(bucket_name, object_name, file_name)
+
+        state_dict = torch.load(file_name)
+        os.remove(file_name)
+    else:
+        state_dict = torch.load(path)
+
+    return state_dict

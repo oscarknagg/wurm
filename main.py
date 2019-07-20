@@ -1,19 +1,11 @@
 """Entry point for training, transferring and visualising agents."""
-from typing import List
-import pandas as pd
 import argparse
-import os
 
 import torch
-import torch.nn as nn
-import torch.optim as optim
 
-from wurm.envs import Slither, LaserTag
-from wurm import agents
-from wurm.envs.laser_tag.map_generators import MapFromString, MapPool
 from wurm.callbacks.core import CallbackList
 from wurm.callbacks.render import Render
-from wurm.callbacks.s3_backup import S3Backup
+from wurm.resume import LocalResume, S3Resume
 from wurm.callbacks.model_checkpoint import ModelCheckpoint
 from wurm.interaction import MultiSpeciesHandler
 from wurm.rl import A2CLoss, A2CTrainer
@@ -22,11 +14,7 @@ from wurm import core
 from wurm import arguments
 from wurm import utils
 from wurm.callbacks import loggers
-from config import PATH, EPS
-
-
-# This probably won't change so I've just made it a hardcoded value
-INPUT_CHANNELS = 3
+from config import PATH, EPS, INPUT_CHANNELS
 
 
 parser = argparse.ArgumentParser()
@@ -72,19 +60,14 @@ else:
 ##########################
 # Resume from checkpoint #
 ##########################
-experiment_folder_exists = os.path.exists(f'{PATH}/experiments/{args.save_folder}')
-repeat_exists = os.path.exists(f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv')
-if experiment_folder_exists and repeat_exists:
-    resume_from_checkpoint = True
-    old_log_file = pd.read_csv(f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv', comment='#')
-    num_completed_steps = old_log_file.iloc[-1].steps
-    num_completed_episodes = old_log_file.iloc[-1].episodes
-    print('Pre-existing experiment folder detected - resuming from checkpoint')
-    print(f'{num_completed_steps:.2e} out of {args.total_steps:.2e} environment steps completed.')
+if args.resume_mode == 'local':
+    resume_data = LocalResume().resume(args, save_file)
+elif args.resume_mode == 's3':
+    resume_data = S3Resume().resume(args, save_file)
 else:
-    resume_from_checkpoint = False
-    num_completed_steps = 0
-    num_completed_episodes = 0
+    raise ValueError('Unrecognised resume-mode.')
+
+args.agent_location = resume_data.model_paths
 
 ##########################
 # Configure observations #
@@ -109,80 +92,7 @@ num_actions = env.num_actions
 ###################
 # Create agent(s) #
 ###################
-num_models = args.n_species
-
-# Quick hack to make reloading from checkpoint work
-if resume_from_checkpoint:
-    # Get latest checkpoint
-    checkpoint_models = []
-    for root, _, files in os.walk(f'{PATH}/experiments/{args.save_folder}/models/'):
-        for f in sorted(files):
-            model_args = {i.split('=')[0]: i.split('=')[1] for i in f[:-3].split('__')}
-            checkpoint_models.append((int(model_args['species']), float(model_args['steps']), f))
-
-    max_steps = max(checkpoint_models, key=lambda x: x[1])[1]
-
-    latest_models = [os.path.join(root, f[2]) for f in checkpoint_models if f[1] == max_steps]
-    args.agent_location = latest_models
-
-# Quick hack to make it easier to input all of the species trained in one particular experiment
-if args.agent_location is not None:
-    if len(args.agent_location) == 1:
-        species_0_path = args.agent_location[0]+'__species=0.pt'
-        species_0_relative_path = os.path.join(PATH, args.agent_location[0])+'__species=0.pt'
-        if os.path.exists(species_0_path) or os.path.exists(species_0_relative_path):
-            agent_path = args.agent_location[0] if species_0_path else os.path.join(PATH, 'models', args.agent_location)
-            args.agent_location = [agent_path + f'__species={i}.pt' for i in range(args.n_species)]
-        else:
-            args.agent_location = [args.agent_location[0], ] * args.n_agents
-
-models: List[nn.Module] = []
-for i in range(num_models):
-    # Check for existence of model file
-    if args.agent_location is None:
-        specified_model_file = False
-    else:
-        model_path = args.agent_location[i]
-        model_relative_path = os.path.join(PATH, 'models', args.agent_location[i])
-        if os.path.exists(model_path) or os.path.exists(model_relative_path):
-            specified_model_file = True
-        else:
-            specified_model_file = False
-
-    # Create model class
-    if args.agent_type == 'conv':
-        models.append(
-            agents.ConvAgent(
-                num_actions=num_actions, num_initial_convs=2, in_channels=INPUT_CHANNELS, conv_channels=32,
-                num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=args.dtype)
-        )
-    elif args.agent_type == 'gru':
-        models.append(
-            agents.GRUAgent(
-                num_actions=num_actions, num_initial_convs=2, in_channels=INPUT_CHANNELS, conv_channels=32,
-                num_residual_convs=2, num_feedforward=1, feedforward_dim=64).to(device=args.device, dtype=args.dtype)
-        )
-    elif args.agent_type == 'random':
-        models.append(agents.RandomAgent(num_actions=num_actions, device=args.device))
-    else:
-        raise ValueError('Unrecognised agent type.')
-
-    # Load state dict if the model file(s) have been specified
-    if specified_model_file:
-        print('Reloading agent {} from location {}'.format(i, args.agent_location[i]))
-        models[i].load_state_dict(
-            torch.load(args.agent_location[i])
-        )
-
-if args.train:
-    for m in models:
-        m.train()
-else:
-    torch.no_grad()
-    for m in models:
-        m.eval()
-        for param in m.parameters():
-            param.requires_grad = False
+models = arguments.get_models(args, env.num_actions)
 
 interaction_handler = MultiSpeciesHandler(models, args.n_species, args.n_agents, args.agent_type)
 if args.train:
@@ -197,7 +107,7 @@ else:
 
 
 callbacks = [
-    loggers.LogEnricher(env, num_completed_steps, num_completed_episodes),
+    loggers.LogEnricher(env, resume_data.current_steps, resume_data.current_episodes),
     loggers.PrintLogger(env=args.env, interval=args.print_interval) if args.print_interval is not None else None,
     Render(env, args.fps) if args.render else None,
     ModelCheckpoint(
@@ -212,7 +122,7 @@ callbacks = [
         filename=f'{PATH}/experiments/{args.save_folder}/logs/{save_file}.csv',
         header_comment=utils.get_comment(args),
         interval=args.log_interval,
-        append=resume_from_checkpoint,
+        append=resume_data.resume,
         s3_bucket=args.s3_bucket,
         s3_filename=f'{args.save_folder}/logs/{save_file}.csv',
         s3_interval=args.s3_interval
@@ -238,9 +148,9 @@ environment_run = core.EnvironmentRun(
     callbacks=callback_list,
     rl_trainer=a2c_trainer,
     warm_start=args.warm_start,
-    initial_steps=num_completed_steps,
+    initial_steps=resume_data.current_steps,
     total_steps=args.total_steps,
-    initial_episodes=num_completed_episodes,
+    initial_episodes=resume_data.current_episodes,
     total_episodes=args.total_episodes
 )
 environment_run.run()
